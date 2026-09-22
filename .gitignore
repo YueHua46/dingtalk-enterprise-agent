@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+schemas/codex/
+data/
+logs/
+*.log
+
+# Local runtime state and generated artifacts
+.docker-codex/
+.tmp/
+outputs/
+work/
+tmp-card-index.js

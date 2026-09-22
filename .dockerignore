@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.git/
+.env
+.env.*
+data/
+outputs/
+work/
+assets/
+docs/
+schemas/
+tests/
+*.log
+tmp-card-index.js

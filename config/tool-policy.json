@@ -1,0 +1,20 @@
+{
+  "defaultRisk": "read",
+  "confirmation": {
+    "write": "user_once",
+    "high": "user_once",
+    "ttlSeconds": 600
+  },
+  "blockedCommands": [
+    "rm -rf",
+    "format",
+    "shutdown",
+    "reboot",
+    "docker.sock"
+  ],
+  "limits": {
+    "maxOutputBytes": 1048576,
+    "maxRuntimeSeconds": 300,
+    "maxAttachmentBytes": 52428800
+  }
+}

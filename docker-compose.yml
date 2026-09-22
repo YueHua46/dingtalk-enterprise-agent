@@ -1,0 +1,125 @@
+services:
+  gateway:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    env_file: ${AGENT_ENV_FILE:-.env.example}
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-agent}@postgres:5432/${POSTGRES_DB:-agent}
+      REDIS_URL: redis://redis:6379
+      CLAMAV_HOST: clamav
+      CODEX_HOME: /var/lib/codex
+      DWS_CONFIG_DIR: /var/lib/dws
+      DWS_KEYCHAIN_DIR: /var/lib/dws/keychain
+      MEDIA_DIR: /var/lib/agent/media
+      CODEX_WORKDIR: /app/workspaces
+      SKILLS_DIR: /app/skills
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - codex-data:/var/lib/codex
+      - dws-data:/var/lib/dws
+      - media-data:/var/lib/agent/media
+      - workspace-data:/app/workspaces
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    command: ["sh", "-c", "npm run migrate && node dist/main.js"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent}
+      POSTGRES_DB: ${POSTGRES_DB:-agent}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres-backup:
+    image: postgres:17-alpine
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-agent}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-agent}
+      PGDATABASE: ${POSTGRES_DB:-agent}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - postgres-backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        while true; do
+          stamp=$$(date -u +%Y%m%dT%H%M%SZ)
+          target="/backups/agent-$${stamp}.dump"
+          pg_dump --format=custom --file="$${target}.tmp"
+          mv "$${target}.tmp" "$${target}"
+          find /backups -type f -name 'agent-*.dump' -mtime +"$${BACKUP_RETENTION_DAYS}" -delete
+          sleep 900
+        done
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  clamav:
+    image: clamav/clamav:stable
+    volumes:
+      - clamav-data:/var/lib/clamav
+    ports:
+      - "127.0.0.1:3310:3310"
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping 1 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  codex-data:
+  dws-data:
+  media-data:
+  workspace-data:
+  postgres-backups:
+  clamav-data:
