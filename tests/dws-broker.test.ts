@@ -26,16 +26,43 @@ describe('DwsBroker device authorization', () => {
     await expect(broker.createStreamingCard({ type: 'group', id: 'group-1' })).rejects.toThrow('no bizId');
   });
 
-  it('uses the DWS-managed OAuth client and binds the requested employee profile', () => {
-    const args = buildDeviceAuthorizationArgs({ corpId: 'corp-1', userId: 'user-1' });
+  it('binds --profile only when re-authorizing a registered profile', () => {
+    const user = { corpId: 'corp-1', userId: 'user-1' };
 
-    expect(args).toEqual([
+    // First-time employee: profile does not exist yet; CLI rejects --profile
+    // with code 3 ("profile not found"), so it must be omitted.
+    const firstTime = buildDeviceAuthorizationArgs(user, false);
+    expect(firstTime).toEqual(['auth', 'login', '--device', '--no-browser', '--recommend', '--format', 'json']);
+    expect(firstTime).not.toContain('--profile');
+
+    // Re-authorization (profile registered, token expired): bind the exact profile.
+    expect(buildDeviceAuthorizationArgs(user, true)).toEqual([
       'auth', 'login', '--device', '--no-browser', '--recommend',
       '--profile', 'corp-1:user-1',
       '--format', 'json'
     ]);
-    expect(args).not.toContain('--client-id');
-    expect(args).not.toContain('--client-secret');
+    expect(buildDeviceAuthorizationArgs(user, true)).not.toContain('--client-id');
+    expect(buildDeviceAuthorizationArgs(user, true)).not.toContain('--client-secret');
+  });
+
+  it('marks authorization init failures and carries child process diagnostics', async () => {
+    // process.execPath treats the first CLI arg as a module path, so the
+    // child exits immediately with a "Cannot find module" diagnostic on stderr
+    // and never prints an authorization link.
+    const broker = new DwsBroker({ DWS_BIN: process.execPath, DWS_CONFIG_DIR: '/tmp/dws-test' } as any);
+    await expect(broker.beginDeviceAuthorization({ corpId: 'corp-1', userId: 'user-1' }))
+      .rejects.toThrow(/DWS_AUTH_INIT_FAILED: .*code 1.*MODULE_NOT_FOUND/s);
+  });
+
+  it('checks profile registration before starting the device flow', async () => {
+    const broker = new DwsBroker({ DWS_BIN: process.execPath, DWS_CONFIG_DIR: '/tmp/dws-test' } as any);
+    const run = vi.spyOn(broker as any, 'run').mockResolvedValue({
+      stdout: JSON.stringify({ profiles: [{ profile: 'corp-1:user-1' }] }),
+      stderr: ''
+    });
+    await expect(broker.beginDeviceAuthorization({ corpId: 'corp-1', userId: 'user-1' }))
+      .rejects.toThrow(/DWS_AUTH_INIT_FAILED/);
+    expect(run).toHaveBeenCalledWith(['profile', 'list', '--format', 'json']);
   });
 
   it('returns unauthenticated when the exact employee profile is not registered', async () => {

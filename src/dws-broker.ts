@@ -8,6 +8,22 @@ import { sameIdentity } from './security.js';
 
 const execFileAsync = promisify(execFile);
 
+// Stable marker so the orchestrator can distinguish "authorization could not
+// even be initiated" (an infrastructure problem) from other DWS failures.
+export const DWS_AUTH_INIT_FAILED = 'DWS_AUTH_INIT_FAILED';
+
+function authInitError(detail: string, output: string): Error {
+  // Carry the tail of the child process output for diagnostics; it may contain
+  // the reason (OAuth client not configured, bad DWS_CONFIG_DIR, CLI version
+  // mismatch). Redact credential-like fragments before surfacing it.
+  const tail = output
+    .replace(/\s+/g, ' ')
+    .replace(/(accessToken|appSecret|authorization|token)[^\s,;]*/gi, '$1=<redacted>')
+    .trim()
+    .slice(-400);
+  return new Error(DWS_AUTH_INIT_FAILED + ': ' + detail + (tail ? '；进程输出尾部：' + tail : ''));
+}
+
 export class DwsBroker {
   public constructor(private readonly config: Config) {}
 
@@ -92,7 +108,7 @@ export class DwsBroker {
   }
 
   public async beginDeviceAuthorization(user: UserIdentity): Promise<{ prompt: string; completion: Promise<DwsIdentity> }> {
-    const args = buildDeviceAuthorizationArgs(user);
+    const args = buildDeviceAuthorizationArgs(user, await this.profileRegistered(user));
     const invocation = resolveInvocation(this.config.DWS_BIN);
     const child = spawn(invocation.file, [...invocation.prefix, ...args], {
       env: { ...process.env, DWS_CONFIG_DIR: this.config.DWS_CONFIG_DIR },
@@ -119,7 +135,7 @@ export class DwsBroker {
     child.stdout.on('data', inspect);
     child.stderr.on('data', inspect);
     child.on('error', (error) => {
-      if (!promptResolved) rejectPrompt(error);
+      if (!promptResolved) rejectPrompt(authInitError('无法启动设备授权进程（' + String(error) + '）', output));
     });
     child.on('exit', (code) => {
       if (!promptResolved) {
@@ -128,12 +144,12 @@ export class DwsBroker {
           promptResolved = true;
           resolvePrompt(prompt);
         } else {
-          rejectPrompt(new Error('DWS device authorization exited before producing a link (code ' + String(code) + ')'));
+          rejectPrompt(authInitError('设备授权进程在输出授权链接前退出（code ' + String(code) + '）', output));
         }
       }
     });
     const promptTimer = setTimeout(() => {
-      if (!promptResolved) rejectPrompt(new Error('DWS device authorization did not produce a link in time'));
+      if (!promptResolved) rejectPrompt(authInitError('设备授权进程未在限时内输出授权链接', output));
     }, 20_000);
     const prompt = await promptPromise.finally(() => clearTimeout(promptTimer));
     const completion = this.pollAuthorization(user, 15 * 60 * 1000)
@@ -163,6 +179,22 @@ export class DwsBroker {
     return { stdout: String(result.stdout), stderr: String(result.stderr) };
   }
 
+  private async profileRegistered(user: UserIdentity): Promise<boolean> {
+    // Registration-only lookup (unlike status(), which also requires a valid
+    // token): a profile with an expired token still exists and should be
+    // re-authorized with --profile bound to it.
+    try {
+      const profilesResult = await this.run(['profile', 'list', '--format', 'json']);
+      const payload = safeJson(profilesResult.stdout);
+      const data = payload?.data ?? payload;
+      const profiles = Array.isArray(data?.profiles) ? data.profiles : [];
+      const profileKey = user.corpId + ':' + user.userId;
+      return profiles.some((profile: any) => String(profile?.profile ?? '') === profileKey);
+    } catch {
+      return false;
+    }
+  }
+
   private async pollAuthorization(user: UserIdentity, timeoutMs: number): Promise<DwsIdentity> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -178,12 +210,16 @@ export class DwsBroker {
   }
 }
 
-export function buildDeviceAuthorizationArgs(user: UserIdentity): string[] {
-  return [
-    'auth', 'login', '--device', '--no-browser', '--recommend',
-    '--profile', user.corpId + ':' + user.userId,
-    '--format', 'json'
-  ];
+export function buildDeviceAuthorizationArgs(user: UserIdentity, registeredProfile: boolean): string[] {
+  // The CLI rejects --profile for unregistered profiles (code 3, "profile not
+  // found"), so a first-time employee must authorize WITHOUT it; the device
+  // flow then creates their <corpId>:<userId> profile from the authorized
+  // account. Identity binding is enforced afterwards in pollAuthorization via
+  // status() + sameIdentity, so a mismatched account never passes.
+  const args = ['auth', 'login', '--device', '--no-browser', '--recommend'];
+  if (registeredProfile) args.push('--profile', user.corpId + ':' + user.userId);
+  args.push('--format', 'json');
+  return args;
 }
 
 function safeJson(value: string): any {

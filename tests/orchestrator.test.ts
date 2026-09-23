@@ -243,6 +243,83 @@ describe('TaskOrchestrator integration', () => {
     expect(dws.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), expect.any(Array));
   });
 
+  it('retries device authorization once and continues the task after a transient failure', async () => {
+    const repo = new InMemoryRepository();
+    const direct: string[] = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-oauth-retry'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'dingtalk', tool: 'dws', arguments: { capability: 'contact.me' }
+        } });
+        expect(response.success).toBe(true);
+        return { text: '授权后查询结果', threadId: 'thread-oauth-retry' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const dws = {
+      status: vi.fn(async () => null),
+      beginDeviceAuthorization: vi.fn()
+        .mockRejectedValueOnce(new Error('DWS_AUTH_INIT_FAILED: 设备授权进程在输出授权链接前退出（code 3）'))
+        .mockResolvedValueOnce({ prompt: '请打开设备授权链接', completion: Promise.resolve({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' }) }),
+      runCommand: vi.fn(async () => ({ userId: 'user-1' }))
+    } as unknown as DwsBroker;
+    const sender: MessageSender = {
+      async send() { throw new Error('group card should be used when available'); },
+      async beginTaskCard() { return 'oauth-retry-card'; },
+      async updateTaskCard() { },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender);
+    const task = await orchestrator.accept(request('message-oauth-retry', '使用钉钉工具查我的部门'));
+    await waitUntil(() => direct.some((item) => item.includes('设备授权链接')));
+    expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(2);
+    expect(dws.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), expect.any(Array));
+    const stored = await repo.findTask(task!.id);
+    expect(stored?.status).toBe('completed');
+  });
+
+  it('returns actionable guidance instead of raw errors when device authorization cannot start', async () => {
+    const repo = new InMemoryRepository();
+    const direct: string[] = [];
+    let toolResponse: { success?: boolean; text?: string } | undefined;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-oauth-init-failed'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'dingtalk', tool: 'dws', arguments: { capability: 'contact.me' }
+        } });
+        toolResponse = { success: response.success, text: response.contentItems[0].text };
+        return { text: '授权服务暂时不可用，请稍后重新发送任务。', threadId: 'thread-oauth-init-failed' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const dws = {
+      status: vi.fn(async () => null),
+      beginDeviceAuthorization: vi.fn(async () => { throw new Error('DWS_AUTH_INIT_FAILED: 设备授权进程在输出授权链接前退出（code 3）；进程输出尾部：oauth client not configured'); }),
+      runCommand: vi.fn()
+    } as unknown as DwsBroker;
+    const sender: MessageSender = {
+      async send() { throw new Error('group card should be used when available'); },
+      async beginTaskCard() { return 'oauth-failed-card'; },
+      async updateTaskCard() { },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender);
+    const task = await orchestrator.accept(request('message-oauth-init-failed', '使用钉钉工具查我的部门'));
+    await waitUntil(() => toolResponse !== undefined);
+    expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(2);
+    expect(toolResponse?.success).toBe(false);
+    expect(toolResponse?.text).toContain('授权服务暂时不可用');
+    expect(toolResponse?.text).toContain('重新发送原任务');
+    expect(toolResponse?.text).not.toContain('code 3');
+    expect(toolResponse?.text).not.toContain('oauth client not configured');
+    // No authorization link was ever produced, so the bot must not claim one was sent.
+    expect(direct.some((item) => item.includes('设备授权'))).toBe(false);
+    const stored = await repo.findTask(task!.id);
+    expect(['completed', 'running']).toContain(stored?.status);
+  });
+
   it('does not route or start OAuth from message keywords alone', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];

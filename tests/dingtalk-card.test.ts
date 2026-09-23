@@ -105,4 +105,32 @@ describe('DingTalk native AI streaming card', () => {
     await broker.create({ type: 'group', id: 'group-1' });
     expect(bodies[0].cardData.cardParamMap).toEqual({ content: '', activity: '正在处理' });
   });
+
+  it('pushes robot single-chat messages with app credentials and no card template', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith('/oauth2/accessToken')) {
+        return new Response(JSON.stringify({ accessToken: 'token-1', expireIn: 7200 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }));
+    const broker = new DingTalkNativeCardBroker({
+      DINGTALK_CLIENT_ID: 'app', DINGTALK_CLIENT_SECRET: 'secret', DINGTALK_ROBOT_CODE: 'robot'
+    } as any);
+
+    await broker.sendRobotDirectMessage('user-1', '### DWS 设备授权\n\n授权地址：https://login.dingtalk.com/verify', 'DWS 授权');
+
+    expect(broker.enabled()).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.url).toContain('/robot/oToMessages/batchSend');
+    const body = JSON.parse(String(calls[1]!.init.body));
+    expect(body.robotCode).toBe('robot');
+    expect(body.userIds).toEqual(['user-1']);
+    expect(body.msgKey).toBe('sampleMarkdown');
+    expect(JSON.parse(body.msgParam)).toEqual({
+      title: 'DWS 授权',
+      text: '### DWS 设备授权\n\n授权地址：https://login.dingtalk.com/verify'
+    });
+  });
 });

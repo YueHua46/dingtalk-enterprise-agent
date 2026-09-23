@@ -92,6 +92,24 @@ export class DingTalkNativeCardBroker {
     });
   }
 
+  /** Robot single-chat push (oToMessages). Delivers OAuth guidance DMs with
+   *  only the app credentials, so the per-employee authorization flow never
+   *  depends on a pre-authorized DWS bot profile.
+   */
+  public async sendRobotDirectMessage(staffId: string, markdown: string, title: string): Promise<void> {
+    await this.request('/v1.0/robot/oToMessages/batchSend', {
+      method: 'POST',
+      body: {
+        robotCode: this.config.DINGTALK_ROBOT_CODE,
+        userIds: [staffId],
+        msgKey: 'sampleMarkdown',
+        // sampleMarkdown renders the "text" template variable; a "content"
+        // field is ignored and the raw "#text#" placeholder is delivered.
+        msgParam: JSON.stringify({ title, text: markdown })
+      }
+    });
+  }
+
   private openSpaceId(surface: ConversationSurface): string {
     return 'dtv1.card//' + (surface.type === 'group' ? 'IM_GROUP.' : 'IM_ROBOT.') + surface.id;
   }

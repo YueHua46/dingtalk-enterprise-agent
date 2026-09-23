@@ -61,7 +61,18 @@ const sender = {
     console.log(JSON.stringify({ surface, markdown, title }));
   },
   async sendDirect(user: AgentRequest['user'], markdown: string, title?: string): Promise<void> {
-    await dws.sendBotMessage(user, markdown, title ?? 'Agent智能助手');
+    const directTitle = title ?? 'Agent智能助手';
+    // Primary: native robot single-chat push with app credentials only. This
+    // keeps the per-employee OAuth guidance fully self-service — no DWS bot
+    // profile is involved, and each user authorizes their own identity.
+    try {
+      await nativeCards.sendRobotDirectMessage(user.userId, markdown, directTitle);
+      return;
+    } catch (error) {
+      if (!config.DWS_BOT_PROFILE) throw error;
+      console.log(JSON.stringify({ event: 'native_direct_send_failed', reason: error instanceof Error ? error.message : String(error) }));
+    }
+    await dws.sendBotMessage(user, markdown, directTitle);
   }
 };
 const taskQueue = config.NODE_ENV === 'production' ? new RedisTaskQueue(config) : undefined;

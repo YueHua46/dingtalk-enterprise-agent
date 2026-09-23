@@ -1,7 +1,7 @@
 import type { Config } from './config.js';
 import { CodexClient } from './codex-client.js';
 import type { CodexApprovalRequest } from './codex-client.js';
-import { DwsBroker } from './dws-broker.js';
+import { DwsBroker, DWS_AUTH_INIT_FAILED } from './dws-broker.js';
 import { DwsTool } from './dws-tool.js';
 import { MediaPipeline } from './media.js';
 import { MemoryTool } from './memory-tool.js';
@@ -533,6 +533,15 @@ export class TaskOrchestrator {
         const result = await this.executeDwsAction(task, input, action, confirmed);
         return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
       }
+      if (message === DWS_AUTH_INIT_FAILED) {
+        return { contentItems: [{ type: 'inputText', text: DWS_AUTH_INIT_GUIDANCE }], success: false };
+      }
+      if (/identity mismatch/i.test(message)) {
+        return { contentItems: [{ type: 'inputText', text: '授权账号不一致：本次设备授权使用的钉钉账号与发起任务的账号不相同，授权未生效。请告知用户重新发送原任务，并在收到机器人私聊的授权链接后，使用发起任务的那个钉钉账号完成授权。' }], success: false };
+      }
+      if (message === 'DWS device authorization timed out') {
+        return { contentItems: [{ type: 'inputText', text: 'DWS 授权超时：用户未在 15 分钟内完成设备授权，本次任务无法继续。请告知用户重新发送原任务，并在收到机器人私聊的授权链接后尽快完成授权。' }], success: false };
+      }
       return { contentItems: [{ type: 'inputText', text: message }], success: false };
     }
   }
@@ -610,16 +619,62 @@ export class TaskOrchestrator {
   private async ensureAuthorization(task: TaskRecord, threadId: string): Promise<void> {
     await this.repo.updateTask(task.id, 'waiting_oauth', { threadId });
     await this.deliverTask(task, md.needOAuth('当前任务需要访问你的钉钉资源。'), '需要授权，请查看机器人私聊。', 1, '需要授权');
-    const session = await this.dws.beginDeviceAuthorization(task.request.user);
+    if (!this.sender.sendDirect) {
+      await this.failAuthorizationInit(task, threadId, 'Robot direct-message channel is unavailable');
+      throw new Error(DWS_AUTH_INIT_FAILED);
+    }
+    let session: Awaited<ReturnType<DwsBroker['beginDeviceAuthorization']>>;
+    try {
+      session = await this.beginDeviceAuthorizationWithRetry(task);
+    } catch (error) {
+      await this.failAuthorizationInit(task, threadId, safeDeliveryError(error));
+      throw new Error(DWS_AUTH_INIT_FAILED);
+    }
     const authMessage = '### DWS 设备授权\n\n' + session.prompt;
-    if (!this.sender.sendDirect) throw new Error('Robot direct-message channel is unavailable');
-    await this.sender.sendDirect(task.request.user, authMessage, 'DWS 授权');
-    await session.completion;
+    try {
+      await this.sender.sendDirect(task.request.user, authMessage, 'DWS 授权');
+    } catch (error) {
+      await this.failAuthorizationInit(task, threadId, safeDeliveryError(error));
+      throw new Error(DWS_AUTH_INIT_FAILED);
+    }
+    try {
+      await session.completion;
+    } catch (error) {
+      // The user did not finish device authorization in time (or the identity
+      // mismatched). Surface an actionable outcome instead of a raw error and
+      // let the model close the turn with proper guidance.
+      await this.repo.updateTask(task.id, 'running', { threadId });
+      await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+        eventType: 'oauth.completion_failed', payload: { reason: safeDeliveryError(error) } });
+      throw error;
+    }
     // Persist only the non-secret identity mapping. DWS keeps the actual
     // access/refresh credentials in its own persistent keychain volume.
     await this.repo.setDwsProfile(task.request.user, task.request.user.corpId + ':' + task.request.user.userId);
     await this.repo.updateTask(task.id, 'running', { threadId });
     await this.deliverTask(task, '### 授权成功\n\n原任务正在继续执行。', '授权成功，继续处理…', 1, '授权成功');
+  }
+
+  private async beginDeviceAuthorizationWithRetry(task: TaskRecord): Promise<Awaited<ReturnType<DwsBroker['beginDeviceAuthorization']>>> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.dws.beginDeviceAuthorization(task.request.user);
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    throw lastError;
+  }
+
+  private async failAuthorizationInit(task: TaskRecord, threadId: string, reason: string): Promise<void> {
+    // Authorization could not even be initiated (CLI/config/DM channel). Roll
+    // the status back so the task can finish its turn with actionable
+    // guidance, and keep the diagnostic in the audit trail.
+    await this.repo.updateTask(task.id, 'running', { threadId });
+    await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+      eventType: 'oauth.init_failed', payload: { reason } });
   }
 }
 
@@ -648,12 +703,23 @@ function approvalResponse(method: string, accepted: boolean): unknown {
 function safeDeliveryError(error: unknown): string {
   // CLI failures may embed command arguments (including card text) in Error.message.
   if (!(error instanceof Error)) return 'UnknownError';
-  const message = error.message.replace(/(accessToken|appSecret|authorization|token)[^\s,;]*/gi, '$1=<redacted>');
+  const message = error.message
+    .replace(/(accessToken|appSecret|authorization|token)[^\s,;]*/gi, '$1=<redacted>')
+    .replace(/user_code=[A-Z0-9-]+/gi, 'user_code=<redacted>');
   return (message ? error.name + ': ' + message : error.name).slice(0, 240);
 }
 
+const DWS_AUTH_INIT_GUIDANCE = [
+  'DWS 授权服务暂时不可用：网关发起设备授权失败，自动重试一次后仍未成功（诊断详情已记录到任务审计日志）。',
+  '请告知用户：本次任务暂时无法完成，稍后重新发送原任务即可，无需用户自行安装或执行任何授权命令。',
+  '若该提示反复出现，需要管理员检查网关的 DWS CLI 安装、DWS_CONFIG_DIR 挂载与 OAuth 配置。'
+].join('');
+
 function userFacingTaskError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (message === DWS_AUTH_INIT_FAILED) {
+    return '授权服务暂时不可用，请稍后重试。';
+  }
   if (/no available accounts|503\s+service unavailable/i.test(message)) {
     return '当前模型服务暂时不可用，请稍后再试。';
   }

@@ -56,7 +56,7 @@ Copy-Item .env.example .env
 |---|---|
 | `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` | 企业内部机器人应用与 Stream 连接、媒体接口 |
 | `DINGTALK_ROBOT_CODE` | 机器人发送身份 |
-| `DWS_BOT_PROFILE` | 已授权、持久化在 `dws-data` 卷中的机器人发送 Profile |
+| `DWS_BOT_PROFILE` | 可选。已授权的机器人发送 Profile，仅 DWS 卡片降级与群消息回退路径需要；员工授权引导私聊走钉钉原生机器人接口，不依赖它 |
 | `MODEL_BASE_URL` / `MODEL_API_KEY` | 兼容 Responses API 的模型中转地址与密钥 |
 | `MODEL_NAME` | 中转支持的模型名 |
 | `INTERNAL_API_TOKEN` | `/internal/messages` 的 32 字节以上随机 Token |
