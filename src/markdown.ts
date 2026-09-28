@@ -1,7 +1,21 @@
 import type { AgentRequest, ApprovalChallenge, ConversationSurface, TaskRecord } from './types.js';
+import { defaultImpact, fallbackSummary } from './action-summarizer.js';
 
 function escapeText(value: string): string {
   return value.replace(/[\\\\*_{}[\\]()#+.!<>|]/g, '\\\\$&');
+}
+
+/** Business-language content for the interactive approval card. */
+function confirmationBody(challenge: ApprovalChallenge): string[] {
+  const summary = challenge.action.summary ?? fallbackSummary(challenge.action);
+  const impact = summary.impact ?? defaultImpact(challenge.action);
+  const lines = [
+    escapeText(summary.description),
+    '',
+    '- 影响：' + escapeText(impact),
+    ...(summary.details ?? []).map((item) => '- ' + escapeText(item))
+  ];
+  return lines;
 }
 
 export function accepted(task: TaskRecord): string {
@@ -32,26 +46,16 @@ export function needOAuth(reason: string): string {
   ].join('\n');
 }
 
-export function confirmation(challenge: ApprovalChallenge): string {
-  const parameters = JSON.stringify(challenge.action.parameters ?? '未指定', (key, value) => {
-    if (/token|secret|password|credential|api.?key|authorization/i.test(key)) return '[已隐藏]';
-    return value;
-  });
-  const impact = challenge.action.risk === 'high'
-    ? '高风险操作；确认后将按上述参数执行，可能产生不可逆或对他人可见的影响。'
-    : '确认后将按上述参数写入或变更目标资源。';
+/** Body of the interactive approval card (agree/reject buttons). */
+export function approvalCardContent(challenge: ApprovalChallenge): string {
+  const riskLabel = challenge.action.risk === 'high' ? '⚠️ 高风险操作确认' : '操作确认';
+  const minutes = Math.max(1, Math.round((challenge.expiresAt - Date.now()) / 60000));
   return [
-    '### 等待确认',
+    '**' + riskLabel + '**',
     '',
-    '- 任务编号：' + challenge.taskId,
-    '- 操作：' + escapeText(challenge.action.name),
-    '- 目标：' + escapeText(challenge.action.target ?? '未指定'),
-    '- 参数：' + escapeText(parameters),
-    '- 影响：' + impact,
-    '- 有效期：' + new Date(challenge.expiresAt).toLocaleString('zh-CN'),
+    ...confirmationBody(challenge),
     '',
-    '确认请回复 `确认 ' + challenge.taskId + '`。',
-    '取消请回复 `取消 ' + challenge.taskId + '`。'
+    '仅任务发起人点击有效。请在 ' + minutes + ' 分钟内确认；超时将自动取消，任务会按未执行处理。'
   ].join('\n');
 }
 

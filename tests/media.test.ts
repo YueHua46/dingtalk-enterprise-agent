@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig } from './test-config.js';
 import { MediaPipeline } from '../src/media.js';
 
 describe('MediaPipeline', () => {

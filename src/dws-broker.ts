@@ -1,16 +1,55 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Config } from './config.js';
 import type { ConversationSurface, DwsIdentity, UserIdentity } from './types.js';
 import { sameIdentity } from './security.js';
+import { generatedDwsCapabilities } from './generated-dws-capabilities.js';
 
 const execFileAsync = promisify(execFile);
 
 // Stable marker so the orchestrator can distinguish "authorization could not
 // even be initiated" (an infrastructure problem) from other DWS failures.
 export const DWS_AUTH_INIT_FAILED = 'DWS_AUTH_INIT_FAILED';
+
+// Stable marker for the CLI's own ConfirmSafety gate: the command was refused
+// because the user has not confirmed it yet (no --yes). The orchestrator turns
+// this into the interactive approval flow and retries with --yes.
+export const DWS_CLI_CONFIRMATION_REQUIRED = 'DWS_CLI_CONFIRMATION_REQUIRED';
+
+export function isConfirmationGateError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith(DWS_CLI_CONFIRMATION_REQUIRED);
+}
+
+function isConfirmationDiagnostic(category: string, code: string, message: string): boolean {
+  return /confirm/i.test(category) || /confirm/i.test(code)
+    || /confirmation[\s_-]*required|requires?[\s_-]*(user[\s_-]*)?confirmation/i.test(message);
+}
+
+/** Map a CLI failure (JSON on stdout with ok:false, or a non-zero exit with a
+ *  JSON diagnostic on stderr) into an error the orchestrator can branch on.
+ */
+function asCliCommandError(outputs: Array<{ text: string }>): Error {
+  for (const output of outputs) {
+    const parsed = safeJson(output.text);
+    const err = parsed?.error;
+    if (!err && parsed?.ok !== false) continue;
+    const category = String(err?.category ?? '');
+    const code = String(err?.code ?? '');
+    const message = String(err?.message ?? 'DWS command failed');
+    if (isConfirmationDiagnostic(category, code, message)) {
+      return new Error(DWS_CLI_CONFIRMATION_REQUIRED + '[' + (category || code || 'gate') + ']: ' + message);
+    }
+  }
+  for (const output of outputs) {
+    const parsed = safeJson(output.text);
+    if (parsed?.ok === false || parsed?.error) {
+      return new Error(String(parsed?.error?.message ?? 'DWS command failed'));
+    }
+  }
+  return new Error('DWS command failed');
+}
 
 function authInitError(detail: string, output: string): Error {
   // Carry the tail of the child process output for diagnostics; it may contain
@@ -25,7 +64,26 @@ function authInitError(detail: string, output: string): Error {
 }
 
 export class DwsBroker {
+  private readonly schemaCache = new Map<string, { parameters: Record<string, unknown>; cli_path: string }>();
   public constructor(private readonly config: Config) {}
+
+  /** Read the exact leaf contract from the installed CLI version. This is
+   * static capability metadata, so it does not require a user profile. */
+  public async schemaForCapability(name: string): Promise<{ parameters: Record<string, unknown>; cli_path: string }> {
+    const registered = generatedDwsCapabilities[name as keyof typeof generatedDwsCapabilities];
+    if (!registered) throw new Error('DWS_SCHEMA_CAPABILITY_UNREGISTERED');
+    const cached = this.schemaCache.get(name);
+    if (cached) return cached;
+    const cliPath = [registered.service, ...registered.command].join(' ');
+    const response = await this.run(['schema', '--cli-path', cliPath, '--compact', '-f', 'json']);
+    const parsed = safeJson(response.stdout);
+    if (!parsed || parsed.cli_path !== cliPath || !parsed.parameters || typeof parsed.parameters !== 'object' || Array.isArray(parsed.parameters)) {
+      throw new Error('DWS_SCHEMA_UNAVAILABLE:' + name);
+    }
+    const schema = { cli_path: cliPath, parameters: parsed.parameters as Record<string, unknown> };
+    this.schemaCache.set(name, schema);
+    return schema;
+  }
 
   public async sendBotMessage(user: UserIdentity, markdown: string, title: string): Promise<void> {
     await this.sendBotMarkdown({ type: 'direct', id: user.userId }, markdown, title);
@@ -51,6 +109,71 @@ export class DwsBroker {
     if (data?.complete === false || (Array.isArray(data?.failures) && data.failures.length > 0)) {
       throw new Error('DWS bot send was only partially delivered');
     }
+  }
+
+  public async sendBotFile(user: UserIdentity, surface: ConversationSurface, filePath: string): Promise<unknown> {
+    const identity = await this.status(user);
+    if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
+    // The installed DWS leaf accepts a safe relative path for bot file upload.
+    // Run it from the validated gateway output directory, never in the worker.
+    const target = surface.type === 'group' ? ['--group', surface.id] : ['--users', surface.id];
+    const result = await this.run([
+      '--profile', identity.profileKey, 'chat', '+messages-send', '--as', 'bot',
+      '--robot-code', this.config.DINGTALK_ROBOT_CODE, ...target,
+      '--msg-type', 'file', '--file', basename(filePath), '--yes', '--format', 'json'
+    ], 120_000, dirname(filePath));
+    const parsed = safeJson(result.stdout);
+    if (!parsed || parsed.ok === false || parsed.error) throw new Error(String(parsed?.error?.message ?? 'DWS_FILE_SEND_FAILED'));
+    const data = parsed.data ?? parsed;
+    if (data.complete === false || (Array.isArray(data.failures) && data.failures.length)) throw new Error('DWS_FILE_SEND_PARTIAL');
+    return data;
+  }
+
+  public async inspectDriveFile(user: UserIdentity, nodeId: string): Promise<{ node: any; version: any }> {
+    if (!/^[a-zA-Z0-9_-]{8,128}$/.test(nodeId)) throw new Error('DRIVE_NODE_ID_INVALID');
+    const node = await this.runCommand(user, ['drive', '+inspect', '--node', nodeId]);
+    const version = await this.runCommand(user, ['drive', '+version-history', '--node', nodeId, '--limit', '1']);
+    return { node, version };
+  }
+
+  public async downloadDriveFile(user: UserIdentity, nodeId: string, directory: string, fileName: string): Promise<unknown> {
+    if (!/^[a-zA-Z0-9_-]{8,128}$/.test(nodeId)) throw new Error('DRIVE_NODE_ID_INVALID');
+    const identity = await this.status(user);
+    if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
+    const result = await this.run([
+      '--profile', identity.profileKey, 'drive', '+download', '--node', nodeId,
+      '--output', basename(fileName), '--format', 'json'
+    ], 120_000, directory);
+    const parsed = safeJson(result.stdout);
+    if (!parsed || parsed.ok === false || parsed.error) throw new Error(String(parsed?.error?.message ?? 'DRIVE_DOWNLOAD_FAILED'));
+    return parsed.data ?? parsed;
+  }
+
+  public async downloadChatFile(user: UserIdentity, conversationId: string, messageId: string, fileId: string, directory: string, fileName: string): Promise<string> {
+    const identity = await this.status(user);
+    if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
+    const result = await this.run([
+      '--profile', identity.profileKey, 'chat', '+messages-resource-download',
+      '--type', 'fileId', '--resource-id', fileId, '--message-id', messageId,
+      '--open-conversation-id', conversationId, '--output', basename(fileName), '--format', 'json'
+    ], 120_000, directory);
+    const parsed = safeJson(result.stdout);
+    if (!parsed || parsed.error || parsed.messageVerified !== true || parsed.resourceId !== fileId || parsed.messageId !== messageId) {
+      throw new Error(String(parsed?.error?.message ?? 'CHAT_FILE_DOWNLOAD_UNVERIFIED'));
+    }
+    return String(parsed.localPath ?? fileName);
+  }
+
+  public async overwriteDriveFile(user: UserIdentity, nodeId: string, filePath: string, fileName?: string): Promise<unknown> {
+    const identity = await this.status(user);
+    if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
+    const result = await this.run([
+      '--profile', identity.profileKey, 'drive', '+upload', '--file', basename(filePath),
+      '--node', nodeId, ...(fileName ? ['--file-name', fileName] : []), '--yes', '--format', 'json'
+    ], 120_000, dirname(filePath));
+    const parsed = safeJson(result.stdout);
+    if (!parsed || parsed.ok === false || parsed.error) throw new Error(String(parsed?.error?.message ?? 'DRIVE_OVERWRITE_FAILED'));
+    return parsed.data ?? parsed;
   }
 
   public async createStreamingCard(surface: ConversationSurface): Promise<string> {
@@ -162,16 +285,31 @@ export class DwsBroker {
   public async runCommand(user: UserIdentity, args: string[]): Promise<unknown> {
     const identity = await this.status(user);
     if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
-    const result = await this.run(['--profile', identity.profileKey, ...args, '--format', 'json']);
+    let result: { stdout: string; stderr: string };
+    try {
+      result = await this.run(['--profile', identity.profileKey, ...args, '--format', 'json']);
+    } catch (error) {
+      // The CLI reports gate/validation failures with a non-zero exit code and
+      // a JSON diagnostic on stderr (verified: {"error":{"category":...}}).
+      const stdout = (error as { stdout?: unknown })?.stdout;
+      const stderr = (error as { stderr?: unknown })?.stderr;
+      if (typeof stdout === 'string' || typeof stderr === 'string') {
+        throw asCliCommandError([{ text: String(stdout ?? '') }, { text: String(stderr ?? '') }]);
+      }
+      throw error;
+    }
     const parsed = safeJson(result.stdout);
-    if (parsed?.ok === false) throw new Error(String(parsed?.error?.message ?? 'DWS command failed'));
+    if (parsed?.ok === false || parsed?.error) {
+      throw asCliCommandError([{ text: result.stdout }, { text: result.stderr }]);
+    }
     return parsed?.data ?? parsed;
   }
 
-  private async run(args: string[], timeout = 60_000): Promise<{ stdout: string; stderr: string }> {
+  private async run(args: string[], timeout = 60_000, cwd?: string): Promise<{ stdout: string; stderr: string }> {
     const invocation = resolveInvocation(this.config.DWS_BIN);
     const result = await execFileAsync(invocation.file, [...invocation.prefix, ...args], {
       env: { ...process.env, DWS_CONFIG_DIR: this.config.DWS_CONFIG_DIR },
+      cwd,
       timeout,
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true

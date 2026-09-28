@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DwsBroker, buildDeviceAuthorizationArgs } from '../src/dws-broker.js';
+import { DwsBroker, buildDeviceAuthorizationArgs, isConfirmationGateError } from '../src/dws-broker.js';
 
 describe('DwsBroker device authorization', () => {
   it('creates and updates a streaming card with the explicitly configured profile', async () => {
@@ -95,5 +95,31 @@ describe('DwsBroker device authorization', () => {
     expect(run).toHaveBeenLastCalledWith([
       'auth', 'status', '--profile', 'corp-1:user-1', '--format', 'json'
     ]);
+  });
+
+  it('marks the CLI confirmation gate refusal so the orchestrator can branch on it', async () => {
+    const broker = new DwsBroker({ DWS_BIN: 'dws' } as any);
+    vi.spyOn(broker as any, 'status').mockResolvedValue({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' });
+    // The CLI reports gate refusals with a non-zero exit and a JSON diagnostic
+    // on stderr (verified shape: {"error":{"category":...,"message":...}}).
+    vi.spyOn(broker as any, 'run').mockRejectedValue(Object.assign(new Error('Command failed'), {
+      stdout: '',
+      stderr: JSON.stringify({ error: { category: 'confirmation', code: 'confirm_required', message: '需要用户确认后加 --yes 执行' } })
+    }));
+
+    await expect(broker.runCommand({ corpId: 'corp-1', userId: 'user-1' }, ['chat', '+messages-set-pin', '--message-id', 'm1']))
+      .rejects.toSatisfy((error: unknown) => isConfirmationGateError(error));
+  });
+
+  it('keeps ordinary CLI failures outside the confirmation-gate marker', async () => {
+    const broker = new DwsBroker({ DWS_BIN: 'dws' } as any);
+    vi.spyOn(broker as any, 'status').mockResolvedValue({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' });
+    vi.spyOn(broker as any, 'run').mockRejectedValue(Object.assign(new Error('Command failed'), {
+      stdout: '',
+      stderr: JSON.stringify({ error: { category: 'validation', code: 3, message: '缺少必填参数 --to：收件人姓名/花名' } })
+    }));
+
+    await expect(broker.runCommand({ corpId: 'corp-1', userId: 'user-1' }, ['chat', '+dm']))
+      .rejects.toSatisfy((error: unknown) => !isConfirmationGateError(error) && error instanceof Error && error.message.includes('缺少必填参数'));
   });
 });

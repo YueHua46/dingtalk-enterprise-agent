@@ -20,11 +20,64 @@
 | 长期记忆读取 | 当前 `corpId + userId` | 否 | 当前会话 |
 | 长期记忆保存/删除 | 当前 `corpId + userId` | 本人确认一次 | 当前会话 |
 | 读取已注册 Skill | `reference.read_guide` 只读工具 | 否 | 不单独发送通知 |
-| Codex shell 提权、访问其他目录、文件修改 | 不允许通过业务确认放行 | 否，直接拒绝并审计 | Agent 继续尝试已注册工具或报告限制 |
+| 领星/SIF 查询、统计、分析、报表与导出 | 共享服务密钥，只读 | 否 | 原会话；敏感业务结果优先私聊 |
+| 领星新增、修改、删除及其他状态变更 | 共享服务密钥 | 当前发起人确认一次 | 原会话并写审计；幂等保护 |
+| 默认 gateway Codex shell 提权、访问其他目录 | 不允许通过业务确认放行 | 否，直接拒绝并审计 | Agent 继续尝试已注册工具或报告限制 |
+| 文件容器内 shell 和任务文件 | 每任务独立 Linux UID 与工作目录 | 任务内文件编辑不需业务确认 | 成果经宿主校验后发回原会话；钉盘原位覆盖仍需确认 |
 
 禁止使用管理员 Token 替员工访问资源。钉钉服务端是最终权限裁决者；网关同时强制 Profile 身份匹配和 DWS 能力白名单。
 Codex 的业务写入必须经过结构化动态工具，不能把通用 shell 审批当作业务授权。仅模型连接凭证会传给 Codex 子进程；部署时应给模型中转密钥设置独立限额。
 当前 Docker Desktop 容器无法建立 bubblewrap 用户命名空间，故原生 shell 工具已关闭。若以后需要通用 shell，应先在独立隔离容器中验证实际沙盒、凭证隔离和写入策略，不得直接通过用户的钉钉确认放行。
+
+领星官方 MCP 的 `help`/`search` 仅作为原生目录工具接入。共享密钥的通用 `action` 无法证明请求参数和返回结果均按当前钉钉用户的店铺范围裁剪，现已从 Agent 动态工具列表撤下，宿主收到旧会话的调用也会拒绝。自有店铺数据经 CrossBorderOps 服务端按 SID 查询。SIF 当前未提供 MCP `readOnlyHint`，因此仅允许经过核验的只读工具白名单；远端新增工具默认不可用。
+
+权限边界：CrossBorderOps 路径用于公司自有店铺经营数据，必须按当前钉钉用户的有效店铺映射裁剪；后台授权查询会在通讯录缓存超过 15 分钟时自动刷新，刷新失败则拒绝查询。SIF 路径用于公开 ASIN、关键词和竞品数据，只要 SIF 工具本身支持该查询即可按 ASIN/关键词直接查询，不经过 CrossBorderOps 店铺授权门禁。两类数据在回答中必须标明来源，不能把 SIF 公开结果当作内部店铺数据。
+
+### Amazon 与紫鸟 Skills
+
+项目发布 Nexscope 的 53 个 Amazon 子 Skill、`zach22-1999/amazon-skills` 的 7 个 Skill，以及基于 `awesome-amazon-ec-skills` 的只读社区目录 Skill。Awesome 仓库只是第三方项目索引，不会递归自动安装其中链接的所有代码。部分 Zach Skill 依赖 Sorftime MCP 或 Python 脚本；未配置对应运行能力时，只使用其不依赖这些组件的分析流程。
+
+镜像还安装 `@ziniao-open/cli` 并发布 13 个紫鸟 Skill。Codex 通过 `ziniao.cli` 结构化工具调用业务命令。配置 `ZINIAO_REMOTE_HOST` 后，网关通过专用 SSH 密钥连接 jennov-75 上的强制命令 worker；该密钥不能获得交互 shell、端口转发或 X11 转发。worker 以当前钉钉用户的 `corpId + userId` 哈希选择专属 HOME，紫鸟 CLI 配置保存在 `/home/jennov/.local/share/dingtalk-ziniao/users/<用户哈希>`。不同运营人员不能共享同一个 HOME，也不依赖全局 current profile。未配置远端主机时才使用容器内的 CLI 和 `ziniao-data` 持久卷。
+
+首次真正调用紫鸟工具时，网关先检查该用户目录的有效配置；没有配置时运行 `ziniao-cli config init --new --profile <用户专属标识>`，把授权链接只发给当前发起人私聊，等待授权完成后继续原任务。数据库仅记录非敏感 profile 标识和授权时间，不保存 API Key。明确只读的命令直接执行，其余命令必须先经当前用户业务确认并进入幂等记录。店铺和页面命令依赖 jennov-75 本机紫鸟客户端的 ZClaw Bridge（127.0.0.1:9481）；客户端登录不等于 Bridge 就绪。若 Bridge 未启动，worker 拒绝开启首次授权并报告客户端未就绪。当前 Linux 客户端 6.25.3 已登录，但实测该端口未监听，需升级或由紫鸟官方确认 Linux Bridge 支持后复测，不能将远端通道接通误认为店铺操作已可用。
+
+### Windows 紫鸟执行机候选（192.168.3.111）
+
+Windows 的 `info` 仅是 SSH/紫鸟 CLI 进程运行账号，不是运营人员身份。`remote/ziniao-worker-win.mjs` 以网关提供的 `sha256([corpId,userId])` 选择 `C:\ProgramData\DingtalkZiniao\users\<哈希>` 作为独立 `USERPROFILE`，使用 `dingtalk-<哈希前24位>` 专属 CLI profile。worker 不读取 `C:\Users\info\.ziniao-cli`，也不执行全局 `config use`。各人的授权流程要分别写入各自的加密 API Key 引用；若该目录未授权，直接返回 `ZINIAO_AUTH_REQUIRED`，不能回退使用 Windows 当前登录者的 Key。根目录和 users 目录 ACL 仅允许 SYSTEM、Administrators；网关 SSH 公钥被限制为强制运行 worker，无交互 shell 或端口转发。
+
+这只是 CLI 凭证隔离，不等同于 Windows 系统账号隔离；本机管理员仍是受信任的运维主体。当前 Windows 客户端与 Bridge 已就绪，单个现有紫鸟登录能列出店铺，未授权的隔离目录会被正确拒绝。但还没有用两个店铺权限不同的紫鸟成员分别授权并验证可见店铺集合，因此**不能认定 Bridge 店铺/页面能力已实现按 API Key 的服务端权限隔离**。在完成该 A/B 验证前，不要把生产网关切换到 Windows 执行机，也不要把 Windows GUI 的现有登录视为其他运营人员的授权。授权链接只发对应用户私聊，不收集明文 API Key。
+
+验证通过后，将 `.env` 中 `ZINIAO_REMOTE_HOST` 指向 `192.168.3.111`、`ZINIAO_REMOTE_USER` 设为 `info`、`ZINIAO_REMOTE_KEY_PATH` 设为 `/home/agent/.ziniao-cli/ssh/id_windows_ed25519`、`ZINIAO_REMOTE_KNOWN_HOSTS_PATH` 设为 `/home/agent/.ziniao-cli/ssh/known_hosts_windows`，再重建/重启 gateway。默认配置仍指向 Linux jennov-75；不得在完成上述验证前切换。
+
+### 紫鸟执行机串行化（Gate 与机器锁）
+
+紫鸟官方只保证多账号切换，不支持多账号同时调用 CLI。因此整个系统按全局串行设计：任一时刻，一台执行机上最多只有一个紫鸟 CLI 进程在运行。该约束由两层共同保证：
+
+1. **网关进程内闸门（`src/ziniao-gate.ts`）**：所有紫鸟工具调用先过闸门，按先来先服务（FIFO）排队。每类操作有自己的时长上限（status 30 秒、run 90 秒、授权 18 分钟，超时强制释放租约并报 `ZINIAO_LEASE_LOST`）。店铺/页面桥接命令（`store`/`page` 命名空间）使用会话租约：同一次任务内连续的桥接命令（如 store open → page screenshot → store close）持有同一租约，不被其他用户插入；任务结束或空闲超过 `ZINIAO_SESSION_IDLE_MS` 后自动释放。排队中的任务可被 `取消 <任务编号>` 取消（报 `ZINIAO_CANCELLED`），等待超过 `ZINIAO_GATE_MAX_WAIT_MS` 报 `ZINIAO_QUEUE_TIMEOUT`，队列满时报 `ZINIAO_BUSY`。
+2. **执行机机器锁（`remote/ziniao-worker*.mjs`）**：worker 在真正 spawn CLI 前用 `open('wx')` 独占创建 `cli.lock`，拿不到锁就等待（`ZINIAO_LOCK_WAIT_MS`，默认 10 秒）。这是兜底层：即使网关出现 bug、部署了多副本，或有人手工 SSH 进执行机，物理上也起不了第二个 CLI 进程。锁文件带时间戳，进程崩溃残留的陈旧锁在 `ZINIAO_LOCK_STALE_MS`（默认 20 分钟）后被自动回收；worker 只删除自己 pid 写入的锁。
+
+排队体验：任务等待超过 30 秒时，用户会在钉钉里收到排队位次提示（只显示自己的位次和预计等待，不泄露其他排队者身份）。用户可随时调用 `ziniao.cli` 能力 `utility.queue-status` 查看自己的位次——该能力在网关进程内返回闸门快照，不执行 CLI、不占用执行机、不需要排队。
+
+相关配置（`.env`，均有默认值，一般不需要改）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `ZINIAO_GATE_DISABLED` | `false` | `true` 时旁路进程内闸门；仅排查闸门自身故障时临时使用，机器锁仍生效 |
+| `ZINIAO_GATE_MAX_WAIT_MS` | 900000（15 分钟） | 单次排队等待上限，超时报 `ZINIAO_QUEUE_TIMEOUT` |
+| `ZINIAO_GATE_MAX_WAITERS` | 20 | 队列容量上限，超限直接报 `ZINIAO_BUSY` |
+| `ZINIAO_SESSION_IDLE_MS` | 180000（3 分钟） | 桥接会话空闲释放阈值 |
+| `ZINIAO_SESSION_MAX_MS` | 1800000（30 分钟） | 会话租约硬上限，超时强制释放并报 `ZINIAO_LEASE_LOST` |
+| `ZINIAO_INTERLEAVE_READS` | `false` | 预留项：允许只读短查询穿插会话租约。默认严格全串行；在紫鸟官方书面确认 CLI 可并发前不得开启 |
+| `ZINIAO_LOCK_WAIT_MS`（worker 端） | 10000 | worker 等待机器锁时长 |
+| `ZINIAO_LOCK_STALE_MS`（worker 端） | 1200000（20 分钟） | 陈旧机器锁自动回收阈值 |
+
+观测：`/metrics` 暴露 `ziniao_gate_queue_depth`（排队深度）、`ziniao_gate_busy`（执行机是否被占用）、`ziniao_gate_holder_held_ms`（当前持有时长）、`ziniao_gate_busy_total`、`ziniao_gate_queue_timeout_total`、`ziniao_gate_cancelled_total`、`ziniao_gate_lease_lost_total`、`ziniao_gate_session_expired_total`。若 `ziniao_gate_busy` 长期为 1 且 `ziniao_gate_holder_held_ms` 持续增长，优先检查执行机上是否有卡死的 CLI 进程，而不是重启网关。
+
+排障要点：
+
+- 执行机锁残留：worker 崩溃可能在执行机留下 `cli.lock`；等待 `ZINIAO_LOCK_STALE_MS` 后会被后续请求自动回收，一般无需人工处理。确需立即恢复时，确认无 CLI 进程运行后由运维手工删除锁文件。
+- 同用户自排队：同一次任务内的桥接命令会复用既有会话租约（闸门内做了同用户重入识别），若日志出现同一用户会话互相等待，属于闸门缺陷，请提 issue 并附 `ziniao_gate_*` 指标。
+- 闸门与机器锁互不替代：闸门负责公平排队和用户体验，机器锁负责硬性互斥；`ZINIAO_GATE_DISABLED=true` 只关闭前者，不能用于绕过串行约束。
 
 ## 3. 首次启动
 
@@ -151,6 +204,12 @@ npm run test:codex-thread
 
 ## 8. 故障恢复
 
+任务闭环上线时可先设置 `TASK_WORKFLOW_MODE=shadow`，观察审计事件 `workflow.plan`、`workflow.shadow_plan_failed`、`workflow.shadow_comparison`、`capability.observed` 与原任务结果的差异。`shadow` 不要求提交完成契约，也不会将澄清请求发给用户；完成验收后设为 `enforce`，宿主才会要求证据审查通过后结束任务。`off` 用于隔离闭环故障。上线时先部署 CrossBorderOps 的 `daily.performance_changes` 服务端聚合，再启用 Agent 的 `enforce`，避免能力目录先于数据接口生效。
+
+Codex 启动前会枚举其配置里的所有原生 MCP 服务并禁用；枚举失败时拒绝启动。新增业务连接器必须先登记到宿主代理与能力目录，不能依赖原生 MCP 直连。
+
+审计检查重点：有内部经营事实需求但没有 `crossborderops.*` 调用就完成的任务；连续目录查询超过预算；证据审查拒绝的因果表述；`waiting_clarification` 超时、取消、重启后的恢复。审计记录只保存能力 ID、结果和脱敏错误，不保存工具原始结果或凭证。
+
 - Stream 断线：SDK 自动重连；消息按 `messageId` 去重。
 - Codex App Server 异常退出：当前 Turn 立即失败，不等待十分钟超时；下一任务自动启动新进程。
 - PostgreSQL 不可用：`/readyz` 返回 503，任务不得被宣称完成。
@@ -166,3 +225,14 @@ npm run test:codex-thread
 - 用户记忆只保存用户明确要求记录的普通偏好；凭证、Token、密码、Cookie、验证码和密钥会被拒绝。
 - 私聊和群聊原始 Thread 隔离；只有过滤后的用户偏好可跨场景共享。
 - 日志不得包含 `.env`、OAuth 返回体、DWS 配置目录内容或附件原文。
+
+## 10. 排查规划与工具调用
+
+用户无需查看内部编号。运维人员可根据发生时间和原问题在 `tasks` 表定位任务 ID，再查询审计事件。`workflow.planner_attempt`、`workflow.planner_draft`、`workflow.planner_review`、`workflow.planner_invalid` 分别记录规划尝试、脱敏后的结构化草案、审查结论和解析/审查异常。`tool.call_started` 与 `tool.call_finished` 记录实际工具名称、参数字段名与摘要指纹、状态、耗时和证据 ID，不记录参数原值。`task.failed` 记录最终错误。审计记录按 `TASK_RETENTION_DAYS` 保留（默认 90 天）。
+
+```sh
+docker compose exec -T postgres psql -U agent -d agent -c "SELECT id, created_at, status, input_text FROM tasks WHERE created_at >= '<开始时间>' AND created_at < '<结束时间>' AND input_text LIKE '%<问题关键词>%' ORDER BY created_at DESC;"
+docker compose exec -T postgres psql -U agent -d agent -c "SELECT created_at, event_type, payload FROM audit_events WHERE task_id='<任务编号>' ORDER BY id;"
+```
+
+独立任务规划器通过模型 Responses 接口取得的是可见 JSON 输出，不取得或保存模型隐藏推理文本；Codex 的执行回合在规划通过后才开始。排查时请依据草案、审查结论、工具调用及任务状态还原可观察的执行过程。审计表包含用户任务内容的衍生信息，仅限授权运维人员访问，不应转发到其他聊天场景。

@@ -1,0 +1,31 @@
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE} AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM ${NODE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g; s|http://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv libreoffice-writer libreoffice-calc libreoffice-impress \
+    poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
+    fonts-noto-cjk ca-certificates tini curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir \
+    python-docx openpyxl python-pptx pypdf pdfplumber pymupdf \
+    reportlab pillow pytesseract xlsxwriter
+RUN npm install --global @openai/codex@0.155.1 && npm cache clean --force
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+COPY file-skills /opt/file-skills
+RUN mkdir -p /work/tasks && chmod 0711 /work/tasks
+ENV PATH=/opt/venv/bin:$PATH FILE_WORKER_ROOT=/work/tasks FILE_SKILLS_DIR=/opt/file-skills
+EXPOSE 8081
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "dist/file-worker-server.js"]

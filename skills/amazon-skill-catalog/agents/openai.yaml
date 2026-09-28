@@ -1,0 +1,4 @@
+interface:
+  display_name: "Amazon Skill 目录"
+  short_description: "发现、筛选并评估适合亚马逊运营任务的社区 Skill"
+  default_prompt: "从社区目录中查找适合当前 Amazon 运营任务的 Skill。"

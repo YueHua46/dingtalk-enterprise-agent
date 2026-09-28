@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig } from './test-config.js';
 import type { CodexApprovalRequest, CodexClient } from '../src/codex-client.js';
 import type { DwsBroker } from '../src/dws-broker.js';
 import { MemoryTool } from '../src/memory-tool.js';
@@ -58,7 +58,8 @@ describe('user memory', () => {
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const sender: MessageSender = {
-      async send(_surface, markdown) { sent.push(markdown); }
+      async send(_surface, markdown) { sent.push(markdown); },
+      async beginApprovalCard() { return 'memory-approval-card'; }
     };
     const orchestrator = new TaskOrchestrator(
       loadConfig({ DINGTALK_ROBOT_CODE: 'robot', NODE_ENV: 'test' }),
@@ -71,7 +72,7 @@ describe('user memory', () => {
     const task = await orchestrator.accept(input('remember-1', '请记住以后用中文回复'));
     await vi.waitFor(() => expect(sent.some((message) => message.includes('等待确认'))).toBe(true));
     expect(await repo.listUserMemories(input('x', '').user)).toHaveLength(0);
-    await orchestrator.handleControl(input('remember-confirm', '确认 ' + task!.id));
+    await orchestrator.handleControl(input('remember-confirm', '确认 ' + task!.id + ' ' + (await repo.getApproval(task!.id))!.challenge.challengeId));
     await vi.waitFor(() => expect(sent.some((message) => message === '完成')).toBe(true));
     expect(await repo.listUserMemories(input('x', '').user)).toMatchObject([{ key: '回复语言', value: '中文' }]);
 

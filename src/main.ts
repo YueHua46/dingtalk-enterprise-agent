@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { Pool } from 'pg';
 import { loadConfig } from './config.js';
 import { CodexClient } from './codex-client.js';
+import { HybridCodexClient } from './hybrid-codex-client.js';
 import { DingTalkStreamAdapter } from './dingtalk-stream.js';
 import { DwsBroker } from './dws-broker.js';
 import { InMemoryRepository, PgRepository, type Repository } from './persistence.js';
@@ -10,7 +11,10 @@ import { TaskOrchestrator } from './task-orchestrator.js';
 import { RedisTaskQueue } from './task-queue.js';
 import { RetentionService } from './retention.js';
 import { DingTalkNativeCardBroker } from './dingtalk-card.js';
-import type { AgentRequest, ConversationSurface, TaskRecord } from './types.js';
+import { ZiniaoBroker } from './ziniao-broker.js';
+import { ZiniaoRemoteBroker } from './ziniao-remote-broker.js';
+import * as md from './markdown.js';
+import type { AgentRequest, ApprovalChallenge, ConversationSurface, TaskRecord, ToolAction } from './types.js';
 
 const config = loadConfig();
 await mkdir(config.CODEX_WORKDIR, { recursive: true });
@@ -25,7 +29,7 @@ if (config.NODE_ENV === 'production') {
   repository = new InMemoryRepository();
 }
 
-const codex = new CodexClient(config);
+const codex = config.FILE_WORKER_MODE === 'off' ? new CodexClient(config) : new HybridCodexClient(config);
 const dws = new DwsBroker(config);
 const nativeCards = new DingTalkNativeCardBroker(config);
 let stream: DingTalkStreamAdapter | undefined;
@@ -73,14 +77,27 @@ const sender = {
       console.log(JSON.stringify({ event: 'native_direct_send_failed', reason: error instanceof Error ? error.message : String(error) }));
     }
     await dws.sendBotMessage(user, markdown, directTitle);
+  },
+  async sendFile(user: AgentRequest['user'], surface: ConversationSurface, filePath: string): Promise<unknown> {
+    return dws.sendBotFile(user, surface, filePath);
+  },
+  async beginApprovalCard(task: TaskRecord, _action: ToolAction, challenge: ApprovalChallenge): Promise<string | undefined> {
+    return nativeCards.createApprovalCard(task.request.surface, md.approvalCardContent(challenge), challenge.challengeId!);
+  },
+  async updateApprovalCard(bizId: string, content: string, status: string, challengeId?: string): Promise<void> {
+    await nativeCards.updateApprovalCard(bizId, content, status, challengeId);
   }
 };
 const taskQueue = config.NODE_ENV === 'production' ? new RedisTaskQueue(config) : undefined;
-const orchestrator = new TaskOrchestrator(config, repository, codex, dws, sender, undefined, taskQueue);
+const ziniaoBroker = config.ZINIAO_REMOTE_HOST ? new ZiniaoRemoteBroker(config) : new ZiniaoBroker(config);
+const orchestrator = new TaskOrchestrator(config, repository, codex, dws, sender, undefined, taskQueue, ziniaoBroker);
 const retention = new RetentionService(config, repository);
 const streamAdapter = new DingTalkStreamAdapter(config, async (request: AgentRequest) => {
   if (await orchestrator.handleControl(request)) return;
   await orchestrator.accept(request);
+});
+streamAdapter.setCardActionHandler(async (event) => {
+  await orchestrator.handleApprovalCardClick(event);
 });
 stream = streamAdapter;
 
@@ -103,7 +120,7 @@ const app = await createServer(config, orchestrator, {
       dingtalk: 'ready'
     };
   }
-});
+}, () => ziniaoBroker.gateMetrics());
 await app.listen({ host: config.HOST, port: config.PORT });
 console.log('Agent gateway listening on ' + config.HOST + ':' + config.PORT);
 

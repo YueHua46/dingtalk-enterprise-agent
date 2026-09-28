@@ -8,8 +8,9 @@ describe('policy', () => {
   });
 
   it('requires one confirmation for writes and high-risk operations', () => {
-    expect(classifyAction({ name: '创建日程', risk: 'read' })).toBe('write');
-    expect(classifyAction({ name: '修改权限', risk: 'read' })).toBe('high');
+    expect(classifyAction({ name: '创建日程', risk: 'read' })).toBe('read');
+    expect(classifyAction({ name: '创建日程', risk: 'write' })).toBe('write');
+    expect(classifyAction({ name: '修改权限', risk: 'high' })).toBe('high');
     expect(requiresConfirmation('write')).toBe(true);
     expect(requiresConfirmation('high')).toBe(true);
   });

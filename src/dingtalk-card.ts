@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Config } from './config.js';
-import type { ConversationSurface, TaskRecord } from './types.js';
+import type { ConversationSurface } from './types.js';
 
 interface AccessToken {
   value: string;
@@ -38,7 +38,8 @@ export class DingTalkNativeCardBroker {
       body.imGroupOpenSpaceModel = { supportForward: true };
       body.imGroupOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE };
     } else {
-      body.imRobotOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE };
+      body.imRobotOpenSpaceModel = { supportForward: true };
+      body.imRobotOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE, spaceType: 'IM_ROBOT' };
     }
     await this.request('/v1.0/card/instances/createAndDeliver', { method: 'POST', body });
     return outTrackId;
@@ -110,6 +111,65 @@ export class DingTalkNativeCardBroker {
     });
   }
 
+  /** Interactive approval card (agree/reject buttons) delivered to the
+   *  originating conversation. Returns the outTrackId used to correlate the
+   *  card callback with the pending approval challenge.
+   *  Template variables: content（富文本正文）、status（状态徽标）、createTime（发起时间）。
+   */
+  public async createApprovalCard(surface: ConversationSurface, content: string, challengeId: string): Promise<string> {
+    if (!this.config.DINGTALK_APPROVAL_CARD_TEMPLATE_ID) {
+      throw new Error('APPROVAL_CARD_TEMPLATE_ID_NOT_CONFIGURED');
+    }
+    const outTrackId = randomUUID();
+    const body: Record<string, unknown> = {
+      cardTemplateId: this.config.DINGTALK_APPROVAL_CARD_TEMPLATE_ID,
+      outTrackId,
+      callbackType: 'STREAM',
+      userIdType: 1,
+      cardData: { cardParamMap: {
+        [this.config.DINGTALK_APPROVAL_CARD_CONTENT_VAR]: content,
+        [this.config.DINGTALK_APPROVAL_CARD_STATUS_VAR]: 'pending',
+        // The imported template is wrapped by DingTalk as an AI card. Its
+        // actual content lives in the INPUTTING/FINISH containers, not the
+        // PROCESSING placeholder. Without flowStatus the client shows a blank
+        // shell even though createAndDeliver succeeds.
+        flowStatus: '2',
+        challengeId,
+        createTime: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+      } },
+      openSpaceId: this.openSpaceId(surface)
+    };
+    if (surface.type === 'group') {
+      body.imGroupOpenSpaceModel = { supportForward: false };
+      body.imGroupOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE };
+    } else {
+      body.imRobotOpenSpaceModel = { supportForward: false };
+      body.imRobotOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE, spaceType: 'IM_ROBOT' };
+    }
+    await this.request('/v1.0/card/instances/createAndDeliver', { method: 'POST', body });
+    return outTrackId;
+  }
+
+  /** Flip the approval card into its terminal state (agree/reject).
+   *  Unknown template variables are ignored by DingTalk, so updating both the
+   *  content and status keys stays safe while variable names are being aligned.
+   */
+  public async updateApprovalCard(outTrackId: string, content: string, status: string, challengeId = ''): Promise<void> {
+    await this.request('/v1.0/card/instances', {
+      method: 'PUT',
+      body: {
+        outTrackId,
+        cardData: { cardParamMap: {
+          [this.config.DINGTALK_APPROVAL_CARD_CONTENT_VAR]: content,
+          [this.config.DINGTALK_APPROVAL_CARD_STATUS_VAR]: status,
+          flowStatus: status === 'done' || status === 'cancelled' ? '3' : '2',
+          challengeId
+        } },
+        cardUpdateOptions: { updateCardDataByKey: true }
+      }
+    });
+  }
+
   private openSpaceId(surface: ConversationSurface): string {
     return 'dtv1.card//' + (surface.type === 'group' ? 'IM_GROUP.' : 'IM_ROBOT.') + surface.id;
   }
@@ -134,8 +194,14 @@ export class DingTalkNativeCardBroker {
           ? payload.result.deliverResults.filter((item: any) => item?.success === false)
           : [];
         if (!response.ok || payload?.success === false || deliveryFailures.length > 0) {
-          const detail = typeof payload?.message === 'string' ? ': ' + payload.message.slice(0, 160) : '';
-          const error = new Error('DingTalk native card request failed: HTTP ' + response.status + detail);
+          const firstDeliveryFailure = deliveryFailures[0];
+          const rawCode = payload?.code ?? payload?.errorCode ?? payload?.errCode ?? firstDeliveryFailure?.code ?? firstDeliveryFailure?.errorCode ?? firstDeliveryFailure?.errCode;
+          const code = typeof rawCode === 'string' || typeof rawCode === 'number' ? String(rawCode).slice(0, 80) : '';
+          const rawMessage = payload?.message ?? firstDeliveryFailure?.message ?? firstDeliveryFailure?.errorMsg;
+          const message = typeof rawMessage === 'string' ? rawMessage.slice(0, 160) : '';
+          const rawRequestId = payload?.requestId ?? payload?.request_id ?? response.headers.get('x-acs-request-id');
+          const requestId = typeof rawRequestId === 'string' ? rawRequestId.slice(0, 80) : '';
+          const error = new Error(`DingTalk native card request failed: HTTP ${response.status}${code ? ` code=${code}` : ''}${message ? ` message=${message}` : ''}${requestId ? ` requestId=${requestId}` : ''}`);
           if (response.status < 500 && response.status !== 429) throw error;
           lastError = error;
         } else {

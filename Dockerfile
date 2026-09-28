@@ -9,9 +9,9 @@ RUN npm run build
 
 FROM ${NODE_IMAGE}
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bubblewrap ca-certificates tini curl unzip \
+  && apt-get install -y --no-install-recommends bubblewrap ca-certificates tini curl unzip openssh-client \
   && rm -rf /var/lib/apt/lists/*
-RUN npm install --global @openai/codex@0.155.1 dingtalk-workspace-cli@1.0.62 \
+RUN npm install --global @openai/codex@0.155.1 dingtalk-workspace-cli@1.0.62 @ziniao-open/cli@1.1.3 \
   && npm cache clean --force
 WORKDIR /app
 COPY package*.json ./
@@ -23,8 +23,8 @@ COPY skills ./skills
 COPY workspaces ./workspaces
 COPY AGENTS.md ./AGENTS.md
 RUN useradd --create-home --uid 10001 agent \
-  && mkdir -p /var/lib/codex /var/lib/dws /var/lib/agent/media /app/workspaces \
-  && chown -R agent:agent /app/workspaces /var/lib/codex /var/lib/dws /var/lib/agent
+  && mkdir -p /var/lib/codex /var/lib/dws /var/lib/agent/media /app/workspaces /home/agent/.ziniao-cli \
+  && chown -R agent:agent /app/workspaces /var/lib/codex /var/lib/dws /var/lib/agent /home/agent/.ziniao-cli
 USER agent
 ENV NODE_ENV=production
 ENTRYPOINT ["/usr/bin/tini", "--"]

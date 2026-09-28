@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig } from './test-config.js';
 import { createServer } from '../src/server.js';
 import type { TaskOrchestrator } from '../src/task-orchestrator.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('HTTP server', () => {
+  it('keeps the directory endpoint behind the internal token', async () => {
+    const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', INTERNAL_API_TOKEN: 'x'.repeat(32) }), {} as TaskOrchestrator);
+    const denied = await app.inject({ method: 'GET', url: '/internal/directory/candidates' });
+    expect(denied.statusCode).toBe(401);
+    const unconfigured = await app.inject({ method: 'GET', url: '/internal/directory/candidates', headers: { 'x-internal-token': 'x'.repeat(32) } });
+    expect(unconfigured.statusCode).toBe(503);
+    await app.close();
+  });
   it('forwards namespace calls through a general protocol bridge without inspecting the prompt', async () => {
     const fetchMock = vi.fn(async (_url: string, options: RequestInit) => {
       const body = JSON.parse(String(options.body));

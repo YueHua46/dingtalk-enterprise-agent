@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import helmet from '@fastify/helmet';
-import { Registry, collectDefaultMetrics } from 'prom-client';
+import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import { timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { Config } from './config.js';
@@ -8,16 +8,40 @@ import type { AgentRequest } from './types.js';
 import { requestId } from './security.js';
 import { TaskOrchestrator } from './task-orchestrator.js';
 import { adaptModelRequest, restoreModelResponse, restoreSseChunk } from './model-tool-proxy.js';
+import type { ZiniaoGateMetrics } from './ziniao-gate.js';
+import { DingTalkDirectory, type DirectoryCandidate } from './dingtalk-directory.js';
+import { verifyModelTaskToken } from './file-worker-auth.js';
 
 export interface ReadinessProbe {
   check(): Promise<Record<string, string>>;
 }
 
-export async function createServer(config: Config, orchestrator: TaskOrchestrator, readiness?: ReadinessProbe): Promise<FastifyInstance> {
+export async function createServer(
+  config: Config,
+  orchestrator: TaskOrchestrator,
+  readiness?: ReadinessProbe,
+  ziniaoMetrics?: () => ZiniaoGateMetrics
+): Promise<FastifyInstance> {
   const app = Fastify({ logger: { level: config.LOG_LEVEL } });
   await app.register(helmet);
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
+
+  if (ziniaoMetrics) {
+    const gauges: Array<{ name: string; help: string; read: (metrics: ZiniaoGateMetrics) => number }> = [
+      { name: 'ziniao_gate_queue_depth', help: 'Ziniao executor gate main queue depth', read: (m) => m.queueDepth },
+      { name: 'ziniao_gate_busy', help: '1 when the ziniao executor is occupied', read: (m) => m.busy ? 1 : 0 },
+      { name: 'ziniao_gate_holder_held_ms', help: 'Current executor hold duration in ms', read: (m) => m.holderHeldMs },
+      { name: 'ziniao_gate_busy_total', help: 'Requests rejected because the gate queue was full', read: (m) => m.busyTotal },
+      { name: 'ziniao_gate_queue_timeout_total', help: 'Requests that hit the gate wait timeout', read: (m) => m.queueTimeoutTotal },
+      { name: 'ziniao_gate_cancelled_total', help: 'Gate waiters cancelled by their task', read: (m) => m.cancelledTotal },
+      { name: 'ziniao_gate_lease_lost_total', help: 'Leases force-released by hard caps', read: (m) => m.leaseLostTotal },
+      { name: 'ziniao_gate_session_expired_total', help: 'Bridge sessions expired by idle TTL', read: (m) => m.sessionExpiredTotal }
+    ];
+    for (const gauge of gauges) {
+      new Gauge({ name: gauge.name, help: gauge.help, registers: [registry], collect() { this.set(gauge.read(ziniaoMetrics())); } });
+    }
+  }
 
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/readyz', async (request, reply) => {
@@ -34,15 +58,39 @@ export async function createServer(config: Config, orchestrator: TaskOrchestrato
     return registry.metrics();
   });
 
+  // Server-to-server only. The web UI must obtain candidates through its own
+  // authenticated backend, never by calling this endpoint or DingTalk directly.
+  const directory = new DingTalkDirectory(config);
+  let directoryCache: { expiresAt: number; candidates: DirectoryCandidate[] } | undefined;
+  app.get('/internal/directory/candidates', async (request, reply) => {
+    if (!config.INTERNAL_API_TOKEN || !safeTokenEqual(request.headers['x-internal-token'], config.INTERNAL_API_TOKEN)) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    if (!config.DINGTALK_DIRECTORY_FACTORY_DEPT_ID) return reply.code(503).send({ error: 'directory_not_configured' });
+    try {
+      if (!directoryCache || directoryCache.expiresAt <= Date.now()) {
+        directoryCache = { candidates: await directory.candidates(), expiresAt: Date.now() + 10 * 60 * 1000 };
+      }
+      reply.header('cache-control', 'no-store');
+      return { candidates: directoryCache.candidates, fetchedAt: new Date(directoryCache.expiresAt - 10 * 60 * 1000).toISOString() };
+    } catch (error) {
+      request.log.warn({ code: error instanceof Error ? error.message : 'UNKNOWN' }, 'DingTalk directory unavailable');
+      return reply.code(503).send({ error: 'directory_unavailable' });
+    }
+  });
+
   if (config.MODEL_TOOL_COMPAT_PROXY === 'true' && config.MODEL_BASE_URL) {
     app.post<{ Body: Record<string, unknown> }>('/internal/model/v1/responses', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
-      if (!isLoopback(request.ip)) return reply.code(403).send({ error: 'local_only' });
+      const workerTaskId = config.FILE_WORKER_SECRET && typeof request.headers.authorization === 'string'
+        ? verifyModelTaskToken(config.FILE_WORKER_SECRET, request.headers.authorization) : undefined;
+      if (!isLoopback(request.ip) && !workerTaskId) return reply.code(403).send({ error: 'local_only' });
       let adapted;
       try { adapted = adaptModelRequest(request.body); }
       catch { return reply.code(400).send({ error: 'invalid_model_request' }); }
       const upstream = config.MODEL_BASE_URL!.replace(/\/+$/, '') + '/responses';
       const headers: Record<string, string> = { 'content-type': 'application/json' };
-      if (typeof request.headers.authorization === 'string') headers.authorization = request.headers.authorization;
+      if (workerTaskId && config.MODEL_API_KEY) headers.authorization = `Bearer ${config.MODEL_API_KEY}`;
+      else if (typeof request.headers.authorization === 'string') headers.authorization = request.headers.authorization;
       let response: Response;
       try {
         response = await fetch(upstream, {

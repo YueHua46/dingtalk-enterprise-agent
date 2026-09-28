@@ -7,11 +7,15 @@
 - 钉钉私聊与群聊消息接入；群聊未 @ 机器人时忽略。
 - 文本、图片、语音、视频、普通文件、富文本和引用消息解析。
 - 钉钉会话按 `corpId + userId + 场景` 映射到独立 Codex Thread。
-- Codex App Server 使用 stdio JSON-RPC，支持动态 DWS 与用户记忆工具。
-- 当前 Docker 环境无法建立 Codex 的 Linux shell 沙盒，因此关闭原生 shell，改由 `reference.read_guide` 结构化只读工具读取已注册 Skill；工具不访问员工资料或凭证，也不触发钉钉确认。Codex 子进程不继承钉钉、数据库或 DWS 配置环境变量。
+- 默认 Codex App Server 使用 stdio JSON-RPC；可切换到独立文件容器，通过内部 WebSocket 运行每任务 App Server，支持 PDF、Word、Excel、PPT 的按需文件工作流。详见 [文件工作流部署与验证](docs/file-worker.md)。
+- Amazon 运营 Skills 包含 Nexscope 53 个子 Skill、Zach 7 个完整 Skill，以及 Awesome Amazon 社区目录入口。
+- 容器安装紫鸟 CLI 并发布 13 个紫鸟 Skill；实际调用 `ziniao.cli` 时按钉钉用户检查独立授权，首次授权入口通过本人私聊发送，凭证保存在用户专属持久化目录。
+- 紫鸟 CLI 全局串行执行：网关进程内闸门按先来先服务排队并持有会话租约，执行机 worker 另用独占机器锁兜底，任一时刻执行机最多一个紫鸟 CLI 进程；用户可随时用 `ziniao.cli` 的 `utility.queue-status` 查看自己的排队位次。
+- 默认 gateway 路径关闭原生 shell，并通过 `reference.read_guide` 读取业务 Skill。启用文件容器后，仅文件容器内的任务进程开放 shell；它没有钉钉、数据库、DWS、紫鸟或上游模型长期凭证，企业业务调用继续通过 gateway 动态工具执行。
 - 507 项 DWS 能力白名单；模型不能提交任意 CLI 路径、Profile、Token 或应用密钥。
 - 每位员工使用自己的 `corpId:userId` DWS Profile，服务端权限仍由钉钉校验。
 - 查询可直接执行；创建、修改、发送、审批、删除、权限和批量操作必须由发起人确认。
+- 领星和 SIF 使用共享服务密钥；查询、统计、分析与导出直接执行。领星官方目录标记为 `write` 或类型未知的动作必须由发起人确认，并进入既有幂等与审计流程。SIF 仅启用已核验的 34 个只读分析工具，新增远端工具不会自动暴露。
 - PostgreSQL 持久化任务、会话、审批、工具幂等状态、用户记忆和审计。
 - Redis/BullMQ 支持最多 30 个用户并行，同一用户严格串行；失败耗尽重试后不会阻塞后续任务。
 - 写操作具备幂等保护；状态未知时禁止自动重试。
@@ -59,6 +63,8 @@ Copy-Item .env.example .env
 | `DWS_BOT_PROFILE` | 可选。已授权的机器人发送 Profile，仅 DWS 卡片降级与群消息回退路径需要；员工授权引导私聊走钉钉原生机器人接口，不依赖它 |
 | `MODEL_BASE_URL` / `MODEL_API_KEY` | 兼容 Responses API 的模型中转地址与密钥 |
 | `MODEL_NAME` | 中转支持的模型名 |
+| `LINGXING_MCP_KEY` | 领星官方 MCP 的共享服务密钥；仅放在未入库的 `.env`，通过请求头注入 |
+| `SIF_MCP_KEY` | SIF MCP 的共享服务密钥；仅放在未入库的 `.env`，通过请求头注入 |
 | `INTERNAL_API_TOKEN` | `/internal/messages` 的 32 字节以上随机 Token |
 
 可用 PowerShell 生成内部 Token：

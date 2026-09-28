@@ -17,11 +17,11 @@ export class MediaPipeline {
 
   public constructor(private readonly config: Config) {}
 
-  public async prepare(requestId: string, attachments: Attachment[]): Promise<Attachment[]> {
+  public async prepare(requestId: string, attachments: Attachment[], extractText = true): Promise<Attachment[]> {
     const results: Attachment[] = [];
     for (const attachment of attachments) {
       try {
-        results.push(await this.prepareOne(requestId, attachment));
+        results.push(await this.prepareOne(requestId, attachment, extractText));
       } catch (error) {
         results.push({
           ...attachment,
@@ -32,8 +32,8 @@ export class MediaPipeline {
     return results;
   }
 
-  private async prepareOne(requestId: string, attachment: Attachment): Promise<Attachment> {
-    if (attachment.localPath) return this.extract(attachment);
+  private async prepareOne(requestId: string, attachment: Attachment, extractText: boolean): Promise<Attachment> {
+    if (attachment.localPath) return extractText ? this.extract(attachment) : attachment;
     if (!attachment.downloadCode) return attachment;
     const downloadUrl = await this.getDownloadUrl(attachment.downloadCode);
     const response = await fetch(downloadUrl, { redirect: 'follow', signal: AbortSignal.timeout(60_000) });
@@ -52,13 +52,14 @@ export class MediaPipeline {
     const fileName = basename(original, extname(original)) + '-' + randomUUID() + extension;
     const localPath = join(directory, fileName);
     await writeFile(localPath, buffer, { mode: 0o600 });
-    return this.extract({
+    const saved = {
       ...attachment,
       ...(contentType ? { contentType } : {}),
       size: buffer.length,
       localPath,
       sha256: createHash('sha256').update(buffer).digest('hex')
-    });
+    };
+    return extractText ? this.extract(saved) : saved;
   }
 
   private async extract(attachment: Attachment): Promise<Attachment> {
@@ -114,7 +115,7 @@ export class MediaPipeline {
     return body.accessToken;
   }
 
-  private async scan(buffer: Buffer): Promise<void> {
+  public async scan(buffer: Buffer): Promise<void> {
     if (!this.config.CLAMAV_HOST) return;
     const result = await scanClamAv(this.config.CLAMAV_HOST, this.config.CLAMAV_PORT, buffer);
     if (!result.endsWith('OK')) throw new Error('附件安全扫描未通过');

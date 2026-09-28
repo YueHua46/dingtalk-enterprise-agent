@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, stat, utimes, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig } from './test-config.js';
 import { InMemoryRepository } from '../src/persistence.js';
 import { RetentionService } from '../src/retention.js';
 import type { AgentRequest } from '../src/types.js';

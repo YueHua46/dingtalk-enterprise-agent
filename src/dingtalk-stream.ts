@@ -1,11 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import { DWClient, EventAck, TOPIC_ROBOT, type DWClientDownStream } from 'dingtalk-stream';
+import { DWClient, EventAck, TOPIC_CARD, TOPIC_ROBOT, type DWClientDownStream } from 'dingtalk-stream';
 import type { Config } from './config.js';
 import { requestId } from './security.js';
 import type { AgentRequest, ConversationSurface } from './types.js';
 
 export interface IncomingHandler {
   (request: AgentRequest): Promise<void>;
+}
+
+export type CardApprovalAction = 'agree' | 'reject';
+
+export interface CardCallbackEvent {
+  userId: string;
+  outTrackId: string;
+  action: CardApprovalAction;
+  challengeId?: string;
+}
+
+export interface CardActionHandler {
+  (event: CardCallbackEvent): Promise<void>;
 }
 
 export interface DingTalkStreamClient {
@@ -23,12 +36,17 @@ export type DingTalkStreamClientFactory = (
 export class DingTalkStreamAdapter {
   private client?: DingTalkStreamClient;
   private latestWebhook = new Map<string, string>();
+  private cardActionHandler?: CardActionHandler;
 
   public constructor(
     private readonly config: Config,
     private readonly onMessage: IncomingHandler,
     private readonly clientFactory: DingTalkStreamClientFactory = (options) => new DWClient(options)
   ) {}
+
+  public setCardActionHandler(handler: CardActionHandler): void {
+    this.cardActionHandler = handler;
+  }
 
   public async start(): Promise<void> {
     if (!this.config.DINGTALK_CLIENT_ID || !this.config.DINGTALK_CLIENT_SECRET) {
@@ -41,7 +59,10 @@ export class DingTalkStreamAdapter {
       clientSecret: this.config.DINGTALK_CLIENT_SECRET,
       autoReconnect: true,
       maxPendingCallbackHandlers: this.config.MAX_CONCURRENT_USERS,
-      subscriptions: [{ type: 'CALLBACK', topic: TOPIC_ROBOT }]
+      subscriptions: [
+        { type: 'CALLBACK', topic: TOPIC_ROBOT },
+        { type: 'CALLBACK', topic: TOPIC_CARD }
+      ]
     });
     const client = this.client;
     client.registerCallbackListener(TOPIC_ROBOT, async (downstream: DWClientDownStream) => {
@@ -78,6 +99,21 @@ export class DingTalkStreamAdapter {
       void this.onMessage(request).catch((error) => {
         console.error('DingTalk message intake failed:', error instanceof Error ? error.message : String(error));
       });
+    });
+    client.registerCallbackListener(TOPIC_CARD, async (downstream: DWClientDownStream) => {
+      client.socketCallBackResponse(downstream.headers.messageId, { status: EventAck.SUCCESS });
+      const event = parseCardCallback(downstream);
+      if (!event) {
+        console.warn(JSON.stringify({ event: 'approval.card_callback_unparsed', ...cardCallbackDiagnostic(downstream) }));
+        return;
+      }
+      console.info(JSON.stringify({ event: 'approval.card_callback_received', outTrackId: event.outTrackId, action: event.action }));
+      if (!this.cardActionHandler) return;
+      try {
+        await this.cardActionHandler(event);
+      } catch (error) {
+        console.error('Card action handling failed:', error instanceof Error ? error.message : String(error));
+      }
     });
     await client.connect();
   }
@@ -184,6 +220,88 @@ export function parseRobotMessage(downstream: DWClientDownStream): {
 
 function firstString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim();
+}
+
+/** Parse the interactive-card callback (TOPIC_CARD) into an approval decision.
+ *  DingTalk wraps the button payload in slightly different shapes across card
+ *  versions (cardCallbackData vs top-level; value as JSON string or object),
+ *  so extraction is defensive by design.
+ */
+export function parseCardCallback(downstream: DWClientDownStream): CardCallbackEvent | undefined {
+  let payload: any;
+  try {
+    payload = JSON.parse(downstream.data);
+  } catch {
+    return undefined;
+  }
+  const data = parseCardObject(payload?.cardCallbackData) ?? payload;
+  const content = parseCardObject(data?.content) ?? {};
+  const privateData = parseCardObject(content?.cardPrivateData) ?? parseCardObject(data?.cardPrivateData) ?? {};
+  const params = parseCardObject(privateData?.params) ?? {};
+  const userId = firstString(data?.userId, data?.user_id, content?.userId, content?.user_id);
+  const outTrackId = firstString(data?.outTrackId, data?.out_track_id, data?.instanceId, data?.instance_id, content?.outTrackId, content?.instanceId);
+  if (!userId || !outTrackId) return undefined;
+  let value = data?.value ?? privateData?.value ?? data?.privateData?.value;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { /* plain string action id */ }
+  }
+  const action = extractApprovalAction(value)
+    ?? extractApprovalAction(params)
+    ?? extractApprovalAction(privateData?.actionIds)
+    ?? extractApprovalAction(data)
+    ?? extractApprovalAction(content);
+  if (!action) return undefined;
+  const valueObject = parseCardObject(value);
+  const challengeId = firstString(params.challengeId, valueObject?.challengeId, data?.challengeId, content?.challengeId);
+  return { userId, outTrackId, action, ...(challengeId ? { challengeId } : {}) };
+}
+
+function parseCardObject(value: unknown): Record<string, any> | undefined {
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return undefined; }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : undefined;
+}
+
+function extractApprovalAction(value: unknown): CardApprovalAction | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const action = extractApprovalAction(item);
+      if (action) return action;
+    }
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['agree', 'approve', '确认执行', '同意执行'].includes(normalized)) return 'agree';
+    if (['reject', 'cancel', '取消执行', '拒绝执行'].includes(normalized)) return 'reject';
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const candidates = [record.action, record.actionId, record.action_id, record.id, record.type, record.eventType, record.actionIds];
+  for (const candidate of candidates) {
+    const action = extractApprovalAction(candidate);
+    if (action) return action;
+  }
+  return undefined;
+}
+
+function cardCallbackDiagnostic(downstream: DWClientDownStream): Record<string, unknown> {
+  let payload: any;
+  try { payload = JSON.parse(downstream.data); } catch { return { parseError: 'invalid_json' }; }
+  const data = parseCardObject(payload?.cardCallbackData) ?? payload;
+  const content = parseCardObject(data?.content) ?? {};
+  const privateData = parseCardObject(content?.cardPrivateData) ?? parseCardObject(data?.cardPrivateData) ?? {};
+  const params = parseCardObject(privateData?.params) ?? {};
+  return {
+    outTrackId: firstString(data?.outTrackId, data?.instanceId, content?.outTrackId),
+    hasUserId: Boolean(firstString(data?.userId, data?.user_id, content?.userId)),
+    dataKeys: Object.keys(data ?? {}).slice(0, 12),
+    contentKeys: Object.keys(content).slice(0, 12),
+    paramKeys: Object.keys(params).slice(0, 12),
+    actionIds: Array.isArray(privateData?.actionIds) ? privateData.actionIds.filter((item: unknown) => typeof item === 'string').slice(0, 3) : []
+  };
 }
 
 function asArray(value: unknown): any[] {

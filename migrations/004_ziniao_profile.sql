@@ -1,0 +1,2 @@
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ziniao_profile_key TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ziniao_authenticated_at TIMESTAMPTZ;

@@ -1,5 +1,11 @@
 node_modules/
 dist/
+!dist/
+dist/*
+!dist/guide-tool.js
+!dist/config.js
+!dist/server.js
+!dist/dingtalk-directory.js
 coverage/
 .git/
 .env

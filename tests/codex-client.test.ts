@@ -1,7 +1,26 @@
-import { describe, expect, it } from 'vitest';
-import { buildCodexArgs, codexEnvironment, finalTurnText } from '../src/codex-client.js';
+import { describe, expect, it, vi } from 'vitest';
+import { buildCodexArgs, CodexClient, codexEnvironment, finalTurnText, normalizeDynamicToolResult } from '../src/codex-client.js';
+
+describe('dynamic tool response boundary', () => {
+  it('converts missing text into an explicit failed tool result', () => {
+    expect(normalizeDynamicToolResult({ contentItems: [{ type: 'inputText' }], success: true })).toEqual({
+      contentItems: [{ type: 'inputText', text: expect.stringContaining('TOOL_RESULT_INVALID') }], success: false
+    });
+  });
+});
 
 describe('CodexClient startup configuration', () => {
+  it('does not expose unscoped Lingxing business actions to the model', async () => {
+    const client = new CodexClient({ CODEX_WORKDIR: '/app', MODEL_NAME: 'test' } as any);
+    vi.spyOn(client, 'start').mockResolvedValue();
+    const request = vi.fn(async (_method: string, _params: any) => ({ thread: { id: 'thread-1' } }));
+    (client as any).request = request;
+    await client.startThread({ corpId: 'corp', userId: 'user' });
+    const dynamicTools = request.mock.calls[0]?.[1]?.dynamicTools as Array<{ name: string }>;
+    expect(dynamicTools.map((tool) => tool.name)).toContain('lingxing');
+    expect((dynamicTools.find((tool) => tool.name === 'lingxing') as any).tools.map((tool: any) => tool.name)).toEqual(['catalog']);
+    expect(dynamicTools.map((tool) => tool.name)).toContain('crossborderops');
+  });
   it('does not mistake commentary for the final answer', () => {
     expect(finalTurnText({
       messages: new Map([['step', '我先查一下'], ['answer', '这是结果']]),
@@ -16,6 +35,22 @@ describe('CodexClient startup configuration', () => {
     const args = buildCodexArgs({});
     expect(args).toEqual(['app-server', '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"']);
     expect(args.join(' ')).not.toContain('model_provider=');
+  });
+
+  it('keeps commerce MCP calls inside the host broker', () => {
+    const args = buildCodexArgs({ LINGXING_MCP_KEY: 'lingxing-secret', SIF_MCP_KEY: 'sif-secret' }, ['lingxing', 'sif']);
+    expect(args).toContain('mcp_servers.lingxing.enabled=false');
+    expect(args).toContain('mcp_servers.sif.enabled=false');
+    expect(args.join(' ')).not.toContain('lingxing-secret');
+    expect(args.join(' ')).not.toContain('sif-secret');
+  });
+
+  it('disables every inherited MCP server discovered at startup', () => {
+    const args = buildCodexArgs({}, ['n8n', 'cua_repl', 'lingxing', 'lingxing']);
+    expect(args).toContain('mcp_servers.n8n.enabled=false');
+    expect(args).toContain('mcp_servers.cua_repl.enabled=false');
+    expect(args.filter((arg) => arg === 'mcp_servers.lingxing.enabled=false')).toHaveLength(1);
+    expect(() => buildCodexArgs({}, ['server.with.dot'])).toThrow('CODEX_MCP_SERVER_NAME_INVALID');
   });
 
   it('uses an HTTP Responses custom provider for the configured intermediary', () => {
@@ -50,5 +85,17 @@ describe('CodexClient startup configuration', () => {
     });
     expect(env).toEqual({ PATH: '/usr/bin', CODEX_HOME: '/var/lib/codex', OPENAI_API_KEY: 'model-key', CODEX_MODEL: 'example-model' });
     expect(JSON.stringify(env)).not.toContain('business-secret');
+  });
+
+  it('does not pass commerce MCP credentials to the Codex child', () => {
+    const env = codexEnvironment({
+      MODEL_NAME: 'example-model',
+      LINGXING_MCP_KEY: 'lingxing-secret',
+      SIF_MCP_KEY: 'sif-secret'
+    }, { PATH: '/usr/bin', DATABASE_URL: 'postgres://secret' });
+    expect(env).toMatchObject({ PATH: '/usr/bin', CODEX_MODEL: 'example-model' });
+    expect(env.LINGXING_MCP_KEY).toBeUndefined();
+    expect(env.SIF_MCP_KEY).toBeUndefined();
+    expect(env.DATABASE_URL).toBeUndefined();
   });
 });

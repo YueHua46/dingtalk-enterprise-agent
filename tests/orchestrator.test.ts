@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig } from './test-config.js';
 import type { CodexClient, CodexApprovalRequest } from '../src/codex-client.js';
 import type { DwsBroker } from '../src/dws-broker.js';
+import type { ZiniaoBroker } from '../src/ziniao-broker.js';
 import { InMemoryRepository } from '../src/persistence.js';
-import { TaskOrchestrator, type MessageSender } from '../src/task-orchestrator.js';
+import { isWhitelistedReadOnlyMcpElicitation, TaskOrchestrator, type MessageSender } from '../src/task-orchestrator.js';
 import { actionHash } from '../src/security.js';
 import type { AgentRequest, ConversationSurface, ToolAction, UserIdentity } from '../src/types.js';
 
@@ -18,6 +19,38 @@ const writeAction: ToolAction = {
   target: '--title 测试待办',
   parameters: writeArguments
 };
+
+describe('native MCP elicitation policy', () => {
+  it('does not approve native MCP calls outside the host broker', () => {
+    expect(isWhitelistedReadOnlyMcpElicitation({
+      method: 'mcpServer/elicitation/request',
+      params: {
+        serverName: 'sif',
+        mode: 'form',
+        message: 'Allow the sif MCP server to run tool "ping"?',
+        requestedSchema: { type: 'object', properties: {} }
+      }
+    })).toBe(false);
+  });
+
+  it('rejects unknown tools, input forms, and non-form elicitations', () => {
+    const base = {
+      method: 'mcpServer/elicitation/request',
+      params: {
+        serverName: 'lingxing',
+        mode: 'form',
+        message: 'Allow the lingxing MCP server to run tool "action"?',
+        requestedSchema: { type: 'object', properties: {} }
+      }
+    } satisfies CodexApprovalRequest;
+    expect(isWhitelistedReadOnlyMcpElicitation(base)).toBe(false);
+    expect(isWhitelistedReadOnlyMcpElicitation({
+      ...base,
+      params: { ...base.params, message: 'Allow the lingxing MCP server to run tool "help"?', requestedSchema: { type: 'object', properties: { value: { type: 'string' } } } }
+    })).toBe(false);
+    expect(isWhitelistedReadOnlyMcpElicitation({ ...base, params: { ...base.params, mode: 'url' } })).toBe(false);
+  });
+});
 
 function writeToolRequest(): CodexApprovalRequest {
   return {
@@ -47,6 +80,272 @@ async function waitUntil(check: () => boolean): Promise<void> {
 }
 
 describe('TaskOrchestrator integration', () => {
+  it('authorizes the invoking seller by private message and resumes a read', async () => {
+    const repo = new InMemoryRepository();
+    const direct: string[] = [];
+    const broker = {
+      status: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ profileKey: 'dingtalk-user-1' }),
+      beginAuthorization: vi.fn(async () => ({ prompt: '授权地址：https://open.ziniao.com/memberAuth?cliRequestId=test', completion: Promise.resolve() })),
+      runCommand: vi.fn(async () => ({ shops: [] }))
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'ziniao', tool: 'cli', arguments: { capability: 'account.list' }
+        } });
+        expect(response.success).toBe(true);
+        return { text: '已查询店铺', threadId: 'thread-ziniao' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send() {},
+      async sendDirect(user, markdown) { expect(user.userId).toBe('user-1'); direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-first', '查我的紫鸟店铺'));
+    await waitUntil(() => direct.length === 1);
+    expect(broker.beginAuthorization).toHaveBeenCalledWith(expect.objectContaining({ corpId: 'corp-1', userId: 'user-1' }), expect.anything());
+    expect(broker.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), ['account', 'list'], expect.anything());
+    expect(direct[0]).toContain('memberAuth');
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    const toolEvents = repo.audits.filter((item: any) => item.eventType === 'tool.call_started' || item.eventType === 'tool.call_finished') as any[];
+    expect(toolEvents.map((item) => item.eventType)).toEqual(['tool.call_started', 'tool.call_finished']);
+    expect(toolEvents[0].payload).toMatchObject({ namespace: 'ziniao', tool: 'cli', argumentKeys: ['capability'] });
+    expect(toolEvents[1].payload).toMatchObject({ status: 'success', evidenceId: expect.any(String) });
+    expect(JSON.stringify(toolEvents)).not.toContain('account.list');
+  });
+
+  it('uses a saved Ziniao authorization without starting another authorization', async () => {
+    const repo = new InMemoryRepository();
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      beginAuthorization: vi.fn(),
+      runCommand: vi.fn(async () => ({ shops: [] }))
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-saved'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'account.list' } } });
+        expect(response.success).toBe(true);
+        return { text: '已查询店铺', threadId: 'thread-ziniao-saved' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, { async send() {} }, undefined, undefined, broker);
+    await orchestrator.accept(request('ziniao-saved', '查我的紫鸟店铺'));
+    await waitUntil(() => (broker.runCommand as ReturnType<typeof vi.fn>).mock.calls.length === 1);
+    expect(broker.beginAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse one DingTalk user\'s Ziniao authorization for another user', async () => {
+    const repo = new InMemoryRepository();
+    const direct: Array<{ userId: string; markdown: string }> = [];
+    const authorized = new Set(['user-1']);
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => authorized.has(user.userId) ? { profileKey: 'dingtalk-' + user.userId } : null),
+      beginAuthorization: vi.fn(async (user: UserIdentity) => {
+        authorized.add(user.userId);
+        return { prompt: '授权地址：https://open.ziniao.com/memberAuth?cliRequestId=' + user.userId, completion: Promise.resolve() };
+      }),
+      runCommand: vi.fn(async (user: UserIdentity) => ({ owner: user.userId }))
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async (user: UserIdentity) => 'thread-' + user.userId),
+      turn: vi.fn(async (threadId: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'ziniao', tool: 'cli', arguments: { capability: 'store.list' }
+        } });
+        expect(response.success).toBe(true);
+        return { text: '完成', threadId };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send() {},
+      async sendDirect(user, markdown) { direct.push({ userId: user.userId, markdown }); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const first = await orchestrator.accept(request('ziniao-user-a', '查店铺'));
+    await vi.waitFor(async () => expect((await repo.findTask(first!.id))?.status).toBe('completed'));
+    expect(broker.beginAuthorization).not.toHaveBeenCalled();
+
+    const secondRequest = { ...request('ziniao-user-b', '查店铺'), user: { corpId: 'corp-1', userId: 'user-2' }, surface: { type: 'direct' as const, id: 'user-2' } };
+    const second = await orchestrator.accept(secondRequest);
+    await vi.waitFor(async () => expect((await repo.findTask(second!.id))?.status).toBe('completed'));
+    expect(broker.beginAuthorization).toHaveBeenCalledTimes(1);
+    expect(broker.beginAuthorization).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-2' }), expect.anything());
+    expect(direct).toEqual([expect.objectContaining({ userId: 'user-2', markdown: expect.stringContaining('memberAuth') })]);
+    expect(broker.runCommand).toHaveBeenNthCalledWith(1, expect.objectContaining({ userId: 'user-1' }), ['store', 'list'], expect.anything());
+    expect(broker.runCommand).toHaveBeenNthCalledWith(2, expect.objectContaining({ userId: 'user-2' }), ['store', 'list'], expect.anything());
+  });
+
+  it('waits for the originating user before a Ziniao write', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      beginAuthorization: vi.fn(),
+      runCommand: vi.fn(async () => ({ updated: true }))
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-write'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'ziniao', tool: 'cli', arguments: { capability: 'account.update', args: ['--name', 'shop'] }
+        } });
+        expect(response.success).toBe(true);
+        return { text: '已更新', threadId: 'thread-ziniao-write' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); }, async beginApprovalCard() { return 'ziniao-write-card'; } };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-write', '修改紫鸟店铺'));
+    await waitUntil(() => sent.some((item) => item.includes('等待确认')));
+    expect(broker.runCommand).not.toHaveBeenCalled();
+    expect(await orchestrator.handleControl({ ...request('ziniao-wrong-user', '确认 ' + task!.id), user: { corpId: 'corp-1', userId: 'other' } })).toBe(false);
+    expect(broker.runCommand).not.toHaveBeenCalled();
+    expect(await orchestrator.handleControl(request('ziniao-confirm', '确认 ' + task!.id + ' ' + (await repo.getApproval(task!.id))!.challenge.challengeId))).toBe(true);
+    await waitUntil(() => (broker.runCommand as ReturnType<typeof vi.fn>).mock.calls.length === 1);
+    expect(broker.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), ['account', 'update', '--name', 'shop'], expect.anything());
+  });
+
+  it('releases the ziniao executor session and reports queue waits', async () => {
+    const repo = new InMemoryRepository();
+    const activities: string[] = [];
+    const endSession = vi.fn(async () => undefined);
+    let releaseQueue: (() => void) | undefined;
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      beginAuthorization: vi.fn(),
+      runCommand: vi.fn((_user: UserIdentity, _args: string[], opts: { onWait?: (info: { position: number; depth: number; waitedMs: number }) => void; onAcquired?: (info: { depth: number; waitedMs: number }) => void }) => {
+        opts.onWait?.({ position: 1, depth: 1, waitedMs: 0 });
+        return new Promise((resolve) => { releaseQueue = () => { opts.onAcquired?.({ depth: 1, waitedMs: 60_000 }); resolve({ shops: [] }); }; });
+      }),
+      endSession
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-queue'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'ziniao', tool: 'cli', arguments: { capability: 'store.list' }
+        } });
+        expect(response.success).toBe(true);
+        return { text: '店铺列表', threadId: 'thread-ziniao-queue' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send() {},
+      async beginTaskCard() { return 'queue-card'; },
+      async updateTaskCard() {},
+      async updateTaskActivity(_bizId, activity) { activities.push(activity); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-queue', '查店铺'));
+    await waitUntil(() => activities.some((item) => item.includes('已排队')));
+    expect(activities.some((item) => item.includes('第 1 位'))).toBe(true);
+    releaseQueue?.();
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(activities.some((item) => item.includes('已轮到你的任务'))).toBe(true);
+    await vi.waitFor(() => expect(endSession).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' })));
+    expect((await repo.findTask(task!.id))?.errorCode).toBeUndefined();
+  });
+
+  it('maps a busy executor to actionable guidance without exposing others', async () => {
+    const repo = new InMemoryRepository();
+    const group: string[] = [];
+    const direct: string[] = [];
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      runCommand: vi.fn(async () => { throw new Error('ZINIAO_BUSY'); })
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-busy'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'ziniao', tool: 'cli', arguments: { capability: 'store.list' }
+        } });
+        expect(response.success).toBe(false);
+        expect(response.contentItems[0].text).toContain('紫鸟执行机正忙');
+        expect(response.contentItems[0].text).not.toContain('user');
+        return { text: '执行机正忙，稍后再试。', threadId: 'thread-ziniao-busy' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface, markdown) { group.push(markdown); },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept({ ...request('ziniao-busy', '查店铺'), surface: { type: 'group', id: 'group-1' } });
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('failed'));
+    expect((await repo.findTask(task!.id))?.errorCode).toBe('ZINIAO_BUSY');
+    expect(group.join('\n')).toContain('紫鸟执行机正忙');
+    expect(direct).toEqual([]);
+  });
+
+  it('delivers Ziniao results to the group that initiated the task', async () => {
+    const repo = new InMemoryRepository();
+    const group: string[] = [];
+    const direct: string[] = [];
+    const broker = { status: vi.fn(async () => ({ profileKey: 'saved' })), runCommand: vi.fn(async () => ({ shops: ['private-shop'] })) } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-group'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        await onRequest({ method: 'item/tool/call', params: { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'account.list' } } });
+        return { text: '店铺：private-shop', threadId: 'thread-ziniao-group' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface, markdown) { group.push(markdown); },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    await orchestrator.accept({ ...request('ziniao-group', '查店铺'), surface: { type: 'group', id: 'group-1' } });
+    await waitUntil(() => group.some((message) => message.includes('private-shop')));
+    expect(group.join('\n')).toContain('private-shop');
+    expect(direct).toEqual([]);
+  });
+
+  it('marks a failed Ziniao authorization as failed and never claims the operation succeeded', async () => {
+    const repo = new InMemoryRepository();
+    const group: string[] = [];
+    const direct: string[] = [];
+    const broker = {
+      status: vi.fn(async () => null),
+      beginAuthorization: vi.fn(async () => { throw new Error('ZINIAO_LOCAL_CLIENT_REQUIRED'); }),
+      runCommand: vi.fn()
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-auth-failure'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'ziniao', tool: 'cli', arguments: { capability: 'store.open', args: ['BAGWAT-US'] }
+        } });
+        expect(response.success).toBe(false);
+        return { text: '请点击授权链接，我将立即截图。', threadId: 'thread-ziniao-auth-failure' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface, markdown) { group.push(markdown); },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept({ ...request('ziniao-auth-failure', '打开 BAGWAT-US 并截图'), surface: { type: 'group', id: 'group-1' } });
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('failed'));
+    expect((await repo.findTask(task!.id))?.errorCode).toBe('ZINIAO_LOCAL_CLIENT_REQUIRED');
+    expect(group.at(-1)).toContain('紫鸟操作未完成');
+    expect(group.join('\n')).not.toContain('已将紫鸟操作结果私聊发起人');
+    expect(group.at(-1)).toContain('未生成授权链接');
+    expect(direct).toEqual([]);
+    expect(direct.join('\n')).not.toContain('请点击授权链接');
+    expect(broker.runCommand).not.toHaveBeenCalled();
+  });
   it('resets only the current surface thread for a new-session control command', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
@@ -154,6 +453,7 @@ describe('TaskOrchestrator integration', () => {
     const internalError = 'unexpected status 503 Service Unavailable: No available accounts; request_id=req-secret; url=http://internal.example/v1';
     const writes: Array<{ kind: 'answer' | 'activity'; content: string; status: number }> = [];
     const sent: string[] = [];
+    const retryDelays: number[] = [];
     const codex = {
       startThread: vi.fn(async () => 'thread-failed-card'),
       turn: vi.fn(async () => { throw new Error(internalError); }),
@@ -168,13 +468,19 @@ describe('TaskOrchestrator integration', () => {
     const orchestrator = new TaskOrchestrator(loadConfig({
       DINGTALK_ROBOT_CODE: 'robot',
       DINGTALK_CARD_ACTIVITY_IN_PROCESSING: 'true'
-    }), repo, codex, {} as DwsBroker, sender);
+    }), repo, codex, {} as DwsBroker, sender, undefined, undefined, undefined, async (ms) => { retryDelays.push(ms); });
 
     const task = await orchestrator.accept(request('message-failed-card', '联网查询今天新闻'));
     await waitUntil(() => writes.some((item) => item.kind === 'answer' && item.status === 3));
 
     const final = writes.findLast((item) => item.kind === 'answer');
-    expect(final).toEqual({ kind: 'answer', content: '当前模型服务暂时不可用，请稍后再试。', status: 3 });
+    expect(final).toEqual({
+      kind: 'answer',
+      content: '模型上游服务已按间隔重试 3 次，但仍然失败。最终原因：上游服务暂无可用资源。错误详情：unexpected status 503 Service Unavailable: No available accounts; [请求标识已隐藏]; url=[地址已隐藏]。请稍后重新发送原任务。',
+      status: 3
+    });
+    expect(codex.turn).toHaveBeenCalledTimes(4);
+    expect(retryDelays).toEqual([1_000, 3_000, 7_000]);
     expect(writes.some((item) => item.status === 5)).toBe(false);
     expect(writes.some((item) => item.kind === 'activity' && item.content === '' && item.status === 2)).toBe(true);
     expect(final?.content).not.toContain('request_id');
@@ -185,6 +491,92 @@ describe('TaskOrchestrator integration', () => {
     const stored = await repo.findTask(task!.id);
     expect(stored?.status).toBe('failed');
     expect(stored?.errorCode).toContain(internalError);
+  });
+
+  it('retries a transient model failure with backoff and completes when the upstream recovers', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const retryDelays: number[] = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-model-retry'),
+      turn: vi.fn()
+        .mockRejectedValueOnce(new Error('{"error":{"message":"Upstream request failed","type":"upstream_error"}}'))
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValueOnce({ text: '重试后成功', threadId: 'thread-model-retry' }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const orchestrator = new TaskOrchestrator(
+      loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }),
+      repo,
+      codex,
+      {} as DwsBroker,
+      sender,
+      undefined,
+      undefined,
+      undefined,
+      async (ms) => { retryDelays.push(ms); }
+    );
+
+    const task = await orchestrator.accept(request('message-model-retry', '总结周报'));
+    await waitUntil(() => sent.includes('重试后成功'));
+
+    expect(codex.turn).toHaveBeenCalledTimes(3);
+    expect(retryDelays).toEqual([1_000, 3_000]);
+    expect((await repo.findTask(task!.id))?.status).toBe('completed');
+    expect(repo.audits.filter((item: any) => item.eventType === 'model.retry_scheduled')).toHaveLength(2);
+  });
+
+  it('does not replay a model turn after any tool activity', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sleep = vi.fn(async () => undefined);
+    const codex = {
+      startThread: vi.fn(async () => 'thread-no-replay'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'reference', tool: 'read_guide', arguments: { name: 'dingtalk-office' }
+        } });
+        throw new Error('{"error":{"message":"Upstream request failed","type":"upstream_error"}}');
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const orchestrator = new TaskOrchestrator(
+      loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender,
+      undefined, undefined, undefined, sleep
+    );
+
+    await orchestrator.accept(request('message-model-no-replay', '读取说明'));
+    await waitUntil(() => sent.some((item) => item.includes('最终原因')));
+
+    expect(codex.turn).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('returns an actionable sanitized reason for otherwise unknown failures', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-visible-error'),
+      turn: vi.fn(async () => {
+        throw new Error('Document parser rejected malformed content; request_id=req-123; url=http://internal.example/parse; access_token=secret-value');
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender);
+
+    await orchestrator.accept(request('message-visible-error', '解析文档'));
+    await waitUntil(() => sent.length === 1);
+
+    expect(sent[0]).toContain('处理失败：Document parser rejected malformed content');
+    expect(sent[0]).toContain('[请求标识已隐藏]');
+    expect(sent[0]).toContain('[地址已隐藏]');
+    expect(sent[0]).toContain('access_token=<已隐藏>');
+    expect(sent[0]).not.toContain('req-123');
+    expect(sent[0]).not.toContain('internal.example');
+    expect(sent[0]).not.toContain('secret-value');
   });
 
   it('serves the public skill guide as a read-only dynamic tool without confirmation', async () => {
@@ -240,6 +632,7 @@ describe('TaskOrchestrator integration', () => {
     expect(dws.status).toHaveBeenCalledWith(expect.objectContaining({ corpId: 'corp-1', userId: 'user-1' }));
     expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(1);
     expect(direct[0]).toContain('设备授权链接');
+    await waitUntil(() => (dws.runCommand as ReturnType<typeof vi.fn>).mock.calls.length === 1);
     expect(dws.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), expect.any(Array));
   });
 
@@ -274,6 +667,7 @@ describe('TaskOrchestrator integration', () => {
     const task = await orchestrator.accept(request('message-oauth-retry', '使用钉钉工具查我的部门'));
     await waitUntil(() => direct.some((item) => item.includes('设备授权链接')));
     expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(2);
+    await waitUntil(() => (dws.runCommand as ReturnType<typeof vi.fn>).mock.calls.length === 1);
     expect(dws.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), expect.any(Array));
     const stored = await repo.findTask(task!.id);
     expect(stored?.status).toBe('completed');
@@ -420,7 +814,8 @@ describe('TaskOrchestrator integration', () => {
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const sender: MessageSender = {
-      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); }
+      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); },
+      async beginApprovalCard() { return 'dws-write-card'; }
     };
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
     const task = await orchestrator.accept(request('message-write', '创建一个测试待办'));
@@ -428,7 +823,7 @@ describe('TaskOrchestrator integration', () => {
     await waitUntil(() => sent.some((item) => item.includes('等待确认')));
     expect(executed).toHaveLength(0);
 
-    const handled = await orchestrator.handleControl(request('message-confirm', '确认 ' + task!.id));
+    const handled = await orchestrator.handleControl(request('message-confirm', '确认 ' + task!.id + ' ' + (await repo.getApproval(task!.id))!.challenge.challengeId));
     expect(handled).toBe(true);
     await waitUntil(() => executed.length === 1 && sent.some((item) => item === '待办已创建'));
     expect(executed[0]!.user.userId).toBe('user-1');
@@ -459,12 +854,13 @@ describe('TaskOrchestrator integration', () => {
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const sender: MessageSender = {
-      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); }
+      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); },
+      async beginApprovalCard() { return 'dws-idempotent-card'; }
     };
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
     const task = await orchestrator.accept(request('message-idempotent', '创建一个测试待办'));
     await waitUntil(() => sent.some((item) => item.includes('等待确认')));
-    await orchestrator.handleControl(request('confirm-idempotent', '确认 ' + task!.id));
+    await orchestrator.handleControl(request('confirm-idempotent', '确认 ' + task!.id + ' ' + (await repo.getApproval(task!.id))!.challenge.challengeId));
     await waitUntil(() => sent.some((item) => item === '待办已创建'));
     expect(broker.runCommand).toHaveBeenCalledTimes(1);
   });
@@ -492,12 +888,13 @@ describe('TaskOrchestrator integration', () => {
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const sender: MessageSender = {
-      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); }
+      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); },
+      async beginApprovalCard() { return 'dws-unknown-card'; }
     };
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
     const task = await orchestrator.accept(request('message-unknown', '创建一个测试待办'));
     await waitUntil(() => sent.some((item) => item.includes('等待确认')));
-    await orchestrator.handleControl(request('confirm-unknown', '确认 ' + task!.id));
+    await orchestrator.handleControl(request('confirm-unknown', '确认 ' + task!.id + ' ' + (await repo.getApproval(task!.id))!.challenge.challengeId));
     await waitUntil(() => sent.some((item) => item === '写入结果未知，已停止重试'));
     expect(broker.runCommand).toHaveBeenCalledTimes(1);
     expect(responses[0]).toMatchObject({ success: false });
@@ -548,5 +945,239 @@ describe('TaskOrchestrator integration', () => {
     await waitUntil(() => sent.some((item) => item === '恢复完成'));
     expect(broker.runCommand).toHaveBeenCalledTimes(1);
     expect((await repo.findTask(task.id))?.status).toBe('completed');
+  });
+
+  it('delivers message sends without a confirmation round', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const executed: Array<{ user: UserIdentity; args: string[] }> = [];
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => ({ ...user, profileKey: user.corpId + ':' + user.userId })),
+      runCommand: vi.fn(async (user: UserIdentity, args: string[]) => {
+        executed.push({ user, args });
+        return { ok: true };
+      })
+    } as unknown as DwsBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-dm-free'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<unknown>) => {
+        const result = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'dingtalk', tool: 'dws',
+          arguments: { capability: 'chat.dm', args: ['--to', '盛喜', '--content', '你的部门信息如下：…'] }
+        } });
+        expect(result).toMatchObject({ success: true });
+        return { text: '已私聊发送。', threadId: 'thread-dm-free' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
+    await orchestrator.accept(request('message-dm-free', '查我的部门然后私发我'));
+    await waitUntil(() => sent.some((item) => item === '已私聊发送。'));
+    expect(sent.some((item) => item.includes('等待确认'))).toBe(false);
+    expect(executed).toHaveLength(1);
+    expect(executed[0]!.args).toContain('--yes');
+  });
+
+  it('resolves a high-risk write through the interactive approval card (agree)', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const executed: Array<{ user: UserIdentity; args: string[] }> = [];
+    const approvalCards: string[] = [];
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => ({ ...user, profileKey: user.corpId + ':' + user.userId })),
+      runCommand: vi.fn(async (user: UserIdentity, args: string[]) => {
+        executed.push({ user, args });
+        return { ok: true };
+      })
+    } as unknown as DwsBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-card-agree'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<unknown>) => {
+        const result = await onRequest(writeToolRequest());
+        expect(result).toMatchObject({ success: true });
+        return { text: '待办已创建', threadId: 'thread-card-agree' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); },
+      async sendDirect() { throw new Error('Group approval must not be sent privately'); },
+      async beginApprovalCard(task, _action, challenge) {
+        expect(task.request.surface).toEqual({ type: 'group', id: 'group-1' });
+        approvalCards.push(challenge.taskId);
+        return 'approval-card-1';
+      },
+      async updateApprovalCard(_bizId, content, status) {
+        sent.push('[卡片] ' + status + ' ' + content);
+      }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
+    const task = await orchestrator.accept({ ...request('message-card-agree', '创建一个测试待办'), surface: { type: 'group', id: 'group-1' } });
+    await waitUntil(() => approvalCards.length === 1);
+    expect(executed).toHaveLength(0);
+    const challengeId = (await repo.getApproval(task!.id))!.challenge.challengeId;
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'other-user', outTrackId: 'approval-card-1', action: 'agree', challengeId })).toBe(true);
+    expect(executed).toHaveLength(0);
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'approval-card-1', action: 'agree', challengeId })).toBe(true);
+    await waitUntil(() => executed.length === 1 && sent.some((item) => item === '待办已创建'));
+    expect(executed[0]!.args).toContain('--yes');
+    expect(sent.some((item) => item.includes('[卡片] processing ✅ 已同意'))).toBe(true);
+    expect((await repo.findTask(task!.id))?.status).toBe('completed');
+  });
+
+  it('reuses one card across two writes and rejects stale or tokenless clicks', async () => {
+    const repo = new InMemoryRepository();
+    const created: string[] = [];
+    const updated: Array<{ id: string; status: string; challengeId?: string }> = [];
+    const executed: string[][] = [];
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => ({ ...user, profileKey: user.corpId + ':' + user.userId })),
+      runCommand: vi.fn(async (_user: UserIdentity, args: string[]) => { executed.push(args); return { ok: true }; })
+    } as unknown as DwsBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-two-writes'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<unknown>) => {
+        await onRequest(writeToolRequest());
+        await onRequest({ ...writeToolRequest(), params: { ...writeToolRequest().params,
+          arguments: { capability: 'todo.create', args: ['--title', '第二项'] } } });
+        return { text: '两项操作已完成', threadId: 'thread-two-writes' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send() { /* no-op */ },
+      async beginApprovalCard(_task, _action, challenge) { created.push(challenge.challengeId!); return 'one-card'; },
+      async updateApprovalCard(id, _content, status, challengeId) { updated.push({ id, status, challengeId }); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
+    const task = await orchestrator.accept(request('two-writes', '连续创建两项待办'));
+    await vi.waitFor(async () => expect((await repo.listApprovals(task!.id)).length).toBe(1));
+    const firstId = (await repo.getApproval(task!.id))!.challenge.challengeId!;
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'one-card', action: 'agree' })).toBe(false);
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'one-card', action: 'agree', challengeId: firstId })).toBe(true);
+    await vi.waitFor(async () => expect((await repo.listApprovals(task!.id)).length).toBe(2));
+    const secondId = (await repo.getApproval(task!.id))!.challenge.challengeId!;
+    expect(secondId).not.toBe(firstId);
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'one-card', action: 'agree', challengeId: firstId })).toBe(false);
+    expect(await orchestrator.handleControl(request('old-text-confirm', '确认 ' + task!.id + ' ' + firstId))).toBe(false);
+    expect(executed).toHaveLength(1);
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'one-card', action: 'agree', challengeId: secondId })).toBe(true);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(created).toHaveLength(1);
+    expect(updated).toContainEqual({ id: 'one-card', status: 'pending', challengeId: secondId });
+    expect(updated.at(-1)?.status).toBe('done');
+    expect(executed).toHaveLength(2);
+    expect((await repo.listApprovals(task!.id)).map((item) => item.status)).toEqual(['executed', 'executed']);
+  });
+
+  it('marks an expired approval card as rejected and never executes the write', async () => {
+    const repo = new InMemoryRepository();
+    const updates: Array<{ content: string; status: string }> = [];
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => ({ ...user, profileKey: user.corpId + ':' + user.userId })),
+      runCommand: vi.fn(async () => ({ ok: true }))
+    } as unknown as DwsBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-card-timeout'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<unknown>) => {
+        await onRequest(writeToolRequest());
+        return { text: '操作未执行', threadId: 'thread-card-timeout' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send() { /* no-op */ },
+      async beginApprovalCard() { return 'approval-card-timeout'; },
+      async updateApprovalCard(_bizId, content, status) { updates.push({ content, status }); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({
+      DINGTALK_ROBOT_CODE: 'robot',
+      DINGTALK_APPROVAL_CARD_TTL_MS: '50'
+    }), repo, codex, broker, sender);
+    await orchestrator.accept({ ...request('message-card-timeout', '创建一个测试待办'), surface: { type: 'group', id: 'group-1' } });
+    await waitUntil(() => updates.length >= 1);
+    expect(updates[0]).toMatchObject({ status: 'processing' });
+    expect(updates[0]!.content).toContain('超时');
+    expect(broker.runCommand).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the approval card cannot be delivered to the originating group', async () => {
+    const repo = new InMemoryRepository();
+    const groupMessages: string[] = [];
+    const executed: string[][] = [];
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => ({ ...user, profileKey: user.corpId + ':' + user.userId })),
+      runCommand: vi.fn(async (_user: UserIdentity, args: string[]) => { executed.push(args); return { ok: true }; })
+    } as unknown as DwsBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-group-fallback'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<unknown>) => {
+        await onRequest(writeToolRequest());
+        return { text: '待办已创建', threadId: 'thread-group-fallback' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(surface, markdown) {
+        expect(surface).toEqual({ type: 'group', id: 'group-1' });
+        groupMessages.push(markdown);
+      },
+      async beginTaskCard() { return 'processing-task-card'; },
+      async updateTaskCard() { /* PROCESSING updates are not the visible fallback. */ },
+      async sendDirect() { throw new Error('Must not send group confirmation privately'); },
+      async beginApprovalCard() { throw new Error('DingTalk native card request failed: HTTP 400 code=param.templateUnpublished requestId=req-123'); }
+    };
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
+    const task = await orchestrator.accept({ ...request('message-group-fallback', '创建测试待办'), surface: { type: 'group', id: 'group-1' } });
+    await waitUntil(() => groupMessages.some((message) => message.includes('确认卡暂时无法投递')));
+    expect(repo.audits.some((item: any) => item.eventType === 'approval.card_delivery_failed' && item.payload.reason.includes('param.templateUnpublished'))).toBe(true);
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('approval.card_delivery_failed'));
+    expect(executed).toHaveLength(0);
+    expect(groupMessages.join('\n')).not.toContain('确认请回复');
+    expect((await repo.getApproval(task!.id))?.status).toBe('cancelled');
+    expect(await orchestrator.handleControl({ ...request('other-user', '确认 ' + task!.id), user: { corpId: 'corp-1', userId: 'other-user' }, surface: { type: 'group', id: 'group-1' } })).toBe(false);
+    expect(executed).toHaveLength(0);
+    expect(await orchestrator.handleControl({ ...request('owner-confirm', '确认 ' + task!.id + ' ' + (await repo.getApproval(task!.id))!.challenge.challengeId), surface: { type: 'group', id: 'group-1' } })).toBe(true);
+    expect(executed).toHaveLength(0);
+    errorLog.mockRestore();
+  });
+
+  it('lets the model finish gracefully after the approval card is rejected', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const cardStatuses: string[] = [];
+    let toolText: string | undefined;
+    const broker = {
+      status: vi.fn(async (user: UserIdentity) => ({ ...user, profileKey: user.corpId + ':' + user.userId })),
+      runCommand: vi.fn()
+    } as unknown as DwsBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-card-reject'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<unknown>) => {
+        const result = await onRequest(writeToolRequest()) as { success: boolean; contentItems: Array<{ text: string }> };
+        toolText = result.contentItems[0]?.text;
+        return { text: '好的，本次没有创建待办。如需要我可以先列出草稿给你确认。', threadId: 'thread-card-reject' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface: ConversationSurface, markdown: string) { sent.push(markdown); },
+      async beginApprovalCard() { return 'approval-card-reject'; },
+      async updateApprovalCard(_bizId, _content, status) { cardStatuses.push(status); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, broker, sender);
+    const task = await orchestrator.accept(request('message-card-reject', '创建一个测试待办'));
+    await waitUntil(() => sent.some((item) => item.includes('等待确认')));
+    expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'approval-card-reject', action: 'reject', challengeId: (await repo.getApproval(task!.id))!.challenge.challengeId })).toBe(true);
+    await waitUntil(() => sent.some((item) => item.includes('如需要我可以先列出草稿')));
+    expect(toolText).toContain('DWS_CONFIRMATION_DECLINED');
+    expect(cardStatuses).toEqual(['processing', 'done']);
+    expect((broker.runCommand as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    const stored = await repo.findTask(task!.id);
+    expect(stored?.status).toBe('completed');
   });
 });

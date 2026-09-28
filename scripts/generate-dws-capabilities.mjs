@@ -18,6 +18,10 @@ for (const service of services) {
       service,
       command: [String(item.command)],
       risk: normalizeRisk(item.risk),
+      // The CLI's own confirmation declaration (not_required | user_required).
+      // The host uses its curated message-delivery allow-list plus the runtime
+      // gate error as backstop; this field records the CLI source of truth.
+      confirmation: normalizeConfirmation(item.confirmation),
       description: String(item.description ?? item.intent ?? service + ' ' + item.command)
     };
   }
@@ -104,12 +108,21 @@ const extras = {
 };
 
 for (const [name, [service, command, risk]] of Object.entries(extras)) {
-  capabilities[name] = { service, command, risk, description: name };
+  capabilities[name] = {
+    service,
+    command,
+    risk,
+    // Extras are not in the CLI shortcut catalog; the host pre-gates them
+    // (challenge before execution), so their CLI-level confirmation is unknown.
+    confirmation: risk === 'read' ? 'not_required' : 'unknown',
+    description: name
+  };
 }
 
 const output = `// Generated from dingtalk-workspace-cli. Run npm run generate:dws-capabilities after upgrading DWS.\n` +
   `export type GeneratedDwsRisk = 'read' | 'write' | 'high';\n` +
-  `export interface GeneratedDwsCapability { service: string; command: readonly string[]; risk: GeneratedDwsRisk; description: string }\n` +
+  `export type GeneratedDwsConfirmation = 'not_required' | 'user_required' | 'unknown';\n` +
+  `export interface GeneratedDwsCapability { service: string; command: readonly string[]; risk: GeneratedDwsRisk; confirmation: GeneratedDwsConfirmation; description: string }\n` +
   `export const generatedDwsCapabilities = ${JSON.stringify(sortObject(capabilities), null, 2)} as const satisfies Record<string, GeneratedDwsCapability>;\n`;
 
 await writeFile(new URL('../src/generated-dws-capabilities.ts', import.meta.url), output, 'utf8');
@@ -117,6 +130,10 @@ console.log('Generated ' + Object.keys(capabilities).length + ' DWS capabilities
 
 function normalizeRisk(value) {
   return String(value).includes('high') ? 'high' : value === 'read' ? 'read' : 'write';
+}
+
+function normalizeConfirmation(value) {
+  return value === 'user_required' ? 'user_required' : value === 'not_required' ? 'not_required' : 'unknown';
 }
 
 function sortObject(value) {

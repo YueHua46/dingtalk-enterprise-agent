@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { AgentRequest, ApprovalChallenge, ConversationSurface, StoredApproval, TaskRecord, TaskStatus, ToolInvocationRecord, UserIdentity, UserMemory } from './types.js';
+import type { WorkflowState } from './task-workflow.js';
 
 export interface Repository {
   ping(): Promise<void>;
@@ -10,17 +11,22 @@ export interface Repository {
   deleteUserMemory(user: UserIdentity, key: string): Promise<boolean>;
   ensureUser(user: UserIdentity): Promise<void>;
   setDwsProfile(user: UserIdentity, profileKey: string): Promise<void>;
+  setZiniaoProfile(user: UserIdentity, profileKey: string): Promise<void>;
   ensureSurface(user: UserIdentity, surface: ConversationSurface): Promise<string>;
   getSurfaceThread(surfaceId: string): Promise<string | undefined>;
   setSurfaceThread(surfaceId: string, threadId: string): Promise<void>;
   resetSurfaceThread(surfaceId: string): Promise<void>;
+  listRecentDirectContext(user: UserIdentity, surfaceId: string, beforeTaskId: string): Promise<Array<{ request: string; answer: string }>>;
+  listRecentPublicGroupContext(user: UserIdentity, surfaceId: string, beforeTaskId: string): Promise<Array<{ request: string; answer: string }>>;
   createTask(request: AgentRequest, surfaceId: string): Promise<TaskRecord>;
-  updateTask(id: string, status: TaskStatus, fields?: { threadId?: string; resultSummary?: string; errorCode?: string }): Promise<void>;
+  updateTask(id: string, status: TaskStatus, fields?: { threadId?: string; resultSummary?: string; resultVisibility?: 'surface' | 'private'; errorCode?: string }): Promise<void>;
   findTask(id: string): Promise<TaskRecord | undefined>;
   setTaskCard(id: string, bizId: string): Promise<void>;
+  setApprovalCard(id: string, bizId: string): Promise<void>;
   listRecoverableTasks(): Promise<TaskRecord[]>;
   saveApproval(challenge: ApprovalChallenge, method: string): Promise<void>;
   getApproval(taskId: string): Promise<StoredApproval | undefined>;
+  listApprovals(taskId: string): Promise<StoredApproval[]>;
   decideApproval(taskId: string, status: 'approved' | 'cancelled' | 'expired'): Promise<void>;
   markApprovalExecuted(taskId: string): Promise<void>;
   getToolInvocation(idempotencyKey: string): Promise<ToolInvocationRecord | undefined>;
@@ -28,16 +34,27 @@ export interface Repository {
   finishToolInvocation(idempotencyKey: string, status: 'completed' | 'failed' | 'unknown', result?: unknown, errorMessage?: string): Promise<void>;
   markInbox(eventId: string, ttlMs: number): Promise<boolean>;
   audit(event: { requestId: string; taskId?: string; user: UserIdentity; surfaceId?: string; eventType: string; riskLevel?: string; toolName?: string; payload?: unknown }): Promise<void>;
+  saveWorkflow(taskId: string, state: WorkflowState): Promise<void>;
+  getWorkflow(taskId: string): Promise<WorkflowState | undefined>;
+  bindTaskExecutionMode(taskId: string, desired: 'local' | 'worker'): Promise<'local' | 'worker'>;
+  saveTaskArtifact(taskId: string, artifact: { name: string; size: number; sha256: string }): Promise<void>;
+  listTaskArtifacts(taskId: string): Promise<Array<{ name: string; size: number; sha256: string }>>;
+  findPendingClarification(user: UserIdentity, surface: ConversationSurface): Promise<TaskRecord | undefined>;
+  listPendingClarifications(): Promise<TaskRecord[]>;
 }
 
 export class InMemoryRepository implements Repository {
   private users = new Set<string>();
-  private surfaces = new Map<string, { id: string; threadId?: string }>();
+  private surfaces = new Map<string, { id: string; type: ConversationSurface['type']; threadId?: string; contextResetAt?: number }>();
   private tasks = new Map<string, TaskRecord>();
   private events = new Map<string, number>();
   private approvals = new Map<string, StoredApproval>();
+  private approvalHistory = new Map<string, StoredApproval[]>();
   private invocations = new Map<string, ToolInvocationRecord>();
   private memories = new Map<string, Map<string, UserMemory>>();
+  private workflows = new Map<string, WorkflowState>();
+  private artifacts = new Map<string, Array<{ name: string; size: number; sha256: string }>>();
+  private executionModes = new Map<string, 'local' | 'worker'>();
   public audits: unknown[] = [];
 
   public async ping(): Promise<void> {}
@@ -51,6 +68,10 @@ export class InMemoryRepository implements Repository {
     for (const taskId of removed) {
       this.tasks.delete(taskId);
       this.approvals.delete(taskId);
+      this.approvalHistory.delete(taskId);
+      this.workflows.delete(taskId);
+      this.artifacts.delete(taskId);
+      this.executionModes.delete(taskId);
     }
     for (const [key, invocation] of this.invocations) {
       if (removed.has(invocation.taskId)) this.invocations.delete(key);
@@ -94,11 +115,13 @@ export class InMemoryRepository implements Repository {
 
   public async setDwsProfile(_user: UserIdentity, _profileKey: string): Promise<void> {}
 
+  public async setZiniaoProfile(_user: UserIdentity, _profileKey: string): Promise<void> {}
+
   public async ensureSurface(user: UserIdentity, surface: ConversationSurface): Promise<string> {
     const key = [user.corpId, user.userId, surface.type, surface.id].join(':');
     let record = this.surfaces.get(key);
     if (!record) {
-      record = { id: randomUUID() };
+      record = { id: randomUUID(), type: surface.type };
       this.surfaces.set(key, record);
     }
     return record.id;
@@ -115,7 +138,36 @@ export class InMemoryRepository implements Repository {
 
   public async resetSurfaceThread(surfaceId: string): Promise<void> {
     const record = [...this.surfaces.values()].find((item) => item.id === surfaceId);
-    if (record) delete record.threadId;
+    if (record) {
+      delete record.threadId;
+      record.contextResetAt = Date.now();
+    }
+  }
+
+  public async listRecentDirectContext(user: UserIdentity, surfaceId: string, beforeTaskId: string): Promise<Array<{ request: string; answer: string }>> {
+    const surface = [...this.surfaces.values()].find((item) => item.id === surfaceId);
+    if (!surface || surface.type !== 'direct') return [];
+    const current = this.tasks.get(beforeTaskId);
+    if (!current || current.request.surface.type !== 'direct') return [];
+    return [...this.tasks.values()].filter((task) => task.id !== beforeTaskId && task.request.surface.type === 'direct'
+      && task.request.user.corpId === user.corpId && task.request.user.userId === user.userId
+      && task.request.surface.id === current?.request.surface.id && task.status === 'completed'
+      && task.resultSummary && task.createdAt > (surface.contextResetAt ?? 0))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 2).reverse()
+      .map((task) => ({ request: task.request.text.slice(0, 1000), answer: task.resultSummary!.slice(0, 1500) }));
+  }
+
+  public async listRecentPublicGroupContext(user: UserIdentity, surfaceId: string, beforeTaskId: string): Promise<Array<{ request: string; answer: string }>> {
+    const surface = [...this.surfaces.values()].find((item) => item.id === surfaceId);
+    const current = this.tasks.get(beforeTaskId);
+    if (!surface || surface.type !== 'group' || !current || current.request.surface.type !== 'group') return [];
+    return [...this.tasks.values()].filter((task) => task.id !== beforeTaskId && task.request.surface.type === 'group'
+      && task.request.user.corpId === user.corpId && task.request.user.userId === user.userId
+      && task.request.surface.id === current.request.surface.id && task.status === 'completed'
+      && task.resultVisibility === 'surface' && task.resultSummary
+      && task.createdAt > (surface.contextResetAt ?? 0))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 2).reverse()
+      .map((task) => ({ request: task.request.text.slice(0, 1000), answer: task.resultSummary!.slice(0, 1500) }));
   }
 
   public async createTask(request: AgentRequest, surfaceId: string): Promise<TaskRecord> {
@@ -124,12 +176,13 @@ export class InMemoryRepository implements Repository {
     return task;
   }
 
-  public async updateTask(id: string, status: TaskStatus, fields: { threadId?: string; resultSummary?: string; errorCode?: string } = {}): Promise<void> {
+  public async updateTask(id: string, status: TaskStatus, fields: { threadId?: string; resultSummary?: string; resultVisibility?: 'surface' | 'private'; errorCode?: string } = {}): Promise<void> {
     const task = this.tasks.get(id);
     if (!task) return;
     task.status = status;
     if (fields.threadId) task.threadId = fields.threadId;
     if (fields.resultSummary) task.resultSummary = fields.resultSummary;
+    if (fields.resultVisibility) task.resultVisibility = fields.resultVisibility;
     if (fields.errorCode) task.errorCode = fields.errorCode;
   }
 
@@ -137,9 +190,35 @@ export class InMemoryRepository implements Repository {
     return this.tasks.get(id);
   }
 
+  public async saveWorkflow(taskId: string, state: WorkflowState): Promise<void> { this.workflows.set(taskId, structuredClone(state)); }
+  public async bindTaskExecutionMode(taskId: string, desired: 'local' | 'worker'): Promise<'local' | 'worker'> {
+    const existing = this.executionModes.get(taskId);
+    if (existing) return existing;
+    this.executionModes.set(taskId, desired);
+    return desired;
+  }
+  public async saveTaskArtifact(taskId: string, artifact: { name: string; size: number; sha256: string }): Promise<void> {
+    const entries = this.artifacts.get(taskId) ?? [];
+    if (!entries.some((entry) => entry.name === artifact.name && entry.sha256 === artifact.sha256)) entries.push({ ...artifact });
+    this.artifacts.set(taskId, entries);
+  }
+  public async listTaskArtifacts(taskId: string): Promise<Array<{ name: string; size: number; sha256: string }>> {
+    return (this.artifacts.get(taskId) ?? []).map((entry) => ({ ...entry }));
+  }
+  public async getWorkflow(taskId: string): Promise<WorkflowState | undefined> { return structuredClone(this.workflows.get(taskId)); }
+  public async findPendingClarification(user: UserIdentity, surface: ConversationSurface): Promise<TaskRecord | undefined> {
+    return [...this.tasks.values()].find((task) => task.status === 'waiting_clarification' && task.request.user.corpId === user.corpId && task.request.user.userId === user.userId && task.request.surface.type === surface.type && task.request.surface.id === surface.id);
+  }
+  public async listPendingClarifications(): Promise<TaskRecord[]> { return [...this.tasks.values()].filter((task) => task.status === 'waiting_clarification'); }
+
   public async setTaskCard(id: string, bizId: string): Promise<void> {
     const task = this.tasks.get(id);
     if (task) task.cardBizId = bizId;
+  }
+
+  public async setApprovalCard(id: string, bizId: string): Promise<void> {
+    const task = this.tasks.get(id);
+    if (task && !task.approvalCardBizId) task.approvalCardBizId = bizId;
   }
 
   public async listRecoverableTasks(): Promise<TaskRecord[]> {
@@ -147,11 +226,21 @@ export class InMemoryRepository implements Repository {
   }
 
   public async saveApproval(challenge: ApprovalChallenge, method: string): Promise<void> {
-    this.approvals.set(challenge.taskId, { challenge, method, status: 'pending' });
+    const previous = this.approvals.get(challenge.taskId);
+    if (previous && ['pending', 'approved'].includes(previous.status)) previous.status = 'cancelled';
+    const approval: StoredApproval = { challenge, method, status: 'pending' };
+    this.approvals.set(challenge.taskId, approval);
+    const history = this.approvalHistory.get(challenge.taskId) ?? [];
+    history.push(approval);
+    this.approvalHistory.set(challenge.taskId, history);
   }
 
   public async getApproval(taskId: string): Promise<StoredApproval | undefined> {
     return this.approvals.get(taskId);
+  }
+
+  public async listApprovals(taskId: string): Promise<StoredApproval[]> {
+    return [...(this.approvalHistory.get(taskId) ?? [])];
   }
 
   public async decideApproval(taskId: string, status: 'approved' | 'cancelled' | 'expired'): Promise<void> {
@@ -269,6 +358,13 @@ export class PgRepository implements Repository {
     );
   }
 
+  public async setZiniaoProfile(user: UserIdentity, profileKey: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE users SET ziniao_profile_key=$3,ziniao_authenticated_at=now(),updated_at=now() WHERE corp_id=$1 AND user_id=$2',
+      [user.corpId, user.userId, profileKey]
+    );
+  }
+
   public async ensureSurface(user: UserIdentity, surface: ConversationSurface): Promise<string> {
     const result = await this.pool.query<{ id: string }>(
       'INSERT INTO conversation_surfaces (corp_id,user_id,surface_type,surface_id,last_message_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (corp_id,user_id,surface_type,surface_id) DO UPDATE SET last_message_at=now(),updated_at=now() RETURNING id',
@@ -287,7 +383,34 @@ export class PgRepository implements Repository {
   }
 
   public async resetSurfaceThread(surfaceId: string): Promise<void> {
-    await this.pool.query('UPDATE conversation_surfaces SET codex_thread_id=NULL,updated_at=now() WHERE id=$1', [surfaceId]);
+    await this.pool.query('UPDATE conversation_surfaces SET codex_thread_id=NULL,context_reset_at=now(),updated_at=now() WHERE id=$1', [surfaceId]);
+  }
+
+  public async listRecentDirectContext(user: UserIdentity, surfaceId: string, beforeTaskId: string): Promise<Array<{ request: string; answer: string }>> {
+    const result = await this.pool.query<{ input_text: string; result_summary: string }>(
+      `SELECT task.input_text,task.result_summary FROM tasks task
+       JOIN conversation_surfaces surface ON surface.id=task.surface_id
+       WHERE task.surface_id=$1 AND task.corp_id=$2 AND task.user_id=$3
+         AND surface.surface_type='direct' AND task.id<>$4 AND task.status='completed'
+         AND task.created_at>=surface.context_reset_at AND task.result_summary IS NOT NULL
+       ORDER BY task.created_at DESC LIMIT 2`,
+      [surfaceId, user.corpId, user.userId, beforeTaskId]
+    );
+    return result.rows.reverse().map((row) => ({ request: row.input_text.slice(0, 1000), answer: row.result_summary.slice(0, 1500) }));
+  }
+
+  public async listRecentPublicGroupContext(user: UserIdentity, surfaceId: string, beforeTaskId: string): Promise<Array<{ request: string; answer: string }>> {
+    const result = await this.pool.query<{ input_text: string; result_summary: string }>(
+      `SELECT task.input_text,task.result_summary FROM tasks task
+       JOIN conversation_surfaces surface ON surface.id=task.surface_id
+       WHERE task.surface_id=$1 AND task.corp_id=$2 AND task.user_id=$3
+         AND surface.surface_type='group' AND task.id<>$4 AND task.status='completed'
+         AND task.result_visibility='surface' AND task.created_at>=surface.context_reset_at
+         AND task.result_summary IS NOT NULL
+       ORDER BY task.created_at DESC LIMIT 2`,
+      [surfaceId, user.corpId, user.userId, beforeTaskId]
+    );
+    return result.rows.reverse().map((row) => ({ request: row.input_text.slice(0, 1000), answer: row.result_summary.slice(0, 1500) }));
   }
 
   public async createTask(request: AgentRequest, surfaceId: string): Promise<TaskRecord> {
@@ -298,10 +421,10 @@ export class PgRepository implements Repository {
     return { id: result.rows[0]!.id, request, status: 'queued', createdAt: result.rows[0]!.created_at.getTime() };
   }
 
-  public async updateTask(id: string, status: TaskStatus, fields: { threadId?: string; resultSummary?: string; errorCode?: string } = {}): Promise<void> {
+  public async updateTask(id: string, status: TaskStatus, fields: { threadId?: string; resultSummary?: string; resultVisibility?: 'surface' | 'private'; errorCode?: string } = {}): Promise<void> {
     await this.pool.query(
-      "UPDATE tasks SET status=$2,codex_thread_id=COALESCE($3,codex_thread_id),result_summary=COALESCE($4,result_summary),error_code=COALESCE($5,error_code),started_at=CASE WHEN $2='running' AND started_at IS NULL THEN now() ELSE started_at END,finished_at=CASE WHEN $2 IN ('completed','failed','cancelled') THEN now() ELSE finished_at END WHERE id=$1",
-      [id, status, fields.threadId ?? null, fields.resultSummary ?? null, fields.errorCode ?? null]
+      "UPDATE tasks SET status=$2,codex_thread_id=COALESCE($3,codex_thread_id),result_summary=COALESCE($4,result_summary),error_code=COALESCE($5,error_code),result_visibility=COALESCE($6,result_visibility),started_at=CASE WHEN $2='running' AND started_at IS NULL THEN now() ELSE started_at END,finished_at=CASE WHEN $2 IN ('completed','failed','cancelled') THEN now() ELSE finished_at END WHERE id=$1",
+      [id, status, fields.threadId ?? null, fields.resultSummary ?? null, fields.errorCode ?? null, fields.resultVisibility ?? null]
     );
   }
 
@@ -313,9 +436,11 @@ export class PgRepository implements Repository {
       created_at: Date;
       codex_thread_id: string | null;
       card_biz_id: string | null;
+      approval_card_biz_id: string | null;
       result_summary: string | null;
+      result_visibility: 'surface' | 'private' | 'unknown';
       error_code: string | null;
-    }>('SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,result_summary,error_code FROM tasks WHERE id=$1', [id]);
+    }>('SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,approval_card_biz_id,result_summary,result_visibility,error_code FROM tasks WHERE id=$1', [id]);
     const row = result.rows[0];
     if (!row) return undefined;
     return {
@@ -325,13 +450,55 @@ export class PgRepository implements Repository {
       createdAt: row.created_at.getTime(),
       ...(row.codex_thread_id ? { threadId: row.codex_thread_id } : {}),
       ...(row.card_biz_id ? { cardBizId: row.card_biz_id } : {}),
+      ...(row.approval_card_biz_id ? { approvalCardBizId: row.approval_card_biz_id } : {}),
       ...(row.result_summary ? { resultSummary: row.result_summary } : {}),
+      ...(row.result_visibility !== 'unknown' ? { resultVisibility: row.result_visibility } : {}),
       ...(row.error_code ? { errorCode: row.error_code } : {})
     };
   }
 
+  public async saveWorkflow(taskId: string, state: WorkflowState): Promise<void> {
+    await this.pool.query('INSERT INTO task_workflows(task_id,state) VALUES ($1,$2) ON CONFLICT (task_id) DO UPDATE SET state=EXCLUDED.state,updated_at=now()', [taskId, JSON.stringify(state)]);
+  }
+
+  public async bindTaskExecutionMode(taskId: string, desired: 'local' | 'worker'): Promise<'local' | 'worker'> {
+    const result = await this.pool.query<{ mode: 'local' | 'worker' }>(
+      'INSERT INTO task_execution_modes(task_id,mode) VALUES ($1,$2) ON CONFLICT (task_id) DO UPDATE SET mode=task_execution_modes.mode RETURNING mode',
+      [taskId, desired]
+    );
+    return result.rows[0]!.mode;
+  }
+
+  public async saveTaskArtifact(taskId: string, artifact: { name: string; size: number; sha256: string }): Promise<void> {
+    await this.pool.query('INSERT INTO task_artifacts(task_id,sha256,name,size_bytes) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [taskId, artifact.sha256, artifact.name, artifact.size]);
+  }
+
+  public async listTaskArtifacts(taskId: string): Promise<Array<{ name: string; size: number; sha256: string }>> {
+    const result = await this.pool.query<{ name: string; size_bytes: string; sha256: string }>('SELECT name,size_bytes,sha256 FROM task_artifacts WHERE task_id=$1 ORDER BY created_at,name', [taskId]);
+    return result.rows.map((row) => ({ name: row.name, size: Number(row.size_bytes), sha256: row.sha256 }));
+  }
+
+  public async getWorkflow(taskId: string): Promise<WorkflowState | undefined> {
+    const result = await this.pool.query<{ state: WorkflowState }>('SELECT state FROM task_workflows WHERE task_id=$1', [taskId]);
+    return result.rows[0]?.state;
+  }
+
+  public async findPendingClarification(user: UserIdentity, surface: ConversationSurface): Promise<TaskRecord | undefined> {
+    const result = await this.pool.query<{ id: string }>("SELECT t.id FROM tasks t JOIN conversation_surfaces s ON s.id=t.surface_id WHERE t.corp_id=$1 AND t.user_id=$2 AND s.surface_type=$3 AND s.surface_id=$4 AND t.status='waiting_clarification' ORDER BY t.created_at DESC LIMIT 1", [user.corpId, user.userId, surface.type, surface.id]);
+    return result.rows[0] ? this.findTask(result.rows[0].id) : undefined;
+  }
+
+  public async listPendingClarifications(): Promise<TaskRecord[]> {
+    const result = await this.pool.query<{ id: string }>("SELECT id FROM tasks WHERE status='waiting_clarification'");
+    return (await Promise.all(result.rows.map((row) => this.findTask(row.id)))).filter((task): task is TaskRecord => Boolean(task));
+  }
+
   public async setTaskCard(id: string, bizId: string): Promise<void> {
     await this.pool.query('UPDATE tasks SET card_biz_id=$2 WHERE id=$1 AND card_biz_id IS NULL', [id, bizId]);
+  }
+
+  public async setApprovalCard(id: string, bizId: string): Promise<void> {
+    await this.pool.query('UPDATE tasks SET approval_card_biz_id=$2 WHERE id=$1 AND approval_card_biz_id IS NULL', [id, bizId]);
   }
 
   public async listRecoverableTasks(): Promise<TaskRecord[]> {
@@ -342,14 +509,16 @@ export class PgRepository implements Repository {
       created_at: Date;
       codex_thread_id: string | null;
       card_biz_id: string | null;
-    }>("SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id FROM tasks WHERE status IN ('queued','running','waiting_oauth','waiting_confirmation') ORDER BY created_at");
+      approval_card_biz_id: string | null;
+    }>("SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,approval_card_biz_id FROM tasks WHERE status IN ('queued','running','waiting_oauth','waiting_confirmation') ORDER BY created_at");
     return result.rows.map((row) => ({
       id: row.id,
       request: row.request_payload,
       status: row.status,
       createdAt: row.created_at.getTime(),
       ...(row.codex_thread_id ? { threadId: row.codex_thread_id } : {}),
-      ...(row.card_biz_id ? { cardBizId: row.card_biz_id } : {})
+      ...(row.card_biz_id ? { cardBizId: row.card_biz_id } : {}),
+      ...(row.approval_card_biz_id ? { approvalCardBizId: row.approval_card_biz_id } : {})
     }));
   }
 
@@ -359,8 +528,8 @@ export class PgRepository implements Repository {
       await client.query('BEGIN');
       await client.query("UPDATE approvals SET status='cancelled' WHERE task_id=$1 AND status IN ('pending','approved')", [challenge.taskId]);
       await client.query(
-        "INSERT INTO approvals(task_id,corp_id,user_id,action_type,target_summary,parameter_hash,action_payload,method,status,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9)",
-        [challenge.taskId, challenge.user.corpId, challenge.user.userId, challenge.action.name, challenge.action.target ?? '', challenge.parameterHash, JSON.stringify(challenge.action), method, new Date(challenge.expiresAt)]
+        "INSERT INTO approvals(id,task_id,corp_id,user_id,action_type,target_summary,parameter_hash,action_payload,method,status,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10)",
+        [challenge.challengeId ?? randomUUID(), challenge.taskId, challenge.user.corpId, challenge.user.userId, challenge.action.name, challenge.action.target ?? '', challenge.parameterHash, JSON.stringify(challenge.action), method, new Date(challenge.expiresAt)]
       );
       await client.query('COMMIT');
     } catch (error) {
@@ -373,6 +542,7 @@ export class PgRepository implements Repository {
 
   public async getApproval(taskId: string): Promise<StoredApproval | undefined> {
     const result = await this.pool.query<{
+      id: string;
       corp_id: string;
       user_id: string;
       action_payload: ApprovalChallenge['action'];
@@ -380,11 +550,12 @@ export class PgRepository implements Repository {
       expires_at: Date;
       method: string;
       status: StoredApproval['status'];
-    }>('SELECT corp_id,user_id,action_payload,parameter_hash,expires_at,method,status FROM approvals WHERE task_id=$1 ORDER BY created_at DESC LIMIT 1', [taskId]);
+    }>('SELECT id,corp_id,user_id,action_payload,parameter_hash,expires_at,method,status FROM approvals WHERE task_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1', [taskId]);
     const row = result.rows[0];
     if (!row) return undefined;
     return {
       challenge: {
+        challengeId: row.id,
         taskId,
         user: { corpId: row.corp_id, userId: row.user_id },
         action: row.action_payload,
@@ -396,15 +567,28 @@ export class PgRepository implements Repository {
     };
   }
 
+  public async listApprovals(taskId: string): Promise<StoredApproval[]> {
+    const result = await this.pool.query<{
+      id: string; corp_id: string; user_id: string; action_payload: ApprovalChallenge['action'];
+      parameter_hash: string; expires_at: Date; method: string; status: StoredApproval['status'];
+    }>('SELECT id,corp_id,user_id,action_payload,parameter_hash,expires_at,method,status FROM approvals WHERE task_id=$1 ORDER BY created_at,id', [taskId]);
+    return result.rows.map((row) => ({
+      challenge: { challengeId: row.id, taskId, user: { corpId: row.corp_id, userId: row.user_id },
+        action: row.action_payload, parameterHash: row.parameter_hash, expiresAt: row.expires_at.getTime() },
+      method: row.method,
+      status: row.status
+    }));
+  }
+
   public async decideApproval(taskId: string, status: 'approved' | 'cancelled' | 'expired'): Promise<void> {
     await this.pool.query(
-      "UPDATE approvals SET status=$2,approved_at=CASE WHEN $2='approved' THEN now() ELSE approved_at END WHERE task_id=$1 AND status IN ('pending','approved')",
+      "UPDATE approvals SET status=$2,approved_at=CASE WHEN $2='approved' THEN now() ELSE approved_at END WHERE id=(SELECT id FROM approvals WHERE task_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1) AND status IN ('pending','approved')",
       [taskId, status]
     );
   }
 
   public async markApprovalExecuted(taskId: string): Promise<void> {
-    await this.pool.query("UPDATE approvals SET status='executed',consumed_at=now() WHERE task_id=$1 AND status='approved'", [taskId]);
+    await this.pool.query("UPDATE approvals SET status='executed',consumed_at=now() WHERE id=(SELECT id FROM approvals WHERE task_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1) AND status='approved'", [taskId]);
   }
 
   public async getToolInvocation(idempotencyKey: string): Promise<ToolInvocationRecord | undefined> {

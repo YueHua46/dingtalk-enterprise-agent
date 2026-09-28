@@ -12,10 +12,20 @@ services:
       CLAMAV_HOST: clamav
       CODEX_HOME: /var/lib/codex
       DWS_CONFIG_DIR: /var/lib/dws
+      ZINIAO_USERS_DIR: /home/agent/.ziniao-cli/users
+      ZINIAO_REMOTE_HOST: ${ZINIAO_REMOTE_HOST:-192.168.3.75}
+      ZINIAO_REMOTE_USER: ${ZINIAO_REMOTE_USER:-jennov}
+      ZINIAO_REMOTE_KEY_PATH: ${ZINIAO_REMOTE_KEY_PATH:-/home/agent/.ziniao-cli/ssh/id_ed25519}
+      ZINIAO_REMOTE_KNOWN_HOSTS_PATH: ${ZINIAO_REMOTE_KNOWN_HOSTS_PATH:-/home/agent/.ziniao-cli/ssh/known_hosts}
       DWS_KEYCHAIN_DIR: /var/lib/dws/keychain
       MEDIA_DIR: /var/lib/agent/media
       CODEX_WORKDIR: /app/workspaces
       SKILLS_DIR: /app/skills
+      CROSSBORDEROPS_API_URL: ${CROSSBORDEROPS_API_URL:-http://192.168.3.75:8081/api}
+      FILE_WORKER_MODE: ${FILE_WORKER_MODE:-all}
+      FILE_WORKER_URL: http://file-worker:8081
+      FILE_WORKER_SECRET: ${FILE_WORKER_SECRET:-}
+      FILE_WORKER_TEST_SURFACES: ${FILE_WORKER_TEST_SURFACES:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -28,9 +38,13 @@ services:
     volumes:
       - codex-data:/var/lib/codex
       - dws-data:/var/lib/dws
+      - ziniao-data:/home/agent/.ziniao-cli
       - media-data:/var/lib/agent/media
       - workspace-data:/app/workspaces
     restart: unless-stopped
+    networks:
+      - default
+      - file-worker-net
     read_only: true
     tmpfs:
       - /tmp:size=256m,noexec,nosuid
@@ -39,6 +53,43 @@ services:
     command: ["sh", "-c", "npm run migrate && node dist/main.js"]
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  file-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.file-worker
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    environment:
+      FILE_WORKER_SECRET: ${FILE_WORKER_SECRET:-}
+      WORKER_MODEL_PROXY_URL: http://gateway:8080/internal/model/v1
+      FILE_WORKER_ROOT: /work/tasks
+      FILE_SKILLS_DIR: /opt/file-skills
+      MEDIA_MAX_BYTES: ${MEDIA_MAX_BYTES:-52428800}
+    volumes:
+      - file-worker-data:/work/tasks
+    tmpfs:
+      - /tmp:size=512m,nosuid
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - KILL
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - file-worker-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8081/healthz"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -119,7 +170,13 @@ volumes:
   redis-data:
   codex-data:
   dws-data:
+  ziniao-data:
   media-data:
   workspace-data:
   postgres-backups:
   clamav-data:
+  file-worker-data:
+
+networks:
+  file-worker-net:
+    internal: true

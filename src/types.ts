@@ -4,6 +4,7 @@ export type TaskStatus =
   | 'running'
   | 'waiting_oauth'
   | 'waiting_confirmation'
+  | 'waiting_clarification'
   | 'completed'
   | 'cancelled'
   | 'failed';
@@ -57,20 +58,39 @@ export interface TaskRecord {
   createdAt: number;
   threadId?: string;
   cardBizId?: string;
+  approvalCardBizId?: string;
   resultSummary?: string;
+  resultVisibility?: 'surface' | 'private';
   errorCode?: string;
 }
 
 export type RiskLevel = 'read' | 'write' | 'high';
+
+/**
+ * Business-language rendering of a ToolAction for approval surfaces.
+ * Generated at approval time by the host-side summarizer (LLM first,
+ * generic deterministic fallback). Display-only: the executed payload is
+ * still bound by actionHash over the raw action fields.
+ */
+export interface ActionHumanSummary {
+  /** One sentence: what this action will do. */
+  description: string;
+  /** One sentence: what it affects and how far the impact reaches. */
+  impact?: string;
+  /** A few key facts a non-technical approver cares about. */
+  details?: string[];
+}
 
 export interface ToolAction {
   name: string;
   risk: RiskLevel;
   target?: string;
   parameters?: unknown;
+  summary?: ActionHumanSummary;
 }
 
 export interface ApprovalChallenge {
+  challengeId?: string;
   taskId: string;
   user: UserIdentity;
   action: ToolAction;

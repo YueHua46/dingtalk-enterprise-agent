@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   corp_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   surface_id UUID NOT NULL REFERENCES conversation_surfaces(id),
-  status TEXT NOT NULL CHECK (status IN ('queued','running','waiting_oauth','waiting_confirmation','completed','cancelled','failed')),
+  status TEXT NOT NULL CHECK (status IN ('queued','running','waiting_oauth','waiting_confirmation','waiting_clarification','completed','cancelled','failed')),
   input_text TEXT NOT NULL,
   request_payload JSONB NOT NULL,
   codex_thread_id TEXT,
