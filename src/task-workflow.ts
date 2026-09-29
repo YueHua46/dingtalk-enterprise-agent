@@ -44,28 +44,72 @@ export interface TaskCompletion {
   coverageGaps?: string[];
 }
 
+/**
+ * A host side delivery receipt.  The receipt is deliberately small and
+ * contains no image bytes; it is evidence that the file was sent to the
+ * originating conversation and is safe to carry across a resumed task.
+ */
+export interface ScreenshotDeliveryReceipt {
+  id: string;
+  kind: 'screenshot';
+  capabilityId: 'ziniao.cli';
+  name: string;
+  size: number;
+  sha256: string;
+  width: number;
+  height: number;
+  nonWhitePixels: number;
+  visiblePixels: number;
+  surfaceType: 'direct' | 'group';
+  surfaceId: string;
+  deliveredAt: string;
+  generation: number;
+  requestKey: string;
+}
+
 export interface WorkflowState {
   contract?: TaskContract;
   evidence: EvidenceRecord[];
+  /** Bounded tool-result excerpts kept with the task so a resumed task can still be verified. */
+  excerpts?: Record<string, string>;
   clarification?: ClarificationRequest;
+  clarificationCount?: number;
   completion?: TaskCompletion;
+  /** Sandbox files holding full tool results, in call order. */
+  evidenceFiles?: Array<{ file: string; evidenceId: string; capabilityId: string; arguments: string }>;
+  /** Verifier rounds spent on this task (bounded by the orchestrator). */
+  reviewRounds?: number;
   revision: number;
   planCount?: number;
   budgetExhausted?: boolean;
+  /** Persisted page generations and screenshot deliveries for idempotent resume. */
+  ziniao?: {
+    pageGeneration: number;
+    screenshotDeliveries: ScreenshotDeliveryReceipt[];
+  };
 }
+
+export const MAX_CLARIFICATIONS = 2;
+const MAX_PLAN_REVISIONS = 6;
+const MAX_STORED_EXCERPTS = 40;
+const MAX_STORED_EXCERPT_CHARS = 12_000;
 
 export const workflowDynamicTools = [{
   type: 'namespace', name: 'agent',
-  description: '通用任务闭环。先登记任务目标与所需证据，再调用业务能力；仅在缺少不可安全推断的条件时追问；最后提交带证据的完成结果。',
+  description: '任务闭环：登记工作计划、向发起人澄清、提交最终答复。',
   tools: [{
     type: 'function', name: 'capabilities',
-    description: '读取宿主能力目录；按 source 分页查看权限、用途、支持的证据及相关 Skill。source 可选 dws、ziniao、crossborderops、sif、lingxing、internet、skill。',
+    description: '读取宿主能力目录；按 source 分页查看权限、用途、支持的证据及相关 Skill。source 可选 dws、ziniao、crossborderops、sif、lingxing、internet、image、skill、analysis。',
     inputSchema: { type: 'object', additionalProperties: false, properties: {
       source: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 60 }
     } }
   }, {
     type: 'function', name: 'workflow',
-    description: 'operation=plan 登记/修订任务契约；operation=clarify 请求发起人补充关键条件；operation=complete 时 completion 必须含 status(answered|partial|blocked)、answer(最终给用户的完整文字)、factEvidence(事实 ID 到成功证据 ID 数组的映射；可填空对象，由宿主关联已取得的合规证据)、missingFacts(未满足的事实 ID 数组；无缺口填 [])。status 仅供内部任务跟踪，不决定答复措辞；依据实际证据自然回答，并说明会影响结论的数据范围或缺口。宿主与独立审查器仍会核验事实、数据粒度及因果措辞。不要使用历史任务 ID，也不要使用 findings、facts 或 evidenceIds 代替这些字段。',
+    description: [
+      'operation=plan：可选。多步骤任务可登记工作计划 contract={goal, deliverables[], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；登记后宿主会在提交时核对每项事实是否有对应来源的成功证据，需要列全的事实（enumeration=all）还会核对分页完整性。计划可随进展修订。',
+      'operation=clarify：仅当缺少只有发起人能决定、且会改变查询对象、跨越权限或影响真实写入目标的条件时使用，提供 question（给发起人的一个最小问题）与 reason。',
+      'operation=complete：提交最终答复 completion={status: answered|partial|blocked, answer: 给用户的完整回答, factEvidence: {事实ID: [证据ID]}（可为空对象，宿主会自动关联）, missingFacts: [未满足的事实ID]}。宿主会核验答复是否被证据支持；未通过时一次性返回所有问题，逐条修正后重新提交。'
+    ].join('\n'),
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -80,7 +124,7 @@ export const workflowDynamicTools = [{
             factEvidence: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } } },
             missingFacts: { type: 'array', items: { type: 'string' } }
           },
-          required: ['status', 'answer', 'factEvidence', 'missingFacts']
+          required: ['status', 'answer']
         }
       }, required: ['operation']
     }
@@ -90,49 +134,48 @@ export const workflowDynamicTools = [{
 export class TaskWorkflow {
   public constructor(public readonly state: WorkflowState = { evidence: [], revision: 0 }) {}
 
+  /**
+   * The plan belongs to the executing agent. It is validated structurally so
+   * the host can check evidence against it, but it is not a second opinion on
+   * the user's intent: the final verifier always judges against the request.
+   */
   public plan(raw: unknown): TaskContract {
-    if ((this.state.planCount ?? 0) >= 3) throw new Error('WORKFLOW_PLAN_BUDGET_EXCEEDED');
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('WORKFLOW_PLAN_INVALID');
+    if ((this.state.planCount ?? 0) >= MAX_PLAN_REVISIONS) throw new Error('WORKFLOW_PLAN_BUDGET_EXCEEDED: 计划已多次修订，请依据已有证据继续执行或提交答复。');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('WORKFLOW_PLAN_INVALID: contract 必须是对象');
     const value = raw as Record<string, unknown>;
-    const strings = (input: unknown, limit: number): string[] => {
-      if (!Array.isArray(input) || input.length > limit || input.some((item) => typeof item !== 'string' || !item.trim())) throw new Error('WORKFLOW_PLAN_INVALID');
+    const strings = (input: unknown, limit: number, field: string): string[] => {
+      if (input === undefined) return [];
+      if (!Array.isArray(input) || input.length > limit || input.some((item) => typeof item !== 'string' || !item.trim())) throw new Error(`WORKFLOW_PLAN_INVALID: ${field} 必须是不超过 ${limit} 项的非空字符串数组`);
       return input.map((item: string) => item.trim().slice(0, 500));
     };
-    if (typeof value.goal !== 'string' || !value.goal.trim() || value.goal.length > 1000) throw new Error('WORKFLOW_PLAN_INVALID');
-    if (value.mode !== undefined && !['conversation', 'read', 'write'].includes(String(value.mode))) throw new Error('WORKFLOW_PLAN_INVALID');
-    const requiredFacts = value.requiredFacts;
-    if (!Array.isArray(requiredFacts) || requiredFacts.length > 20) throw new Error('WORKFLOW_PLAN_INVALID');
+    if (typeof value.goal !== 'string' || !value.goal.trim() || value.goal.length > 1000) throw new Error('WORKFLOW_PLAN_INVALID: goal 必填');
+    if (value.mode !== undefined && !['conversation', 'read', 'write'].includes(String(value.mode))) throw new Error('WORKFLOW_PLAN_INVALID: mode 只能是 conversation|read|write');
+    const requiredFacts = value.requiredFacts ?? [];
+    if (!Array.isArray(requiredFacts) || requiredFacts.length > 20) throw new Error('WORKFLOW_PLAN_INVALID: requiredFacts 最多 20 项');
     const facts = requiredFacts.map((rawFact) => {
-      if (!rawFact || typeof rawFact !== 'object') throw new Error('WORKFLOW_PLAN_INVALID');
+      if (!rawFact || typeof rawFact !== 'object') throw new Error('WORKFLOW_PLAN_INVALID: requiredFacts 项必须是对象');
       const fact = rawFact as Record<string, unknown>;
-      if (typeof fact.id !== 'string' || !/^[a-z][a-z0-9_]{0,39}$/.test(fact.id) || typeof fact.description !== 'string' || !fact.description.trim()) throw new Error('WORKFLOW_PLAN_INVALID');
-      const sources = strings(fact.acceptableSources, 15);
-      if (!sources.length) throw new Error('WORKFLOW_FACT_SOURCE_REQUIRED');
+      if (typeof fact.id !== 'string' || !/^[a-z][a-z0-9_]{0,39}$/.test(fact.id) || typeof fact.description !== 'string' || !fact.description.trim()) {
+        throw new Error('WORKFLOW_PLAN_INVALID: 事实 id 须为小写字母开头的 snake_case，description 必填');
+      }
+      const sources = strings(fact.acceptableSources, 15, 'acceptableSources');
+      if (!sources.length) throw new Error(`WORKFLOW_FACT_SOURCE_REQUIRED:${fact.id}`);
       const unregistered = sources.filter((source) => !capabilityById(source));
-      if (unregistered.length) throw new Error(`WORKFLOW_SOURCE_UNREGISTERED: ${unregistered.join(', ')}`);
-      const previous = this.state.contract?.requiredFacts.find((item) => item.id === fact.id);
-      const enumeration = fact.enumeration ?? previous?.enumeration;
+      if (unregistered.length) throw new Error(`WORKFLOW_SOURCE_UNREGISTERED: ${unregistered.join(', ')}；可用来源族：${sourceFamilies()}`);
+      const enumeration = fact.enumeration;
       if (enumeration !== undefined && !['all', 'bounded', 'point', 'context'].includes(String(enumeration))) throw new Error('WORKFLOW_FACT_ENUMERATION_INVALID');
-      const grain = fact.grain ?? previous?.grain;
+      const grain = fact.grain;
       if (grain !== undefined && (!Array.isArray(grain) || grain.length > 10 || grain.some((part) => typeof part !== 'string' || !part.trim() || part.length > 80))) throw new Error('WORKFLOW_FACT_GRAIN_INVALID');
       return { id: fact.id, description: fact.description.slice(0, 500), acceptableSources: sources,
         ...(enumeration ? { enumeration: enumeration as 'all' | 'bounded' | 'point' | 'context' } : {}),
-        ...(grain ? { grain: [...new Set(grain.map((part) => part.trim().toLowerCase()))] } : {}) };
+        ...(grain ? { grain: [...new Set((grain as string[]).map((part) => part.trim().toLowerCase()))] } : {}) };
     });
     if (new Set(facts.map((fact) => fact.id)).size !== facts.length) throw new Error('WORKFLOW_FACT_DUPLICATE');
-    if (value.mode !== 'conversation' && value.mode !== undefined && !facts.length) throw new Error('WORKFLOW_REQUIRED_FACT_MISSING');
-    if (this.state.contract?.requiredFacts.some((prior) => !facts.some((fact) => fact.id === prior.id))) throw new Error('WORKFLOW_REQUIRED_FACT_REMOVAL_FORBIDDEN');
-    if (this.state.contract?.requiredFacts.some((prior) => {
-      const next = facts.find((fact) => fact.id === prior.id);
-      return next?.description !== prior.description || JSON.stringify(next?.acceptableSources) !== JSON.stringify(prior.acceptableSources)
-        || next?.enumeration !== prior.enumeration || JSON.stringify(next?.grain) !== JSON.stringify(prior.grain);
-    })) throw new Error('WORKFLOW_REQUIRED_FACT_CHANGED');
-    if (this.state.contract?.mode && value.mode !== this.state.contract.mode) throw new Error('WORKFLOW_MODE_CHANGED');
     const contract: TaskContract = {
       ...(value.mode ? { mode: value.mode as 'conversation' | 'read' | 'write' } : {}),
-      goal: value.goal.trim(), deliverables: strings(value.deliverables, 20), requiredFacts: facts,
-      assumptions: strings(value.assumptions, 20), openQuestions: strings(value.openQuestions, 10),
-      completionCriteria: strings(value.completionCriteria, 20)
+      goal: value.goal.trim(), deliverables: strings(value.deliverables, 20, 'deliverables'), requiredFacts: facts,
+      assumptions: strings(value.assumptions, 20, 'assumptions'), openQuestions: strings(value.openQuestions, 10, 'openQuestions'),
+      completionCriteria: strings(value.completionCriteria, 20, 'completionCriteria')
     };
     this.state.contract = contract;
     this.state.planCount = (this.state.planCount ?? 0) + 1;
@@ -153,59 +196,87 @@ export class TaskWorkflow {
       ...(details.scope ? { scope: details.scope } : {}),
       ...(details.period ? { period: details.period } : {}),
       ...(details.freshness ? { freshness: details.freshness } : {}),
-      ...(details.errorCode ? { errorCode: details.errorCode } : {})
-      ,...(details.requestSignature ? { requestSignature: details.requestSignature } : {})
-      ,...(details.pagination ? { pagination: details.pagination } : {})
-      ,...(details.members ? { members: details.members } : {})
-      ,...(details.filterSite ? { filterSite: details.filterSite } : {})
+      ...(details.errorCode ? { errorCode: details.errorCode } : {}),
+      ...(details.requestSignature ? { requestSignature: details.requestSignature } : {}),
+      ...(details.pagination ? { pagination: details.pagination } : {}),
+      ...(details.members ? { members: details.members } : {}),
+      ...(details.filterSite ? { filterSite: details.filterSite } : {})
     };
     this.state.evidence.push(record);
-    if (this.state.evidence.length > 100) this.state.evidence.shift();
+    if (this.state.evidence.length > 100) {
+      const dropped = this.state.evidence.shift();
+      if (dropped) delete this.state.excerpts?.[dropped.id];
+    }
     this.state.revision += 1;
     return record;
   }
 
+
+  /** Keeps a bounded excerpt with the task so verification survives resumption. */
+  public storeExcerpt(evidenceId: string, text: string): void {
+    const excerpts = this.state.excerpts ?? (this.state.excerpts = {});
+    excerpts[evidenceId] = text.slice(0, MAX_STORED_EXCERPT_CHARS);
+    const ids = Object.keys(excerpts);
+    for (const id of ids.slice(0, Math.max(0, ids.length - MAX_STORED_EXCERPTS))) delete excerpts[id];
+  }
+
   public clarify(question: unknown, reason: unknown, ttlMs = 24 * 60 * 60 * 1000): ClarificationRequest {
-    if (!this.state.contract) throw new Error('WORKFLOW_PLAN_REQUIRED');
-    if (this.state.contract.openQuestions.length === 0) throw new Error('WORKFLOW_CLARIFICATION_NOT_PLANNED: 当前契约没有需要用户决定的条件；请依据已有证据完成任务或修订经审查的契约。');
-    if (typeof question !== 'string' || !question.trim() || question.length > 1000 || typeof reason !== 'string' || !reason.trim() || reason.length > 1000) throw new Error('WORKFLOW_CLARIFICATION_INVALID');
+    if (this.state.clarification && !this.state.clarification.answer) throw new Error('WORKFLOW_CLARIFICATION_PENDING');
+    if ((this.state.clarificationCount ?? 0) >= MAX_CLARIFICATIONS) {
+      throw new Error('WORKFLOW_CLARIFICATION_BUDGET_EXCEEDED: 已向发起人澄清过，请依据已有信息采用合理默认值完成任务，并在答复中说明所作假设。');
+    }
+    if (typeof question !== 'string' || !question.trim() || question.length > 1000 || typeof reason !== 'string' || !reason.trim() || reason.length > 1000) {
+      throw new Error('WORKFLOW_CLARIFICATION_INVALID: 需要同时提供 question 与 reason');
+    }
     const now = Date.now();
     const clarification = { question: question.trim(), reason: reason.trim(), createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMs).toISOString() };
     this.state.clarification = clarification;
+    this.state.clarificationCount = (this.state.clarificationCount ?? 0) + 1;
     this.state.revision += 1;
     return clarification;
   }
 
   public complete(raw: unknown): TaskCompletion {
-    if (!this.state.contract) throw new Error('WORKFLOW_PLAN_REQUIRED');
     if (this.state.clarification && !this.state.clarification.answer) throw new Error('WORKFLOW_CLARIFICATION_PENDING');
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('WORKFLOW_COMPLETION_INVALID: completion 必须包含 status、answer、factEvidence、missingFacts');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('WORKFLOW_COMPLETION_INVALID: completion 必须包含 status 与 answer');
     const value = raw as Record<string, unknown>;
+    const factEvidenceInput = value.factEvidence ?? {};
+    const missingFactsInput = value.missingFacts ?? [];
     if (!['answered', 'partial', 'blocked'].includes(String(value.status)) || typeof value.answer !== 'string' || !value.answer.trim() || value.answer.length > 30_000
-      || !value.factEvidence || typeof value.factEvidence !== 'object' || Array.isArray(value.factEvidence)
-      || !Array.isArray(value.missingFacts) || value.missingFacts.some((item) => typeof item !== 'string')) {
-      throw new Error('WORKFLOW_COMPLETION_INVALID: completion={status:"answered|partial|blocked",answer:"完整回答",factEvidence:{"事实ID":["成功证据ID"]},missingFacts:[]}');
+      || !factEvidenceInput || typeof factEvidenceInput !== 'object' || Array.isArray(factEvidenceInput)
+      || !Array.isArray(missingFactsInput) || missingFactsInput.some((item) => typeof item !== 'string')) {
+      throw new Error('WORKFLOW_COMPLETION_INVALID: completion={status:"answered|partial|blocked",answer:"完整回答",factEvidence:{},missingFacts:[]}');
     }
-    const factEvidence = value.factEvidence as Record<string, unknown>;
-    const missingFacts = value.missingFacts as string[];
+    const factEvidence = factEvidenceInput as Record<string, unknown>;
+    const missingFacts = missingFactsInput as string[];
+    const status = value.status as TaskCompletion['status'];
     const citations: Record<string, string[]> = {};
     const populationGaps: string[] = [];
-    for (const fact of this.state.contract.requiredFacts) {
+    const successfulIds = new Set(this.state.evidence.filter((evidence) => evidence.status === 'success').map((evidence) => evidence.id));
+    // Without a registered plan there are no named facts to check; the
+    // verifier still judges every claim against all task evidence.
+    if (!this.state.contract) {
+      for (const [factId, ids] of Object.entries(factEvidence)) {
+        if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) throw new Error('WORKFLOW_EVIDENCE_INVALID');
+        citations[factId] = (ids as string[]).filter((id) => successfulIds.has(id));
+      }
+    }
+    for (const fact of this.state.contract?.requiredFacts ?? []) {
       const ids = factEvidence[fact.id];
       if (ids !== undefined && (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string'))) throw new Error('WORKFLOW_EVIDENCE_INVALID');
       const matches = (evidence: EvidenceRecord) => evidence.status === 'success' && fact.acceptableSources.some((source) => source === evidence.capabilityId || (source.endsWith('.*') && evidence.capabilityId.startsWith(source.slice(0, -1))));
       const submitted = ids as string[] | undefined ?? [];
       // The host already knows which successful calls match each registered
       // source. A missing citation is bookkeeping, not a reason to make the
-      // model repeat a business query. The independent reviewer still checks
-      // whether those calls support the actual answer and its granularity.
+      // model repeat a business query. The verifier still checks whether
+      // those calls support the actual answer and its granularity.
       const autoLimit = Math.min(8, Math.max(0, 20 - new Set(Object.values(citations).flat()).size));
-      let valid = submitted.length === 0 && value.status === 'answered'
+      let valid = submitted.length === 0 && status === 'answered'
         ? autoLimit > 0 ? this.state.evidence.filter(matches).slice(-autoLimit).map((evidence) => evidence.id) : []
         : submitted.filter((id) => this.state.evidence.some((evidence) => evidence.id === id && matches(evidence)));
       // A scope list alone proves authorization, not a business metric. When
       // the model cites only scope despite having matching business evidence,
-      // retain both sources for independent semantic review.
+      // retain both sources for verification.
       if (valid.length && valid.every((id) => this.state.evidence.find((item) => item.id === id)?.capabilityId === 'crossborderops.scope')) {
         const business = this.state.evidence.filter((item) => matches(item) && item.capabilityId.startsWith('crossborderops.daily.')).slice(-4);
         valid = [...valid, ...business.map((item) => item.id)].slice(0, 8);
@@ -219,13 +290,13 @@ export class TaskWorkflow {
         const compatiblePages = fact.grain?.length ? pages.filter((page) => !page.dimensions || sameDimensions(page.dimensions, fact.grain!, page.fixedDimensions)) : pages;
         const citedPages = pageEvidence.filter((evidence) => valid.includes(evidence.id) && !populationSources.has(evidence.capabilityId)).map((evidence) => evidence.pagination!);
         if (fact.grain?.length && citedPages.length && citedPages.every((page) => page.dimensions && !sameDimensions(page.dimensions, fact.grain!, page.fixedDimensions))) {
-          throw new Error(`WORKFLOW_GRAIN_MISMATCH:${fact.id}; 引用的分页结果与任务契约的统计对象不一致。`);
+          throw new Error(`WORKFLOW_GRAIN_MISMATCH:${fact.id}; 引用的分页结果与计划中的统计对象不一致。`);
         }
-        if (pages.length && !compatiblePages.length) throw new Error(`WORKFLOW_GRAIN_MISMATCH:${fact.id}; 查询结果的分组维度与任务契约要求的统计对象不一致。`);
-        if (value.status === 'answered' && compatiblePages.length && !hasCompletePageGroup(compatiblePages)) {
+        if (pages.length && !compatiblePages.length) throw new Error(`WORKFLOW_GRAIN_MISMATCH:${fact.id}; 查询结果的分组维度与计划中的统计对象不一致。`);
+        if (status === 'answered' && compatiblePages.length && !hasCompletePageGroup(compatiblePages)) {
           throw new Error(`WORKFLOW_PAGINATION_INCOMPLETE:${fact.id}; 同一查询条件的分页未覆盖 total，请继续获取剩余页面；若达到执行上限，仅报告已验证的部分及缺口。`);
         }
-        for (const source of value.status === 'answered' ? populationSources : []) {
+        for (const source of status === 'answered' ? populationSources : []) {
           const populationPages = this.state.evidence.filter((evidence) => evidence.capabilityId === source && evidence.status === 'success' && evidence.pagination)
             .map((evidence) => evidence.pagination!);
           if (!populationPages.length) throw new Error(`WORKFLOW_POPULATION_SOURCE_REQUIRED:${fact.id}:${source}; 聚合只覆盖已观测业务实体，请先获取授权对象全集。`);
@@ -243,7 +314,7 @@ export class TaskWorkflow {
       }
       // Aggregates describe recorded business rows. When an authorization
       // scope was also queried, provide its coverage observation to the
-      // semantic reviewer; do not turn it into a universal task state rule.
+      // verifier; do not turn it into a universal task state rule.
       if (fact.enumeration !== 'all') {
         const aggregateEvidence = this.state.evidence.filter((item) => matches(item)
           && item.capabilityId === 'crossborderops.daily.aggregate' && item.pagination
@@ -258,29 +329,35 @@ export class TaskWorkflow {
           }
         }
       }
-      if (value.status === 'answered' && valid.length === 0) {
-        const available = this.state.evidence.filter((evidence) => evidence.status === 'success' && fact.acceptableSources.some((source) => source === evidence.capabilityId || (source.endsWith('.*') && evidence.capabilityId.startsWith(source.slice(0, -1))))).map((evidence) => evidence.id);
-        throw new Error(`WORKFLOW_FACT_UNSUPPORTED:${fact.id}; 本任务可用证据ID=${available.join(',') || '无'}`);
+      if (status === 'answered' && valid.length === 0) {
+        const available = this.state.evidence.filter((evidence) => matches(evidence)).map((evidence) => evidence.id);
+        throw new Error(`WORKFLOW_FACT_UNSUPPORTED:${fact.id}; 计划要求该事实来自 ${fact.acceptableSources.join('、')}，但本任务尚无对应的成功证据（可用证据ID=${available.join(',') || '无'}）。请先取证，或以 partial 提交并在 missingFacts 中列出，或修订计划。`);
       }
-      if (value.status !== 'answered' && valid.length === 0) {
+      if (status !== 'answered' && valid.length === 0) {
         if (!missingFacts.includes(fact.id)) throw new Error(`WORKFLOW_MISSING_FACT_UNDECLARED:${fact.id}`);
         for (const source of fact.acceptableSources) {
           const attempted = this.state.evidence.some((evidence) => source === evidence.capabilityId || (source.endsWith('.*') && evidence.capabilityId.startsWith(source.slice(0, -1))));
-          const inputLookupCompleted = source === 'artifact.read' && value.status === 'blocked'
+          const inputLookupCompleted = source === 'artifact.read' && status === 'blocked'
             && this.state.evidence.some((evidence) => evidence.status === 'success'
               && ['dingtalk.chat.chat-messages', 'dingtalk.chat.search-msg', 'dingtalk.drive.search'].includes(evidence.capabilityId));
           if (inputLookupCompleted) continue;
-          if (!attempted && !this.state.budgetExhausted) throw new Error(`WORKFLOW_SOURCE_NOT_ATTEMPTED:${fact.id}:${source}`);
+          if (!attempted && !this.state.budgetExhausted) throw new Error(`WORKFLOW_SOURCE_NOT_ATTEMPTED:${fact.id}:${source}; 尚未尝试该来源，不能宣称缺失。`);
         }
       }
     }
-    const completion: TaskCompletion = { status: value.status as TaskCompletion['status'],
+    const completion: TaskCompletion = { status,
       answer: value.answer.trim(), factEvidence: citations, missingFacts,
       ...(populationGaps.length ? { coverageGaps: [...new Set(populationGaps)] } : {}) };
     this.state.completion = completion;
     this.state.revision += 1;
     return completion;
   }
+}
+
+function sourceFamilies(): string {
+  // Wildcard families plus the individually registered fixed capabilities.
+  const enumerated = new Set(['dws', 'ziniao', 'crossborderops', 'sif', 'lingxing']);
+  return capabilityCatalog().filter((item) => item.id.endsWith('.*') || !enumerated.has(item.source)).map((item) => item.id).join(', ');
 }
 
 function hasMissingPopulationMembers(aggregate: EvidenceRecord[], scope: EvidenceRecord[], requireCompletePages = true): boolean {

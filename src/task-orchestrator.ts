@@ -6,14 +6,17 @@ import { MediaPipeline } from './media.js';
 import { MemoryTool } from './memory-tool.js';
 import { GuideTool } from './guide-tool.js';
 import { NativeWebTool } from './native-web-tool.js';
+import { AmazonTool, AMAZON_OPERATIONS } from './amazon-tool.js';
+import { ImageTool, type ImageToolResult } from './image-tool.js';
 import { CrossBorderOpsAccessClient } from './crossborderops-access-client.js';
 import { CrossBorderOpsDataClient } from './crossborderops-data-client.js';
 import { CrossBorderOpsTool } from './crossborderops-tool.js';
 import { McpReadTool } from './mcp-read-tool.js';
-import { TaskWorkflow, listCapabilities } from './task-workflow.js';
+import { TaskWorkflow, listCapabilities, type ScreenshotDeliveryReceipt, type TaskCompletion } from './task-workflow.js';
 import { capabilityById } from './capability-catalog.js';
-import { EvidenceReviewer } from './evidence-reviewer.js';
-import { TaskContractPlanner } from './task-contract-planner.js';
+import { EvidenceReviewer, formatIssues } from './evidence-reviewer.js';
+import { parseAnalysisInput } from './analysis-tool.js';
+import { EMPTY_TURN_TEXT } from './codex-client.js';
 import { ZiniaoBroker, ZINIAO_AUTH_INIT_FAILED, ZINIAO_LOCAL_CLIENT_REQUIRED, type ZiniaoRunOptions } from './ziniao-broker.js';
 import { ZiniaoRemoteBroker } from './ziniao-remote-broker.js';
 import { ZiniaoTool } from './ziniao-tool.js';
@@ -27,6 +30,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import { fileTypeFromBuffer } from 'file-type';
+import { inspectPng, isPng } from './png-validation.js';
 import type { AgentRequest, ApprovalChallenge, Attachment, TaskRecord, ToolAction } from './types.js';
 import type { Repository } from './persistence.js';
 import type { TaskQueue } from './task-queue.js';
@@ -47,6 +51,12 @@ export interface MessageSender {
 
 const MODEL_RETRY_DELAYS_MS = [1_000, 3_000, 7_000] as const;
 const MODEL_RETRY_UNSAFE_AFTER_TOOL = 'MODEL_RETRY_UNSAFE_AFTER_TOOL';
+/** Verifier rounds per task. The last round only reports certain blockers and then delivers. */
+export const MAX_REVIEW_ROUNDS = 3;
+/** Extra model turns the host may start to repair an answer that failed validation. */
+const MAX_REVISION_TURNS = 3;
+/** Tool output above this size is summarized for the model once the full result is saved as a sandbox file. */
+const MODEL_TOOL_OUTPUT_MAX_CHARS = 60_000;
 
 export function isRetryableModelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -84,14 +94,177 @@ function publicErrorDetail(error: unknown): string {
   return (detail || '未知错误').slice(0, 400);
 }
 
-function redactPlannerTrace(value: unknown, key = ''): unknown {
-  if (/token|secret|password|credential|authorization|cookie/i.test(key)) return '<已隐藏>';
-  if (typeof value === 'string') return value
-    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer <已隐藏>')
-    .replace(/\b(access[_-]?token|refresh[_-]?token|app[_-]?secret|api[_-]?key|password|credential|authorization)\b\s*[:=]\s*[^\s,;]+/gi, '$1=<已隐藏>');
-  if (Array.isArray(value)) return value.map((item) => redactPlannerTrace(item));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactPlannerTrace(item, name)]));
-  return value;
+function keepExcerpt(workflow: TaskWorkflow, excerpts: Map<string, string>, evidenceId: string, text: string): void {
+  excerpts.set(evidenceId, text);
+  workflow.storeExcerpt(evidenceId, text);
+}
+
+/** A computation's evidence is its code together with what it printed. */
+function analysisExcerpt(request: CodexApprovalRequest, output: string): string {
+  const args = request.params.arguments as { code?: unknown; purpose?: unknown } | undefined;
+  let outcome: unknown = output;
+  try { outcome = JSON.parse(output); } catch { /* keep raw text */ }
+  return JSON.stringify({ purpose: typeof args?.purpose === 'string' ? args.purpose : undefined,
+    code: typeof args?.code === 'string' ? args.code.slice(0, 6_000) : undefined, outcome }).slice(0, 12_000);
+}
+
+function evidenceFileName(workflow: TaskWorkflow, evidenceId: string, capabilityId: string): string {
+  const existing = workflow.state.evidenceFiles?.find((item) => item.evidenceId === evidenceId);
+  if (existing) return existing.file;
+  const sequence = String((workflow.state.evidenceFiles?.length ?? 0) + 1).padStart(2, '0');
+  return `${sequence}_${capabilityId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60)}.json`;
+}
+
+/** Records the file in the task's evidence index, which is also written to the sandbox. */
+function evidenceIndex(workflow: TaskWorkflow, request: CodexApprovalRequest, file: string, evidenceId: string, capabilityId: string) {
+  const files = workflow.state.evidenceFiles ?? (workflow.state.evidenceFiles = []);
+  if (!files.some((item) => item.file === file)) {
+    const args = request.params.arguments as Record<string, unknown> | undefined;
+    files.push({ file, evidenceId, capabilityId, arguments: JSON.stringify(args ?? {}).slice(0, 500) });
+  }
+  return files;
+}
+
+/** Business results are saved into the sandbox; guides, computations and file receipts are not data sources. */
+function savesEvidenceFile(capabilityId: string): boolean {
+  return !/^(reference|analysis|artifact|agent)\./.test(capabilityId);
+}
+
+export function isScreenshotDeliveryRequest(text: string): boolean {
+  if (!/(?:截图|截屏|屏幕截图|screenshot)/i.test(text)) return false;
+  // Treat the destination as delivery intent even when the user names the
+  // current group explicitly (e.g. “发到群里” or “直接发群里”). This keeps
+  // screenshot requests on the direct page.screenshot path instead of
+  // allowing a model detour through store/account/page discovery calls.
+  return /(?:发我|发给我|发送|给我|发到(?:群里|群中|群)|发群里|直接发|send|deliver)/i.test(text);
+}
+
+function extractTaskIdFromQuotedText(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const match = /(?:任务(?:编号|ID)?|task(?:\s*id)?)\s*[：:#`\s]*([0-9A-Za-z][0-9A-Za-z_-]{2,127})/i.exec(text);
+  return match?.[1];
+}
+
+function quotedControlText(text: string): string {
+  return text.replace(/^\s*(?:(?:<@[^>]+>|@[\p{L}\p{N}_-]+)\s*)+/u, '').trim();
+}
+
+function isScreenshotDetour(capability: string): boolean {
+  return ['store.list', 'account.list', 'account.auth-list', 'page.content', 'page.query', 'page.exec'].includes(capability);
+}
+
+type ZiniaoStoreIdentity = { storeId?: string; storeName?: string };
+type ZiniaoScreenshotDelivery = {
+  id: string;
+  kind: 'screenshot';
+  capabilityId: 'ziniao.cli';
+  name: string;
+  size: number;
+  sha256: string;
+  width: number;
+  height: number;
+  nonWhitePixels: number;
+  visiblePixels: number;
+  surface: AgentRequest['surface'];
+  deliveredAt: string;
+  generation: number;
+  requestKey: string;
+  deduplicated?: boolean;
+};
+type ZiniaoBridgeState = {
+  opened?: ZiniaoStoreIdentity;
+  verified?: ZiniaoStoreIdentity;
+  pageGeneration: number;
+  /** Exact screenshot payloads already sent in this bridge task. */
+  screenshotDeliveries?: ZiniaoScreenshotDelivery[];
+  /** Allow one model-level recovery after a failed screenshot, then fail closed. */
+  screenshotFailures?: number;
+  lastScreenshotFailure?: { code: string; guidance: string };
+  hydrated?: boolean;
+};
+
+const PAGE_CAPABILITIES_REQUIRING_STORE = new Set([
+  'page.visit', 'page.screenshot', 'page.content', 'page.query', 'page.click', 'page.input',
+  'page.scroll', 'page.exec', 'page.wait-element', 'page.wait-nav', 'page.extract'
+]);
+
+/** Successful operations that may change the visible page and therefore make
+ * a later screenshot a new user intent. Pure reads and running-store
+ * verification do not advance this generation. */
+const ZINIAO_PAGE_GENERATION_CAPABILITIES = new Set([
+  'store.open', 'page.visit', 'page.click', 'page.input', 'page.scroll',
+  'page.exec', 'page.wait-element', 'page.wait-nav', 'automation.run'
+]);
+
+function flagValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index >= 0 && typeof args[index + 1] === 'string') return args[index + 1];
+  const prefix = flag + '=';
+  const value = args.find((item) => item.startsWith(prefix));
+  return value?.slice(prefix.length) || undefined;
+}
+
+function hasFlag(args: string[], flag: string, value: string): boolean {
+  return flagValue(args, flag)?.toLowerCase() === value.toLowerCase();
+}
+
+function identityFromObject(value: Record<string, unknown>): ZiniaoStoreIdentity | undefined {
+  const storeId = ['storeId', 'store_id', 'storeID'].map((key) => value[key]).find((item) => typeof item === 'string' || typeof item === 'number');
+  const storeName = ['storeName', 'store_name'].map((key) => value[key]).find((item) => typeof item === 'string');
+  if (storeId !== undefined || storeName !== undefined) return {
+    ...(storeId !== undefined ? { storeId: String(storeId) } : {}),
+    ...(storeName !== undefined ? { storeName: String(storeName) } : {})
+  };
+  return undefined;
+}
+
+function collectStoreIdentities(value: unknown, output: ZiniaoStoreIdentity[] = []): ZiniaoStoreIdentity[] {
+  if (Array.isArray(value)) {
+    for (const item of value) collectStoreIdentities(item, output);
+    return output;
+  }
+  if (!value || typeof value !== 'object') return output;
+  const record = value as Record<string, unknown>;
+  const identity = identityFromObject(record);
+  if (identity) output.push(identity);
+  for (const child of Object.values(record)) {
+    if (child && typeof child === 'object') collectStoreIdentities(child, output);
+  }
+  return output;
+}
+
+function mergeStoreIdentity(first: ZiniaoStoreIdentity | undefined, second: ZiniaoStoreIdentity | undefined): ZiniaoStoreIdentity | undefined {
+  if (!first && !second) return undefined;
+  const merged = { ...(first ?? {}), ...(second ?? {}) };
+  return merged.storeId || merged.storeName ? merged : undefined;
+}
+
+function sameStoreIdentity(left: ZiniaoStoreIdentity, right: ZiniaoStoreIdentity): boolean {
+  const idMatches = left.storeId && right.storeId && left.storeId === right.storeId;
+  const nameMatches = left.storeName && right.storeName && left.storeName.trim().toLowerCase() === right.storeName.trim().toLowerCase();
+  return Boolean(idMatches || nameMatches);
+}
+
+function storeIdentityFromOpen(input: { args: string[] }, result: unknown): ZiniaoStoreIdentity | undefined {
+  const fromResult = collectStoreIdentities(result)[0];
+  const argId = flagValue(input.args, '--id');
+  const argName = flagValue(input.args, '--name');
+  const fromArgs: ZiniaoStoreIdentity | undefined = argId || argName
+    ? { ...(argId ? { storeId: argId } : {}), ...(argName ? { storeName: argName } : {}) }
+    : undefined;
+  return mergeStoreIdentity(fromArgs, fromResult);
+}
+
+function storeIdentityFromRunning(result: unknown, opened: ZiniaoStoreIdentity): ZiniaoStoreIdentity | undefined {
+  return collectStoreIdentities(result).find((candidate) => sameStoreIdentity(opened, candidate));
+}
+
+function storeIdFromArgs(args: string[]): string | undefined {
+  return flagValue(args, '--store-id') ?? flagValue(args, '--storeId');
+}
+
+function ziniaoTransientError(message: string): boolean {
+  return /ZINIAO_(?:BUSY|REMOTE_UNAVAILABLE|COMMAND_FAILED|WORKER_FAILED)|timeout|timed out|connection reset|econnreset|temporarily unavailable/i.test(message);
 }
 
 function reviewEvidenceExcerpt(text: string): string {
@@ -129,10 +302,15 @@ export class TaskOrchestrator {
   private readonly approvalCards = new Map<string, { taskId: string; userId: string; challengeId: string; expired: boolean }>();
   private readonly cancelledTasks = new Set<string>();
   private readonly ziniaoFailures = new Map<string, { code: string; guidance: string }>();
+  /** Per-task bridge state. A page operation is valid only after the task's
+   * store.open has returned an identity and running-store verification matched it. */
+  private readonly ziniaoBridgeStates = new Map<string, ZiniaoBridgeState>();
   private readonly dwsTool: DwsTool;
   private readonly memoryTool: MemoryTool;
   private readonly guideTool: GuideTool;
   private readonly nativeWebTool: NativeWebTool;
+  private readonly amazonTool: AmazonTool;
+  private readonly imageTool: ImageTool;
   private readonly crossBorderOpsAccess: CrossBorderOpsAccessClient;
   private readonly crossBorderOpsTool: CrossBorderOpsTool;
   private readonly ziniaoBroker: ZiniaoBroker;
@@ -141,8 +319,12 @@ export class TaskOrchestrator {
   private readonly summarizer: ActionSummarizer;
   private readonly mcpReadTool: McpReadTool;
   private readonly evidenceReviewer: EvidenceReviewer;
-  private readonly contractPlanner: TaskContractPlanner;
   private readonly clarificationTimers = new Map<string, NodeJS.Timeout>();
+  /** Prepared attachments are scoped to one task and are the only images the
+   * image tool may read for an edit request. */
+  private readonly preparedAttachments = new Map<string, Attachment[]>();
+  private readonly imageResults = new Map<string, Map<string, ImageToolResult>>();
+  private readonly imageDeliveries = new Map<string, Set<string>>();
 
   public constructor(
     private readonly config: Config,
@@ -159,15 +341,21 @@ export class TaskOrchestrator {
     this.memoryTool = new MemoryTool(repo);
     this.guideTool = new GuideTool(config);
     this.nativeWebTool = new NativeWebTool(config);
+    this.amazonTool = new AmazonTool();
     this.crossBorderOpsAccess = new CrossBorderOpsAccessClient(config);
     this.crossBorderOpsTool = new CrossBorderOpsTool(new CrossBorderOpsDataClient(config));
     this.ziniaoBroker = ziniaoBroker ?? (config.ZINIAO_REMOTE_HOST ? new ZiniaoRemoteBroker(config) : new ZiniaoBroker(config));
     this.ziniaoTool = new ZiniaoTool(this.ziniaoBroker);
     this.media = media ?? new MediaPipeline(config);
+    this.imageTool = new ImageTool(config, (buffer) => this.media.scan(buffer));
     this.summarizer = new ActionSummarizer(config);
     this.mcpReadTool = new McpReadTool(config);
     this.evidenceReviewer = new EvidenceReviewer(config);
-    this.contractPlanner = new TaskContractPlanner(config);
+  }
+
+  /** Production enforcement: answers are delivered only after host validation and verification. */
+  private enforcing(): boolean {
+    return this.config.NODE_ENV === 'production' && this.config.TASK_WORKFLOW_MODE === 'enforce';
   }
 
   public async accept(request: AgentRequest): Promise<TaskRecord | undefined> {
@@ -243,6 +431,22 @@ export class TaskOrchestrator {
       await this.sender.send(request.surface, '已开启新会话。后续消息将使用全新的上下文；DWS 授权仍保留。', '新会话');
       return true;
     }
+
+    // A quoted task card/request can be cancelled without copying its UUID.
+    // Keep this deliberately narrow: only the exact bare command "取消" is
+    // interpreted as a quoted-task control message, and the repository lookup
+    // enforces the current user and originating conversation surface.
+    if (quotedControlText(request.text) === '取消') {
+      const enrichedRequest = await this.enrichCancellationReference(request);
+      const referenced = await this.findReferencedCancellationTask(enrichedRequest);
+      if (!referenced) {
+        await this.sender.send(request.surface, '未找到可取消的任务。请引用对应的任务受理消息或任务卡片后发送“取消”。', '未找到任务');
+        return true;
+      }
+      await this.cancelReferencedTask(enrichedRequest, referenced);
+      return true;
+    }
+
     const activeId = this.active.get(request.user.corpId + ':' + request.user.userId);
     if (activeId && isCancellation(request.text, activeId)) {
       this.cancelledTasks.add(activeId);
@@ -258,7 +462,7 @@ export class TaskOrchestrator {
       const threadId = this.activeThreads.get(request.user.corpId + ':' + request.user.userId);
       if (threadId) await this.codex.interrupt(threadId).catch(() => undefined);
       const task = await this.repo.findTask(activeId);
-      if (task) await this.deliverTask(task, md.cancelled(activeId), '已取消。任务编号：' + activeId, 3, '已取消');
+      if (task) await this.deliverTask(task, md.cancelled(activeId), '已取消。', 3, '已取消');
       return true;
     }
     for (const [taskId, pending] of this.approvals) {
@@ -294,7 +498,7 @@ export class TaskOrchestrator {
         await this.finishApprovalCard(taskId, 'cancelled');
         pending.resolve(pending.method === 'business' ? false : approvalResponse(pending.method, false));
         const task = await this.repo.findTask(taskId);
-        if (task) await this.deliverTask(task, md.cancelled(taskId), '已取消。任务编号：' + taskId, 3, '已取消');
+        if (task) await this.deliverTask(task, md.cancelled(taskId), '已取消。', 3, '已取消');
         return true;
       }
     }
@@ -346,7 +550,7 @@ export class TaskOrchestrator {
       await this.repo.decideApproval(task.id, 'cancelled');
       await this.repo.updateTask(task.id, 'cancelled');
       this.cancelledTasks.add(task.id);
-      await this.deliverTask(task, md.cancelled(task.id), '已取消。任务编号：' + task.id, 3, '已取消');
+      await this.deliverTask(task, md.cancelled(task.id), '已取消。', 3, '已取消');
       return true;
     }
 
@@ -372,6 +576,67 @@ export class TaskOrchestrator {
     }
     await this.deliverTask(task, '### 已确认\n\n任务 `' + task.id + '` 已恢复执行。', '已确认，继续处理…', 1, '已确认');
     return true;
+  }
+
+  private async findReferencedCancellationTask(request: AgentRequest): Promise<TaskRecord | undefined> {
+    if (request.quotedMessageId) {
+      const task = await this.repo.findTaskByMessageReference(request.user, request.surface, request.quotedMessageId);
+      if (task) return task;
+    }
+    const taskId = extractTaskIdFromQuotedText(request.quotedText);
+    if (!taskId) return undefined;
+    const task = await this.repo.findTask(taskId);
+    if (!task
+      || task.request.user.corpId !== request.user.corpId
+      || task.request.user.userId !== request.user.userId
+      || task.request.surface.type !== request.surface.type
+      || task.request.surface.id !== request.surface.id) return undefined;
+    return task;
+  }
+
+  private async enrichCancellationReference(request: AgentRequest): Promise<AgentRequest> {
+    if (request.quotedMessageId || request.quotedText) return request;
+    try {
+      const resolved = await this.dws.resolveQuotedMessage(request.user, request.messageId);
+      if (!resolved?.quotedMessageId && !resolved?.quotedText) return request;
+      if (request.surface.type === 'group') {
+        if (resolved.conversationId && resolved.conversationId !== request.surface.id) return request;
+        if (resolved.quotedConversationId && resolved.quotedConversationId !== request.surface.id) return request;
+      }
+      return {
+        ...request,
+        ...(resolved.quotedMessageId ? { quotedMessageId: resolved.quotedMessageId } : {}),
+        ...(resolved.quotedText ? { quotedText: resolved.quotedText } : {})
+      };
+    } catch (error) {
+      console.warn(JSON.stringify({
+        event: 'cancel.quote_resolution_failed',
+        messageId: request.messageId,
+        reason: publicErrorDetail(error)
+      }));
+      return request;
+    }
+  }
+
+  private async cancelReferencedTask(request: AgentRequest, task: TaskRecord): Promise<void> {
+    if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+      await this.sender.send(request.surface, '### 无需取消\n\n任务 `' + task.id + '` 当前状态：`' + task.status + '`。', '任务状态');
+      return;
+    }
+    this.cancelledTasks.add(task.id);
+    const pending = this.approvals.get(task.id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.approvals.delete(task.id);
+      await this.repo.decideApproval(task.id, 'cancelled');
+      pending.resolve(pending.method === 'business' ? false : approvalResponse(pending.method, false));
+    }
+    await this.repo.updateTask(task.id, 'cancelled');
+    await this.finishApprovalCard(task.id, 'cancelled');
+    const key = task.request.user.corpId + ':' + task.request.user.userId;
+    const threadId = task.threadId ?? this.activeThreads.get(key);
+    if (threadId) await this.codex.interrupt(threadId).catch(() => undefined);
+    await this.deliverTask(task, md.cancelled(task.id), '已取消。', 3, '已取消');
   }
 
   public async recover(): Promise<void> {
@@ -514,6 +779,9 @@ export class TaskOrchestrator {
       await this.repo.updateTask(task.id, 'running', { threadId });
       this.activeThreads.set(key, threadId);
       const attachments = await this.media.prepare(task.request.requestId, task.request.attachments, !this.codex.usesWorker?.(task.id));
+      this.preparedAttachments.set(task.id, attachments);
+      this.imageResults.delete(task.id);
+      this.imageDeliveries.delete(task.id);
       for (const item of attachments) await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
         eventType: 'attachment.prepared', payload: { id: item.id, name: item.name, size: item.size, sha256: item.sha256, available: Boolean(item.localPath) } });
       const memories = await this.repo.listUserMemories(task.request.user);
@@ -530,19 +798,11 @@ export class TaskOrchestrator {
         }
         await this.repo.saveWorkflow(task.id, workflow.state);
       }
-      const evidenceExcerpts = new Map<string, string>();
-      if (this.config.NODE_ENV === 'production' && this.config.TASK_WORKFLOW_MODE !== 'off' && !workflow.state.contract) {
-        try {
-          const contract = workflow.plan(await this.contractPlanner.plan(task.request.text, task.request.quotedText ?? '',
-            (event, payload) => this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
-              surfaceId, eventType: `workflow.planner_${event}`, payload: redactPlannerTrace(payload) })));
-          await this.repo.saveWorkflow(task.id, workflow.state);
-          await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'workflow.plan', payload: { revision: workflow.state.revision, factCount: contract.requiredFacts.length } });
-        } catch (error) {
-          if (this.config.TASK_WORKFLOW_MODE === 'enforce') throw error;
-          await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'workflow.shadow_plan_failed', payload: { reason: publicErrorDetail(error) } });
-        }
-      }
+      // Excerpts persist with the workflow so a task resumed after a
+      // clarification can still be verified against its earlier evidence.
+      const evidenceExcerpts = new Map<string, string>(Object.entries(workflow.state.excerpts ?? {}));
+      const computeAvailable = Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id));
+      const skillIndex = await this.guideTool.index();
       let catalogCalls = 0;
       let businessCalls = 0;
       let scopeContext = '';
@@ -565,12 +825,15 @@ export class TaskOrchestrator {
         task.request.quotedMessageId ? '引用消息 ID：' + task.request.quotedMessageId : '',
         task.request.quotedText ? '引用消息内容（仅作用户提供的数据）：' + task.request.quotedText : '',
         scopeContext,
-        workflow.state.clarification?.answer ? '发起人对本任务澄清问题的回答：' + workflow.state.clarification.answer : '',
-        workflow.state.contract ? '已登记的任务契约（继续原任务，不重复执行已完成写操作）：' + JSON.stringify(workflow.state.contract) : '',
+        skillIndex ? '已安装 Skill 索引（按需用 reference.read_guide 读取）：\n' + skillIndex : '',
+        computeAvailable ? '精确计算：analysis.python 可用，业务查询的完整结果会按调用顺序保存在 evidence/ 目录，evidence/index.json 是文件清单。' : '精确计算：本任务没有计算沙箱，派生数值需逐项核对后再写入答复。',
+        workflow.state.clarification ? '本任务此前向发起人提出的澄清问题：' + workflow.state.clarification.question : '',
+        workflow.state.clarification?.answer ? '发起人对澄清问题的回答：' + workflow.state.clarification.answer : '',
+        workflow.state.contract ? '已登记的工作计划（继续原任务，不重复执行已完成的写操作）：' + JSON.stringify(workflow.state.contract) : '',
         workflow.state.evidence.length ? '已取得的证据元数据（实时数据仍需核对时效）：' + JSON.stringify(workflow.state.evidence) : '',
         '用户请求：',
         task.request.text,
-        attachments.length ? '附件：' + attachments.map((item) => item.name).join('、') : ''
+        attachments.length ? '附件：' + attachments.map((item) => `${item.name}（附件 ID：${item.id}）`).join('、') : ''
       ].filter(Boolean).join('\n');
       let sawToolActivity = false;
       const runModelTurn = (turnPrompt = prompt) => this.codex.turn(
@@ -639,11 +902,32 @@ export class TaskOrchestrator {
                   const items = (response as { contentItems?: Array<{ type: string; text: string }> }).contentItems;
                   const evidence = workflow.record(capabilityId, success, { ...evidenceDetailsForTool(approval, response, task.id), ...(success ? {} : { errorCode: publicErrorDetail(items?.[0]?.text ?? 'TOOL_FAILED') }), ...(signature ? { requestSignature: signature } : {}) });
                   evidenceId = evidence.id;
-                  await this.repo.saveWorkflow(task.id, workflow.state);
                   if (items) {
-                    evidenceExcerpts.set(evidence.id, success ? reviewEvidenceExcerpt(items[0]?.text ?? '') : publicErrorDetail(items[0]?.text ?? 'TOOL_FAILED'));
-                    items.push({ type: 'inputText', text: `证据 ID：${evidence.id}；能力：${capabilityId}；状态：${evidence.status}` });
+                    const raw = items[0]?.text ?? '';
+                    keepExcerpt(workflow, evidenceExcerpts, evidence.id, !success ? publicErrorDetail(raw || 'TOOL_FAILED')
+                      : capabilityId === 'analysis.python' ? analysisExcerpt(approval, raw) : reviewEvidenceExcerpt(raw));
+                    let fileNote = '';
+                    if (success && savesEvidenceFile(capabilityId) && this.codex.writeEvidence && this.codex.usesWorker?.(task.id)) {
+                      try {
+                        // Short sequential names: models misremember 36-character IDs.
+                        const fileName = evidenceFileName(workflow, evidence.id, capabilityId);
+                        const path = await this.codex.writeEvidence(task.id, fileName, raw);
+                        await this.codex.writeEvidence(task.id, 'index.json', JSON.stringify(evidenceIndex(workflow, approval, fileName, evidence.id, capabilityId), null, 1));
+                        fileNote = `；完整结果文件：${path}（全部文件清单见 evidence/index.json）`;
+                        // The complete result now lives in the sandbox; keep the
+                        // model context bounded for very large payloads.
+                        if (raw.length > MODEL_TOOL_OUTPUT_MAX_CHARS) {
+                          items[0] = { type: 'inputText', text: raw.slice(0, MODEL_TOOL_OUTPUT_MAX_CHARS)
+                            + `\n…（结果共 ${raw.length} 字符，已截断显示；完整数据在 ${path}，用 analysis.python 读取计算）` };
+                        }
+                      } catch (error) {
+                        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+                          eventType: 'evidence.file_failed', payload: { evidenceId: evidence.id, reason: publicErrorDetail(error) } });
+                      }
+                    }
+                    items.push({ type: 'inputText', text: `证据 ID：${evidence.id}；能力：${capabilityId}；状态：${evidence.status}${fileNote}` });
                   }
+                  await this.repo.saveWorkflow(task.id, workflow.state);
                   await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'capability.observed', payload: { id: capabilityId, status: evidence.status, evidenceId: evidence.id } });
                 }
               }
@@ -696,23 +980,24 @@ export class TaskOrchestrator {
           if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
         }
       }
-      // An older surface thread can retain obsolete tool identities and prior
-      // explanations. For a read task that produced no routed business call,
-      // retry once in a fresh thread with the same host-validated contract.
-      if (this.config.NODE_ENV === 'production' && this.config.TASK_WORKFLOW_MODE === 'enforce'
-        && workflow.state.contract?.mode === 'read' && workflow.state.contract.requiredFacts.length > 0
-        && workflow.state.evidence.length === 0 && businessCalls === 0) {
-        threadId = await this.codex.startThread(task.request.user, task.id);
-        await this.repo.setSurfaceThread(surfaceId, threadId);
-        await this.repo.updateTask(task.id, 'running', { threadId });
-        this.activeThreads.set(key, threadId);
-        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
-          eventType: 'workflow.fresh_thread_retry', payload: { reason: 'required_read_facts_without_routed_call' } });
-        result = await runModelTurn(prompt);
-      }
-      if (this.config.NODE_ENV === 'production' && this.config.TASK_WORKFLOW_MODE === 'enforce' && (!workflow.state.clarification || workflow.state.clarification.answer) && !workflow.state.completion) {
-        for (let reviewAttempt = 0; reviewAttempt < 2 && (!workflow.state.clarification || workflow.state.clarification.answer) && !workflow.state.completion; reviewAttempt += 1) {
-          result = await runModelTurn('原任务尚未通过宿主任务闭环校验。任务契约已登记时不必重做 plan。请在必要的工具取证后调用 agent.workflow，operation=complete，completion 必须为 {status:"answered|partial|blocked",answer:"给用户的完整回答",factEvidence:{"requiredFact.id":["成功证据ID"]},missingFacts:[]}。已有证据：' + JSON.stringify(workflow.state.evidence) + '。不得仅凭工具目录受限宣称整个任务无法完成。');
+      // The agent may end its turn with a plain final message instead of
+      // agent.workflow complete. The host validates that message exactly like
+      // a submitted completion; a failed validation starts one focused repair
+      // turn carrying every issue at once.
+      if (this.enforcing()) {
+        for (let revisionTurns = 0; ; revisionTurns += 1) {
+          if (workflow.state.completion || (workflow.state.clarification && !workflow.state.clarification.answer)) break;
+          if (this.cancelledTasks.has(task.id)) break;
+          const candidate = result.text.trim();
+          const outcome = candidate && candidate !== EMPTY_TURN_TEXT
+            ? await this.submitCompletion(task, surfaceId, workflow, evidenceExcerpts, { status: 'answered', answer: candidate, factEvidence: {}, missingFacts: [] }, computeAvailable)
+            : { accepted: false as const, feedback: '本回合没有输出最终答复。' };
+          if (outcome.accepted || revisionTurns >= MAX_REVISION_TURNS) break;
+          result = await runModelTurn([
+            '你的最终答复还不能交付，原因如下：',
+            outcome.feedback,
+            '请按上述意见修正（需要补充数据时先调用工具取证），然后调用 agent.workflow 的 complete 提交修正后的完整答复；也可以直接输出修正后的完整最终答复。'
+          ].join('\n'));
         }
       }
       // No processing heartbeat may race with the answer phase. In particular,
@@ -764,7 +1049,7 @@ export class TaskOrchestrator {
             await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'card.update_failed', payload: { reason: safeDeliveryError(error) } });
             break;
           }
-          await new Promise((resolve) => setTimeout(resolve, cardCadenceMs));
+          await new Promise((resolve) => setTimeout(resolve, ANSWER_SNAPSHOT_CADENCE_MS));
         }
       }
       await this.deliverTask(task, result.text, result.text, 3, 'Agent智能助手');
@@ -805,6 +1090,10 @@ export class TaskOrchestrator {
     } finally {
       clearTimeout(progressTimer);
       this.ziniaoFailures.delete(task.id);
+      this.ziniaoBridgeStates.delete(task.id);
+      this.preparedAttachments.delete(task.id);
+      this.imageResults.delete(task.id);
+      this.imageDeliveries.delete(task.id);
       // Release the ziniao bridge session lease on every terminal path so the
       // executor frees up for the next queued user immediately.
       await Promise.resolve(this.ziniaoBroker.endSession?.(task.request.user)).catch(() => undefined);
@@ -859,7 +1148,7 @@ export class TaskOrchestrator {
         await this.repo.saveTaskArtifact(task.id, output);
         await this.deliverArtifacts(task, threadId);
         const evidence = workflow.record('artifact.submit', true, { scope: `task:${task.id}/output:${output.sha256}` });
-        evidenceExcerpts.set(evidence.id, JSON.stringify({ delivered: true, name: output.name, size: output.size,
+        keepExcerpt(workflow, evidenceExcerpts, evidence.id, JSON.stringify({ delivered: true, name: output.name, size: output.size,
           sha256: output.sha256, surface: task.request.surface }));
         await this.repo.saveWorkflow(task.id, workflow.state);
         await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
@@ -941,7 +1230,7 @@ export class TaskOrchestrator {
         const pages = Array.isArray(args.pages) ? args.pages as number[] : undefined;
         const input = await this.codex.inspectInput(task.id, basename(args.path), args.excerpt, pages);
         const evidence = workflow.record('artifact.read', true, { scope: `task:${task.id}/input:${input.name}`, requestSignature: sha256({ file: input.sha256, excerpt: args.excerpt, pages }) });
-        evidenceExcerpts.set(evidence.id, JSON.stringify({ file: input.name, size: input.size, sha256: input.sha256, pages, pageCount: input.pageCount, excerpt: args.excerpt }));
+        keepExcerpt(workflow, evidenceExcerpts, evidence.id, JSON.stringify({ file: input.name, size: input.size, sha256: input.sha256, pages, pageCount: input.pageCount, excerpt: args.excerpt }));
         await this.repo.saveWorkflow(task.id, workflow.state);
         await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
           eventType: 'artifact.read_recorded', payload: { name: input.name, size: input.size, sha256: input.sha256, evidenceId: evidence.id, pages: Array.isArray(args.pages) ? args.pages : undefined } });
@@ -953,7 +1242,8 @@ export class TaskOrchestrator {
     if (request.params.namespace === 'artifact' && request.params.tool === 'overwrite_drive') {
       try {
         if (!this.codex.inspectOutput || !this.codex.downloadOutput) throw new Error('FILE_WORKER_NOT_ENABLED');
-        if (!/(钉盘|网盘|drive)/i.test(task.request.text) || !/(覆盖|替换|更新原文件|原位修改)/.test(task.request.text)) throw new Error('DRIVE_OVERWRITE_NOT_EXPLICIT');
+        // Intent is not inferred from message keywords: the overwrite is gated
+        // by the initiator's confirmation card and a version check below.
         const args = request.params.arguments as { path?: unknown; nodeId?: unknown } | undefined;
         if (typeof args?.path !== 'string' || typeof args.nodeId !== 'string') throw new Error('DRIVE_OVERWRITE_ARGUMENT_INVALID');
         const output = await this.codex.inspectOutput(task.id, args.path);
@@ -997,17 +1287,17 @@ export class TaskOrchestrator {
       return { contentItems: [{ type: 'inputText', text: JSON.stringify(listCapabilities(request.params.arguments)) }], success: true };
     }
     if (request.params.namespace === 'agent' && request.params.tool === 'workflow') {
+      const args = request.params.arguments as Record<string, unknown> | undefined;
+      if (args?.operation === 'complete') {
+        const outcome = await this.submitCompletion(task, undefined, workflow, evidenceExcerpts, args.completion,
+          Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id)));
+        return outcome.accepted
+          ? { contentItems: [{ type: 'inputText', text: JSON.stringify({ accepted: true, status: outcome.completion.status }) }], success: true }
+          : { contentItems: [{ type: 'inputText', text: outcome.feedback }], success: false };
+      }
       try {
-        const args = request.params.arguments as Record<string, unknown> | undefined;
         let result: unknown;
-        if (args?.operation === 'plan') {
-          if (this.config.NODE_ENV === 'production' && this.config.TASK_WORKFLOW_MODE === 'enforce' && workflow.state.contract) {
-            const preview = new TaskWorkflow({ ...workflow.state, evidence: workflow.state.evidence }).plan(args.contract);
-            const review = await this.contractPlanner.reviewRevision(task.request.text, preview);
-            if (!review.aligned) throw new Error(`WORKFLOW_PLAN_REVISION_MISALIGNED:${review.reason}`);
-          }
-          result = workflow.plan(args.contract);
-        }
+        if (args?.operation === 'plan') result = workflow.plan(args.contract);
         else if (args?.operation === 'clarify') {
           if (this.config.TASK_WORKFLOW_MODE === 'shadow') {
             await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
@@ -1015,27 +1305,21 @@ export class TaskOrchestrator {
             result = { shadow: true, clarificationNotSent: true };
           } else result = workflow.clarify(args.question, args.reason);
         }
-        else if (args?.operation === 'complete') {
-          const completion = workflow.complete(args.completion);
-          if (this.config.NODE_ENV === 'production' && this.config.TASK_WORKFLOW_MODE === 'enforce' && workflow.state.contract) {
-            const review = await this.evidenceReviewer.review(workflow.state.contract, completion, workflow.state.evidence, Object.fromEntries(evidenceExcerpts), task.request.text);
-            if (!review.supported) {
-              delete workflow.state.completion;
-              throw new Error(`WORKFLOW_EVIDENCE_REVIEW_FAILED:${review.reason}`);
-            }
-          }
-          result = completion;
-        }
-        else throw new Error('WORKFLOW_OPERATION_INVALID');
+        else throw new Error('WORKFLOW_OPERATION_INVALID: operation 只能是 plan、clarify 或 complete');
         await this.repo.saveWorkflow(task.id, workflow.state);
-        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, eventType: `workflow.${args.operation}`, payload: { revision: workflow.state.revision } });
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, eventType: `workflow.${String(args?.operation)}`, payload: { revision: workflow.state.revision } });
         return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
       } catch (error) {
-        if ((request.params.arguments as Record<string, unknown> | undefined)?.operation === 'complete') {
-          delete workflow.state.completion;
-          await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
-            eventType: 'workflow.complete_rejected', payload: { reason: publicErrorDetail(error) } });
-        }
+        return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : String(error) }], success: false };
+      }
+    }
+    if (request.params.namespace === 'analysis' && request.params.tool === 'python') {
+      try {
+        const input = parseAnalysisInput(request.params.arguments);
+        if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE: 本任务没有计算沙箱，请直接核对证据中的数值。');
+        const outcome = await this.codex.runPython(task.id, input.code);
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify(outcome) }], success: outcome.exitCode === 0 && !outcome.timedOut };
+      } catch (error) {
         return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : String(error) }], success: false };
       }
     }
@@ -1075,6 +1359,41 @@ export class TaskOrchestrator {
         await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
           eventType: 'web.native_search_failed', payload: { reason } });
         return { contentItems: [{ type: 'inputText', text: reason }], success: false };
+      }
+    }
+    if (request.params.namespace === 'amazon' && AMAZON_OPERATIONS.has(request.params.tool)) {
+      try {
+        const result = await this.amazonTool.execute(request.params.tool, request.params.arguments, this.preparedAttachments.get(task.id) ?? []) as Record<string, unknown>;
+        let mainImageAttachmentId: string | undefined;
+        let mainImageError: string | undefined;
+        if (request.params.tool === 'get_product_detail') {
+          try {
+            const attachment = await this.amazonTool.attachMainImage(result, task.id, this.config.MEDIA_DIR, this.config.MEDIA_MAX_BYTES, (buffer) => this.media.scan(buffer));
+            if (attachment) {
+              const prepared = this.preparedAttachments.get(task.id) ?? [];
+              if (!prepared.some((item) => item.id === attachment.id)) prepared.push(attachment);
+              this.preparedAttachments.set(task.id, prepared);
+              mainImageAttachmentId = attachment.id;
+            }
+          } catch (error) { mainImageError = publicErrorDetail(error); }
+        }
+        const publicResult = { ...result, ...(request.params.tool === 'image_search' ? { sources: undefined } : {}),
+          ...(mainImageAttachmentId ? { mainImageAttachmentId, mainImageReadyForEdit: true } : {}),
+          ...(mainImageError ? { mainImageDownloadError: mainImageError } : {}) };
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify(publicResult) }], success: result.status !== 'unavailable' };
+      } catch (error) {
+        return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : 'AMAZON_TOOL_FAILED' }], success: false };
+      }
+    }
+    if (request.params.namespace === 'image' && request.params.tool === 'generate') {
+      try {
+        const result = await this.generateAndDeliverImages(task, threadId, request.params.arguments);
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify(result.publicResult) }], success: true };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'IMAGE_GENERATION_FAILED';
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId: task.request.surface.id,
+          eventType: 'image.generation_failed', payload: { reason: publicErrorDetail(reason) } });
+        return { contentItems: [{ type: 'inputText', text: publicErrorDetail(reason) }], success: false };
       }
     }
     if (request.params.namespace === 'agent' && request.params.tool === 'memory') {
@@ -1138,25 +1457,79 @@ export class TaskOrchestrator {
     }
     if (request.params.namespace === 'ziniao' && request.params.tool === 'cli') {
       const ziniaoOpts = this.ziniaoGateOptions(task);
+      let screenshotRequest = false;
       try {
         const input = this.ziniaoTool.parse(request.params.arguments);
-        const action = this.ziniaoTool.action(input);
+        screenshotRequest = input.capability === 'page.screenshot';
+        const bridge = this.hydrateZiniaoBridgeState(task, workflow);
+        if (input.capability === 'page.screenshot') {
+          const requestKey = sha256({ capability: input.capability, args: input.args, generation: bridge.pageGeneration });
+          const previous = bridge.screenshotDeliveries?.find((item) => item.requestKey === requestKey);
+          if (previous) {
+            await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+              surfaceId: task.request.surface.id, eventType: 'ziniao.screenshot_deduplicated', payload: previous });
+            return { contentItems: [{ type: 'inputText', text: JSON.stringify({ delivered: true, deduplicated: true, delivery: previous }) }], success: true };
+          }
+          const deliveryKey = sha256({ taskId: task.id, kind: 'ziniao.screenshot.delivery', requestKey });
+          const persistedDelivery = await this.repo.getToolInvocation(deliveryKey);
+          if (persistedDelivery?.status === 'completed' && persistedDelivery.result && typeof persistedDelivery.result === 'object') {
+            const receipt = persistedDelivery.result as ZiniaoScreenshotDelivery;
+            if (receipt.requestKey === requestKey && receipt.sha256) {
+              bridge.screenshotDeliveries = [...(bridge.screenshotDeliveries ?? []).filter((item) => item.requestKey !== requestKey), receipt];
+              this.persistZiniaoBridgeState(task, workflow);
+              await this.repo.saveWorkflow(task.id, workflow.state);
+              await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+                surfaceId: task.request.surface.id, eventType: 'ziniao.screenshot_deduplicated', payload: receipt });
+              return { contentItems: [{ type: 'inputText', text: JSON.stringify({ delivered: true, deduplicated: true, delivery: receipt }) }], success: true };
+            }
+          }
+          if (persistedDelivery && persistedDelivery.status !== 'failed') {
+            throw new Error('ZINIAO_SCREENSHOT_OUTCOME_UNKNOWN');
+          }
+          if ((bridge?.screenshotFailures ?? 0) >= 2) {
+            const failure = bridge?.lastScreenshotFailure;
+            return { contentItems: [{ type: 'inputText', text: failure?.guidance ?? '截图已连续失败两次，已停止重复调用，请重新发起任务。' }], success: false };
+          }
+        }
+        if (isScreenshotDeliveryRequest(task.request.text) && (isScreenshotDetour(input.capability)
+          || (input.capability === 'page.extract' && hasFlag(input.args, '--mode', 'running') && !this.ziniaoBridgeStates.get(task.id)?.opened))) {
+          return { contentItems: [{ type: 'inputText', text: 'SCREENSHOT_DIRECT_DELIVERY: 用户明确要求截图并发送。必须先调用 store.open 打开目标店铺，等待返回有效店铺身份，再调用 page.extract --mode running 确认运行中的店铺与目标一致，最后调用 page.screenshot。不要查询店铺列表、账号列表、页面正文或网页标题。截图结果由宿主自动发送到原会话。' }], success: false };
+        }
+        const action = this.ziniaoTool.action(input, task.request.text);
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'ziniao.impact_classified', payload: { capability: input.capability, risk: action.risk } });
         if (!await this.ziniaoBroker.status(task.request.user, ziniaoOpts)) await this.ensureZiniaoAuthorization(task, threadId, ziniaoOpts);
         if (action.risk === 'read') {
+          this.assertZiniaoBridgePrecondition(task, input, isScreenshotDeliveryRequest(task.request.text));
           let result: unknown;
           try {
-            result = await this.ziniaoTool.execute(task.request.user, input, true, ziniaoOpts);
+            result = await this.executeZiniaoReadWithRetry(task, input, ziniaoOpts);
           } catch (error) {
             if (!(error instanceof Error) || error.message !== 'ZINIAO_AUTH_REQUIRED') throw error;
             await this.ensureZiniaoAuthorization(task, threadId, ziniaoOpts);
-            result = await this.ziniaoTool.execute(task.request.user, input, true, ziniaoOpts);
+            result = await this.executeZiniaoReadWithRetry(task, input, ziniaoOpts);
+          }
+          this.recordZiniaoBridgeResult(task, workflow, input, result);
+          // Screenshot bytes are a deliverable, not model-only tool context.
+          // Persist and send them immediately so the model cannot replace the
+          // requested image with a description or a local-path workaround.
+          if (input.capability === 'page.screenshot') {
+            const state = this.hydrateZiniaoBridgeState(task, workflow);
+            const requestKey = sha256({ capability: input.capability, args: input.args, generation: state.pageGeneration });
+            const delivered = await this.deliverZiniaoScreenshot(task, workflow, result, requestKey, state.pageGeneration);
+            state.screenshotFailures = 0;
+            this.persistZiniaoBridgeState(task, workflow);
+            await this.repo.saveWorkflow(task.id, workflow.state);
+            return { contentItems: [{ type: 'inputText', text: JSON.stringify({ delivered: true, ...(delivered.deduplicated ? { deduplicated: true } : {}), delivery: delivered }) }], success: true };
           }
           this.ziniaoFailures.delete(task.id);
           return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
         }
         const confirmed = await this.waitForBusinessApproval(task, threadId, action);
         if (!confirmed) throw new Error('ZINIAO_CONFIRMATION_REQUIRED');
-        const result = await this.executeIdempotentWrite(task, action, () => this.ziniaoTool.execute(task.request.user, input, true, ziniaoOpts));
+        const result = await this.executeIdempotentWrite(task, action, () => this.ziniaoTool.execute(task.request.user, input, true, ziniaoOpts, task.request.text));
+        this.recordZiniaoBridgeResult(task, workflow, input, result);
+        await this.repo.saveWorkflow(task.id, workflow.state);
         this.ziniaoFailures.delete(task.id);
         return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
       } catch (error) {
@@ -1169,6 +1542,20 @@ export class TaskOrchestrator {
           ? '紫鸟操作未完成：授权入口未能生成或发送，本次没有可用的新授权链接。请联系管理员检查紫鸟客户端连接与机器人私聊通道。'
           : message === 'ZINIAO_PERMISSION_DENIED'
             ? '当前紫鸟账号没有执行此操作的权限，请联系紫鸟管理员检查账号与应用权限。'
+          : message === 'ZINIAO_STORE_OPEN_UNVERIFIED'
+            ? '紫鸟店铺打开命令未返回有效店铺身份，已停止后续页面操作；请重新打开目标店铺。'
+          : message === 'ZINIAO_STORE_NOT_OPENED'
+            ? '当前任务还没有成功打开店铺，已停止页面操作；请先执行 store.open 并等待返回店铺身份。'
+          : message === 'ZINIAO_STORE_NOT_VERIFIED'
+            ? '店铺打开命令已返回，但尚未确认运行中的店铺与目标一致；请先执行 page.extract --mode running。'
+          : message === 'ZINIAO_STORE_MISMATCH'
+            ? '页面操作目标与刚确认打开的店铺不一致，已停止操作，避免误操作其他店铺。'
+          : message === 'ZINIAO_SCREENSHOT_BLANK'
+            ? '紫鸟返回了空白截图，店铺页面尚未完成渲染；已停止投递空白图片，请重新打开店铺并等待页面加载后再试。'
+          : message === 'ZINIAO_SCREENSHOT_DATA_MISSING' || message === 'ZINIAO_SCREENSHOT_DATA_INVALID' || message === 'ZINIAO_SCREENSHOT_INVALID_PNG'
+            ? '紫鸟截图结果无效，已停止投递；请重新打开店铺并确认页面加载完成后再试。'
+          : message === 'ZINIAO_SCREENSHOT_OUTCOME_UNKNOWN'
+            ? '紫鸟截图投递结果无法确认，为避免重复发送已停止自动重试；请在原群核对是否已经收到截图后再发起新的截图任务。'
           : message === ZINIAO_BUSY
             ? '紫鸟执行机正忙（其他成员正在操作），本次未执行。请稍后重发任务；若是批量任务建议拆小或错峰执行。'
           : message === ZINIAO_QUEUE_TIMEOUT
@@ -1180,6 +1567,11 @@ export class TaskOrchestrator {
             : message.startsWith('ZINIAO_AUTH')
               ? '紫鸟操作未完成：授权尚未完成或已失效。仅在本次私聊确实收到新授权链接时才可打开链接；否则请联系管理员检查紫鸟授权服务。'
               : message;
+        if (screenshotRequest) {
+          const state = this.bridgeState(task);
+          state.screenshotFailures = (state.screenshotFailures ?? 0) + 1;
+          state.lastScreenshotFailure = { code: message, guidance };
+        }
         this.ziniaoFailures.set(task.id, { code: message, guidance });
         return { contentItems: [{ type: 'inputText', text: guidance }], success: false };
       }
@@ -1231,6 +1623,62 @@ export class TaskOrchestrator {
       }
       return { contentItems: [{ type: 'inputText', text: message }], success: false };
     }
+  }
+
+  /**
+   * Single acceptance path for a final answer, whether the agent submitted it
+   * through agent.workflow complete or simply ended its turn with it.
+   * 1. Deterministic checks against the agent's own plan (evidence present,
+   *    pagination complete). These cost no model call.
+   * 2. One verifier call that returns every issue at once.
+   * Verifier infrastructure failures never count as a rejection, and the
+   * number of verifier rounds is bounded so a task always terminates.
+   */
+  private async submitCompletion(task: TaskRecord, surfaceId: string | undefined, workflow: TaskWorkflow, evidenceExcerpts: Map<string, string>,
+    raw: unknown, computeAvailable: boolean): Promise<{ accepted: true; completion: TaskCompletion } | { accepted: false; feedback: string }> {
+    const audit = (eventType: string, payload: Record<string, unknown>) => this.repo.audit({ requestId: task.request.requestId, taskId: task.id,
+      user: task.request.user, ...(surfaceId ? { surfaceId } : {}), eventType, payload });
+    let completion: TaskCompletion;
+    try {
+      completion = workflow.complete(raw);
+    } catch (error) {
+      await audit('workflow.complete_rejected', { stage: 'structure', reason: publicErrorDetail(error) });
+      return { accepted: false, feedback: error instanceof Error ? error.message : String(error) };
+    }
+    if (this.enforcing()) {
+      const round = (workflow.state.reviewRounds ?? 0) + 1;
+      workflow.state.reviewRounds = round;
+      const startedAt = Date.now();
+      const review = await this.evidenceReviewer.review({
+        request: task.request.text,
+        ...(task.request.quotedText ? { quotedText: task.request.quotedText } : {}),
+        ...(workflow.state.clarification?.answer ? { clarificationAnswer: workflow.state.clarification.answer } : {}),
+        ...(workflow.state.contract ? { contract: workflow.state.contract } : {}),
+        completion, evidence: workflow.state.evidence, excerpts: Object.fromEntries(evidenceExcerpts),
+        computeAvailable, round, maxRounds: MAX_REVIEW_ROUNDS
+      });
+      await audit('workflow.review', { round, status: review.status, durationMs: Date.now() - startedAt,
+        blocking: review.issues.filter((issue) => issue.severity === 'blocking').length,
+        advisory: review.issues.filter((issue) => issue.severity === 'advisory').length,
+        ...(review.status === 'pass' ? {} : { reason: review.reason }) });
+      if (review.status === 'revise' && round < MAX_REVIEW_ROUNDS) {
+        delete workflow.state.completion;
+        await this.repo.saveWorkflow(task.id, workflow.state);
+        await audit('workflow.complete_rejected', { stage: 'review', round, reason: review.reason });
+        return { accepted: false, feedback: [
+          `交付前核验未通过（第 ${round}/${MAX_REVIEW_ROUNDS} 轮），以下是本轮发现的全部问题：`,
+          formatIssues(review.issues),
+          round + 1 === MAX_REVIEW_ROUNDS
+            ? '请一次性修正所有“必须修正”项。下一轮是最后一轮核验：无法用证据支持的内容请删除，或明确标注为推断并说明依据。'
+            : '请一次性修正所有“必须修正”项，其余内容保持不变。'
+        ].join('\n') };
+      }
+      if (review.status === 'revise') await audit('workflow.review_budget_exhausted', { round, reason: review.reason });
+      if (review.status === 'unavailable') await audit('workflow.review_unavailable', { round, reason: review.reason });
+    }
+    await this.repo.saveWorkflow(task.id, workflow.state);
+    await audit('workflow.complete', { revision: workflow.state.revision, status: completion.status });
+    return { accepted: true, completion };
   }
 
   private async waitForBusinessApproval(task: TaskRecord, threadId: string, action: ToolAction): Promise<boolean> {
@@ -1479,6 +1927,264 @@ export class TaskOrchestrator {
     }
   }
 
+  private bridgeState(task: TaskRecord): ZiniaoBridgeState {
+    let state = this.ziniaoBridgeStates.get(task.id);
+    if (!state) {
+      state = { pageGeneration: 0 };
+      this.ziniaoBridgeStates.set(task.id, state);
+    }
+    return state;
+  }
+
+  /** Load the persisted delivery ledger once for this process-local bridge state. */
+  private hydrateZiniaoBridgeState(task: TaskRecord, workflow: TaskWorkflow): ZiniaoBridgeState {
+    const state = this.bridgeState(task);
+    if (state.hydrated) return state;
+    const persisted = workflow.state.ziniao;
+    if (persisted) {
+      state.pageGeneration = Number.isSafeInteger(persisted.pageGeneration) && persisted.pageGeneration >= 0 ? persisted.pageGeneration : 0;
+      state.screenshotDeliveries = (Array.isArray(persisted.screenshotDeliveries) ? persisted.screenshotDeliveries : []).flatMap((item) => {
+        if (!item || typeof item !== 'object' || typeof item.requestKey !== 'string' || typeof item.sha256 !== 'string') return [];
+        return [{
+          id: item.id,
+          kind: item.kind,
+          capabilityId: item.capabilityId,
+          name: item.name,
+          size: item.size,
+          sha256: item.sha256,
+          width: item.width,
+          height: item.height,
+          nonWhitePixels: item.nonWhitePixels,
+          visiblePixels: item.visiblePixels,
+          surface: { type: item.surfaceType, id: item.surfaceId },
+          deliveredAt: item.deliveredAt,
+          generation: item.generation,
+          requestKey: item.requestKey
+        }];
+      });
+    }
+    state.hydrated = true;
+    return state;
+  }
+
+  private persistZiniaoBridgeState(task: TaskRecord, workflow: TaskWorkflow): void {
+    const state = this.bridgeState(task);
+    workflow.state.ziniao = {
+      pageGeneration: state.pageGeneration,
+      screenshotDeliveries: (state.screenshotDeliveries ?? []).filter((item) => !item.deduplicated).slice(-20).map((item): ScreenshotDeliveryReceipt => ({
+        id: item.id,
+        kind: 'screenshot',
+        capabilityId: 'ziniao.cli',
+        name: item.name,
+        size: item.size,
+        sha256: item.sha256,
+        width: item.width,
+        height: item.height,
+        nonWhitePixels: item.nonWhitePixels,
+        visiblePixels: item.visiblePixels,
+        surfaceType: item.surface.type,
+        surfaceId: item.surface.id,
+        deliveredAt: item.deliveredAt,
+        generation: item.generation,
+        requestKey: item.requestKey
+      }))
+    };
+  }
+
+  private assertZiniaoBridgePrecondition(task: TaskRecord, input: { capability: string; args: string[] }, directScreenshot: boolean): void {
+    if (input.capability === 'store.open' || input.capability === 'store.list' || input.capability === 'store.resolve') return;
+    if (input.capability === 'page.extract' && hasFlag(input.args, '--mode', 'running')) {
+      const state = this.ziniaoBridgeStates.get(task.id);
+      if (!state?.opened && directScreenshot) throw new Error('ZINIAO_STORE_NOT_OPENED');
+      return;
+    }
+    const needsStore = PAGE_CAPABILITIES_REQUIRING_STORE.has(input.capability) || input.capability === 'automation.run';
+    if (!needsStore) return;
+    const state = this.ziniaoBridgeStates.get(task.id);
+    if (!state?.opened) throw new Error('ZINIAO_STORE_NOT_OPENED');
+    if (!state.verified) throw new Error('ZINIAO_STORE_NOT_VERIFIED');
+    const requestedStoreId = storeIdFromArgs(input.args);
+    if (requestedStoreId && state.verified.storeId && requestedStoreId !== state.verified.storeId) {
+      throw new Error('ZINIAO_STORE_MISMATCH');
+    }
+  }
+
+  private recordZiniaoBridgeResult(task: TaskRecord, workflow: TaskWorkflow, input: { capability: string; args: string[] }, result: unknown): void {
+    const state = this.hydrateZiniaoBridgeState(task, workflow);
+    if (input.capability === 'store.open') {
+      const identity = storeIdentityFromOpen(input, result);
+      if (!identity) throw new Error('ZINIAO_STORE_OPEN_UNVERIFIED');
+      state.opened = identity;
+      delete state.verified;
+      state.pageGeneration += 1;
+      this.persistZiniaoBridgeState(task, workflow);
+      return;
+    }
+    if (input.capability === 'page.extract' && hasFlag(input.args, '--mode', 'running')) {
+      if (!state?.opened) return;
+      const verified = storeIdentityFromRunning(result, state.opened);
+      if (!verified) throw new Error('ZINIAO_STORE_NOT_VERIFIED');
+      const merged = mergeStoreIdentity(state.opened, verified);
+      if (!merged) throw new Error('ZINIAO_STORE_NOT_VERIFIED');
+      state.verified = merged;
+      return;
+    }
+    if (input.capability === 'store.close') {
+      this.ziniaoBridgeStates.delete(task.id);
+      delete workflow.state.ziniao;
+      return;
+    }
+    if (ZINIAO_PAGE_GENERATION_CAPABILITIES.has(input.capability)) {
+      state.pageGeneration += 1;
+      this.persistZiniaoBridgeState(task, workflow);
+    }
+  }
+
+  private async executeZiniaoReadWithRetry(task: TaskRecord, input: { capability: string; args: string[]; purpose?: string }, opts: ZiniaoRunOptions): Promise<unknown> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.ziniaoTool.execute(task.request.user, input, true, opts, task.request.text);
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (attempt === 1 || !ziniaoTransientError(message)) throw error;
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'ziniao.read_retry_scheduled', payload: { capability: input.capability, attempt: attempt + 2 } });
+        await this.sleep(attempt === 0 ? 500 : 1_000);
+      }
+    }
+    throw lastError ?? new Error('ZINIAO_COMMAND_FAILED');
+  }
+
+  private async deliverZiniaoScreenshot(task: TaskRecord, workflow: TaskWorkflow, result: unknown, requestKey: string, generation: number): Promise<ZiniaoScreenshotDelivery> {
+    const state = this.hydrateZiniaoBridgeState(task, workflow);
+    const existing = state.screenshotDeliveries?.find((item) => item.requestKey === requestKey);
+    if (existing) {
+      await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+        surfaceId: task.request.surface.id, eventType: 'ziniao.screenshot_deduplicated', payload: existing });
+      return { ...existing, deduplicated: true };
+    }
+    const value = result as any;
+    const raw = value?.data ?? value?.base64 ?? value?.image ?? value?.screenshot ?? value;
+    if (typeof raw !== 'string' || raw.length < 64) throw new Error('ZINIAO_SCREENSHOT_DATA_MISSING');
+    if (!this.sender.sendFile) throw new Error('FILE_DELIVERY_UNAVAILABLE');
+    const encoded = raw.replace(/^data:image\/png;base64,/, '').replace(/^data:image\/[^;]+;base64,/, '').trim();
+    if (!/^[A-Za-z0-9+/=\r\n]+$/.test(encoded)) throw new Error('ZINIAO_SCREENSHOT_DATA_INVALID');
+    const buffer = Buffer.from(encoded, 'base64');
+    if (!isPng(buffer) || buffer.length > this.config.MEDIA_MAX_BYTES) throw new Error('ZINIAO_SCREENSHOT_INVALID_PNG');
+    const inspection = inspectPng(buffer);
+    if (inspection.blank) throw new Error('ZINIAO_SCREENSHOT_BLANK');
+    const sha = createHash('sha256').update(buffer).digest('hex');
+    const directory = resolve(this.config.MEDIA_DIR, 'ziniao-screenshots', task.id);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const target = join(directory, `screenshot-${sha.slice(0, 12)}.png`);
+    await writeFile(target, buffer, { flag: 'wx', mode: 0o600 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
+    const delivery: ZiniaoScreenshotDelivery = {
+      id: randomUUID(), kind: 'screenshot', capabilityId: 'ziniao.cli', name: `screenshot-${sha.slice(0, 12)}.png`,
+      size: buffer.length, sha256: sha, width: inspection.width, height: inspection.height,
+      nonWhitePixels: inspection.nonWhitePixels, visiblePixels: inspection.visiblePixels,
+      surface: task.request.surface, deliveredAt: new Date().toISOString(), generation, requestKey
+    };
+    const idempotencyKey = sha256({ taskId: task.id, kind: 'ziniao.screenshot.delivery', requestKey });
+    const existingInvocation = await this.repo.getToolInvocation(idempotencyKey);
+    if (existingInvocation?.status === 'completed' && existingInvocation.result && typeof existingInvocation.result === 'object') {
+      const prior = existingInvocation.result as ZiniaoScreenshotDelivery;
+      if (prior.requestKey === requestKey && prior.sha256) {
+        const deliveries = state.screenshotDeliveries ?? (state.screenshotDeliveries = []);
+        if (!deliveries.some((item) => item.requestKey === requestKey)) deliveries.push(prior);
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          surfaceId: task.request.surface.id, eventType: 'ziniao.screenshot_deduplicated', payload: prior });
+        return { ...prior, deduplicated: true };
+      }
+    }
+    if (existingInvocation) throw new Error('ZINIAO_SCREENSHOT_OUTCOME_UNKNOWN');
+    const started = await this.repo.beginToolInvocation({ idempotencyKey, taskId: task.id, actionHash: requestKey, toolName: 'ziniao.screenshot.send' });
+    if (!started) throw new Error('ZINIAO_SCREENSHOT_OUTCOME_UNKNOWN');
+    try {
+      await this.sender.sendFile(task.request.user, task.request.surface, target);
+      await this.repo.finishToolInvocation(idempotencyKey, 'completed', delivery);
+    } catch (error) {
+      await this.repo.finishToolInvocation(idempotencyKey, 'unknown', undefined, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    const deliveries = state.screenshotDeliveries ?? (state.screenshotDeliveries = []);
+    deliveries.push(delivery);
+    if (deliveries.length > 20) deliveries.splice(0, deliveries.length - 20);
+    this.persistZiniaoBridgeState(task, workflow);
+    await this.repo.saveWorkflow(task.id, workflow.state);
+    await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+      surfaceId: task.request.surface.id, eventType: 'ziniao.screenshot_delivered', payload: {
+        ...delivery
+      } });
+    return delivery;
+  }
+
+  private async generateAndDeliverImages(task: TaskRecord, threadId: string, rawInput: unknown): Promise<{
+    publicResult: { delivered: boolean; provider: string; model: string; operation: string; images: Array<{ name: string; size: number; sha256: string; mimeType: string }> };
+  }> {
+    if (!this.sender.sendFile) throw new Error('FILE_DELIVERY_UNAVAILABLE');
+    const attachments = this.preparedAttachments.get(task.id) ?? [];
+    const input = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput as Record<string, unknown> : {};
+    const cacheKey = sha256({
+      operation: input.operation,
+      prompt: input.prompt,
+      provider: input.provider,
+      inputAttachmentIds: input.inputAttachmentIds,
+      aspectRatio: input.aspectRatio,
+      imageSize: input.imageSize,
+      attachments: attachments.map((item) => ({ id: item.id, sha256: item.sha256, name: item.name }))
+    });
+    let taskResults = this.imageResults.get(task.id);
+    if (!taskResults) {
+      taskResults = new Map<string, ImageToolResult>();
+      this.imageResults.set(task.id, taskResults);
+    }
+    let result = taskResults.get(cacheKey);
+    if (!result) {
+      result = await this.imageTool.generate(rawInput, attachments, task.id);
+      taskResults.set(cacheKey, result);
+    }
+    let delivered = this.imageDeliveries.get(task.id);
+    if (!delivered) {
+      delivered = new Set<string>();
+      this.imageDeliveries.set(task.id, delivered);
+    }
+    for (const asset of result.images) {
+      if (delivered.has(asset.sha256)) continue;
+      const idempotencyKey = sha256({ taskId: task.id, surface: task.request.surface, assetSha256: asset.sha256 });
+      const existing = await this.repo.getToolInvocation(idempotencyKey);
+      if (existing?.status === 'completed') {
+        delivered.add(asset.sha256);
+        continue;
+      }
+      if (existing) throw new Error('IMAGE_DELIVERY_OUTCOME_UNKNOWN');
+      const started = await this.repo.beginToolInvocation({ idempotencyKey, taskId: task.id, actionHash: asset.sha256, toolName: 'image.send' });
+      if (!started) throw new Error('IMAGE_DELIVERY_OUTCOME_UNKNOWN');
+      try {
+        if (!await this.dws.status(task.request.user)) await this.ensureAuthorization(task, threadId);
+        await this.sender.sendFile(task.request.user, task.request.surface, asset.path);
+        await this.repo.finishToolInvocation(idempotencyKey, 'completed', { name: asset.name, sha256: asset.sha256, size: asset.size });
+        delivered.add(asset.sha256);
+      } catch (error) {
+        await this.repo.finishToolInvocation(idempotencyKey, 'unknown', undefined, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    }
+    await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId: task.request.surface.id,
+      eventType: 'image.generated_and_delivered', payload: { provider: result.provider, model: result.model, operation: result.operation,
+        images: result.images.map((asset) => ({ name: asset.name, size: asset.size, sha256: asset.sha256, mimeType: asset.mimeType })) } });
+    return {
+      publicResult: {
+        delivered: true,
+        provider: result.provider,
+        model: result.model,
+        operation: result.operation,
+        images: result.images.map((asset) => ({ name: asset.name, size: asset.size, sha256: asset.sha256, mimeType: asset.mimeType }))
+      }
+    };
+  }
+
   private async executeIdempotentWrite(task: TaskRecord, action: ToolAction, execute: () => Promise<unknown>): Promise<unknown> {
     const hash = actionHash(action);
     const idempotencyKey = sha256({ taskId: task.id, actionHash: hash });
@@ -1647,10 +2353,14 @@ function sanitizeFileReply(value: string): string {
     .trim();
 }
 
+// The answer is already complete when it is shown; the reveal is cosmetic and
+// must not add seconds to every task.
+const ANSWER_SNAPSHOT_CADENCE_MS = 250;
+
 function answerSnapshots(answer: string): string[] {
   const chars = Array.from(answer);
   if (chars.length < 24) return [];
-  const steps = Math.min(10, Math.max(2, Math.ceil(chars.length / 40)));
+  const steps = Math.min(4, Math.max(2, Math.ceil(chars.length / 200)));
   const snapshots: string[] = [];
   for (let step = 1; step < steps; step += 1) {
     snapshots.push(chars.slice(0, Math.ceil(chars.length * step / steps)).join(''));
@@ -1729,7 +2439,15 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
     return capability ? '使用钉钉工具：' + capability : '使用钉钉工具';
   }
   if (namespace === 'agent' && tool === 'memory') return '读取或更新用户偏好';
+  if (namespace === 'analysis' && tool === 'python') {
+    const purpose = safeLabel(args.purpose);
+    return purpose ? '运行计算：' + purpose : '运行计算';
+  }
   if (namespace === 'internet' && tool === 'search') return '联网搜索公开网页';
+  if (namespace === 'amazon' && AMAZON_OPERATIONS.has(tool)) return '查询 Amazon 页面：' + tool;
+  if (namespace === 'image' && tool === 'generate') {
+    return args.operation === 'edit' ? '编辑图片' : '生成图片';
+  }
   if (namespace === 'crossborderops' && tool === 'scope') return '查询当前用户授权店铺';
   if (namespace === 'crossborderops' && tool === 'query') {
     const dataset = safeLabel(args.dataset);
@@ -1758,9 +2476,12 @@ function capabilityIdForTool(request: CodexApprovalRequest): string | undefined 
   if (namespace === 'sif' && tool === 'read' && typeof args?.toolId === 'string') return `sif.${args.toolId}`;
   if (namespace === 'lingxing' && tool === 'catalog' && typeof args?.toolId === 'string') return `lingxing.${args.toolId}`;
   if (namespace === 'internet' && tool === 'search') return 'internet.search';
+  if (namespace === 'amazon' && AMAZON_OPERATIONS.has(tool)) return `amazon.${tool}`;
+  if (namespace === 'image' && tool === 'generate') return 'image.generate';
   if (namespace === 'reference' && tool === 'read_guide') return 'reference.read_guide';
   if (namespace === 'reference' && tool === 'list_guides') return 'reference.list_guides';
   if (namespace === 'agent' && tool === 'memory') return 'agent.memory';
+  if (namespace === 'analysis' && tool === 'python') return 'analysis.python';
   if (namespace === 'artifact' && tool === 'submit') return 'artifact.submit';
   return undefined;
 }

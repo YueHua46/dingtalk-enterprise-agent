@@ -21,6 +21,7 @@ export interface Repository {
   createTask(request: AgentRequest, surfaceId: string): Promise<TaskRecord>;
   updateTask(id: string, status: TaskStatus, fields?: { threadId?: string; resultSummary?: string; resultVisibility?: 'surface' | 'private'; errorCode?: string }): Promise<void>;
   findTask(id: string): Promise<TaskRecord | undefined>;
+  findTaskByMessageReference(user: UserIdentity, surface: ConversationSurface, referenceId: string): Promise<TaskRecord | undefined>;
   setTaskCard(id: string, bizId: string): Promise<void>;
   setApprovalCard(id: string, bizId: string): Promise<void>;
   listRecoverableTasks(): Promise<TaskRecord[]>;
@@ -188,6 +189,16 @@ export class InMemoryRepository implements Repository {
 
   public async findTask(id: string): Promise<TaskRecord | undefined> {
     return this.tasks.get(id);
+  }
+
+  public async findTaskByMessageReference(user: UserIdentity, surface: ConversationSurface, referenceId: string): Promise<TaskRecord | undefined> {
+    return [...this.tasks.values()]
+      .filter((task) => task.request.user.corpId === user.corpId
+        && task.request.user.userId === user.userId
+        && task.request.surface.type === surface.type
+        && task.request.surface.id === surface.id
+        && [task.request.messageId, task.cardBizId, task.approvalCardBizId].includes(referenceId))
+      .sort((left, right) => right.createdAt - left.createdAt)[0];
   }
 
   public async saveWorkflow(taskId: string, state: WorkflowState): Promise<void> { this.workflows.set(taskId, structuredClone(state)); }
@@ -455,6 +466,25 @@ export class PgRepository implements Repository {
       ...(row.result_visibility !== 'unknown' ? { resultVisibility: row.result_visibility } : {}),
       ...(row.error_code ? { errorCode: row.error_code } : {})
     };
+  }
+
+  public async findTaskByMessageReference(user: UserIdentity, surface: ConversationSurface, referenceId: string): Promise<TaskRecord | undefined> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT t.id
+       FROM tasks t
+       JOIN conversation_surfaces s ON s.id=t.surface_id
+       WHERE t.corp_id=$1 AND t.user_id=$2
+         AND s.surface_type=$3 AND s.surface_id=$4
+         AND (
+           t.request_payload->>'messageId'=$5
+           OR t.card_biz_id=$5
+           OR t.approval_card_biz_id=$5
+         )
+       ORDER BY t.created_at DESC
+       LIMIT 1`,
+      [user.corpId, user.userId, surface.type, surface.id, referenceId]
+    );
+    return result.rows[0] ? this.findTask(result.rows[0].id) : undefined;
   }
 
   public async saveWorkflow(taskId: string, state: WorkflowState): Promise<void> {

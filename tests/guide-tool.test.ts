@@ -38,4 +38,23 @@ describe('GuideTool', () => {
     await expect(guide.execute({ name: 'amazon-business-performance-analysis', reference: '../data-contract' })).rejects.toThrow('GUIDE_REFERENCE_INVALID');
     await expect(guide.execute({ name: 'nexscope-amazon-skills', reference: 'data-contract' })).rejects.toThrow('GUIDE_REFERENCE_INVALID');
   });
+
+  it('reads references with non-ASCII names and any document by contained relative path', async () => {
+    const chinese = await guide.execute({ name: 'zach-search-term-analyzer', reference: '字段说明' });
+    expect(chinese.text.length).toBeGreaterThan(0);
+    const agent = await guide.execute({ name: 'zach-product-research', path: 'agents/report-writer.md' });
+    expect(agent.text.length).toBeGreaterThan(0);
+    await expect(guide.execute({ name: 'zach-product-research', path: '../dingtalk-office/SKILL.md' })).rejects.toThrow('GUIDE_PATH_INVALID');
+    await expect(guide.execute({ name: 'zach-product-research', path: 'scripts/cross_analysis.py' })).rejects.toThrow('GUIDE_PATH_INVALID');
+    await expect(guide.execute({ name: 'zach-product-research', path: 'agents/missing.md' })).rejects.toThrow(/GUIDE_PATH_INVALID: 可用文档/);
+  });
+
+  it('builds a compact skill index with references, documents and scripts', async () => {
+    const index = await guide.index();
+    expect(index).toContain('- amazon-business-performance-analysis：');
+    expect(index).toContain('crossborderops-adapter');
+    expect(index).toContain('字段说明');
+    expect(index).toContain('analyze_search_terms.py');
+    expect(index).toContain('amazon-product-research');
+  });
 });

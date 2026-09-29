@@ -25,6 +25,24 @@ export const ZINIAO_LOCAL_CLIENT_REQUIRED = 'ZINIAO_LOCAL_CLIENT_REQUIRED';
 
 const GATE_RESOURCE = 'ziniao-executor-1';
 
+/** Normalize successful CLI output. Some Bridge commands return no body or a
+ * human-readable acknowledgement even though query commands return JSON. */
+export function parseZiniaoSuccessOutput(stdout: string): unknown {
+  const text = stdout.trim();
+  if (!text) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && (parsed as { ok?: unknown }).ok === false) {
+      return parsed;
+    }
+    return parsed && typeof parsed === 'object' && 'data' in parsed
+      ? (parsed as { data: unknown }).data
+      : parsed;
+  } catch {
+    return { message: text.slice(0, 4096) };
+  }
+}
+
 export type ZiniaoBrokerConfig = Pick<Config, 'ZINIAO_BIN' | 'ZINIAO_USERS_DIR'> &
   Partial<Pick<Config, 'ZINIAO_GATE_MAX_WAIT_MS' | 'ZINIAO_GATE_MAX_WAITERS' | 'ZINIAO_SESSION_IDLE_MS' | 'ZINIAO_SESSION_MAX_MS' | 'ZINIAO_INTERLEAVE_READS' | 'ZINIAO_GATE_DISABLED'>>;
 
@@ -129,7 +147,19 @@ export class ZiniaoBroker {
 
   private gated<T>(user: UserIdentity, opts: ZiniaoRunOptions & { op: ZiniaoOp; readOnly?: boolean }, fn: () => Promise<T>): Promise<T> {
     if (this.gateDisabled()) return fn();
-    return this.gate.withLease(GATE_RESOURCE, this.gateRequest(user, opts), fn);
+    const request = this.gateRequest(user, opts);
+    const session = this.sessions.get(this.userKey(user));
+    // A bridge workflow holds the main lane across CLI calls. Its own status
+    // checks and server-API calls must borrow the process lane; queueing them
+    // on the main lane would make the task wait for its own session to expire.
+    if (session && !session.handle.isLost() && !session.handle.isExpired()) {
+      const snapshot = this.gate.snapshot(GATE_RESOURCE, this.userKey(user));
+      if (snapshot.heldByMe && snapshot.holder?.kind === 'session') {
+        session.handle.touch();
+        return Promise.race([this.gate.runExclusive(GATE_RESOURCE, request, fn), session.handle.lost]);
+      }
+    }
+    return this.gate.withLease(GATE_RESOURCE, request, fn);
   }
 
   private async runBridgeCommand(user: UserIdentity, args: string[], opts: ZiniaoRunOptions): Promise<unknown> {
@@ -261,7 +291,7 @@ export class ZiniaoBroker {
     if (!await this.statusRaw(user)) throw new Error('ZINIAO_AUTH_REQUIRED');
     let stdout: string;
     try {
-      const result = await execFileAsync(this.config.ZINIAO_BIN, [...args, '--format', 'json'], {
+      const result = await execFileAsync(this.config.ZINIAO_BIN, args, {
         env: this.environment(user), timeout: 60_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true
       });
       stdout = String(result.stdout);
@@ -274,8 +304,7 @@ export class ZiniaoBroker {
       }
       throw new Error('ZINIAO_COMMAND_FAILED');
     }
-    let parsed: any;
-    try { parsed = JSON.parse(stdout); } catch { throw new Error('ZINIAO_INVALID_RESPONSE'); }
+    const parsed: any = parseZiniaoSuccessOutput(stdout);
     if (parsed?.ok === false) {
       const errorMessage = String(parsed.error?.message ?? 'unknown error');
       if (/需要\s*Boss|Boss\s*权限|permission denied|权限不足/i.test(errorMessage)) throw new Error('ZINIAO_PERMISSION_DENIED');
@@ -285,7 +314,7 @@ export class ZiniaoBroker {
       }
       throw new Error('ZINIAO_COMMAND_FAILED: ' + errorMessage);
     }
-    return parsed?.data ?? parsed;
+    return parsed;
   }
 
   protected profileKey(user: UserIdentity): string {

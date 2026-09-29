@@ -44,16 +44,15 @@ def performance_changes(sids: list[int], params: dict) -> dict:
               SUM(COALESCE(analysis.daily_revenue, 0)) FILTER (WHERE analysis.analysis_date BETWEEN %s AND %s) AS baseline_revenue,
               COUNT(DISTINCT analysis.analysis_date) FILTER (WHERE analysis.analysis_date BETWEEN %s AND %s) AS current_days,
               COUNT(DISTINCT analysis.analysis_date) FILTER (WHERE analysis.analysis_date BETWEEN %s AND %s) AS baseline_days,
-              BOOL_AND(analysis.source_type <> 'snapshot'
-                AND analysis.daily_sales IS NOT NULL AND analysis.daily_revenue IS NOT NULL
+              BOOL_AND(analysis.daily_sales IS NOT NULL AND analysis.daily_revenue IS NOT NULL
                 AND COALESCE(NULLIF(analysis.raw_payload ->> 'business_complete', '')::boolean, TRUE))
                 FILTER (WHERE analysis.analysis_date BETWEEN %s AND %s) AS current_complete,
-              BOOL_AND(analysis.source_type <> 'snapshot'
-                AND analysis.daily_sales IS NOT NULL AND analysis.daily_revenue IS NOT NULL
+              BOOL_AND(analysis.daily_sales IS NOT NULL AND analysis.daily_revenue IS NOT NULL
                 AND COALESCE(NULLIF(analysis.raw_payload ->> 'business_complete', '')::boolean, TRUE))
                 FILTER (WHERE analysis.analysis_date BETWEEN %s AND %s) AS baseline_complete
             FROM {T_DAILY_PRODUCT_ANALYSIS_VIEW} analysis
             WHERE analysis.status='active' AND analysis.lingxing_sid = ANY(%s)
+              AND analysis.source_type <> 'snapshot'
               AND analysis.analysis_date BETWEEN %s AND %s
               AND (%s = 'store' OR analysis.asin IS NOT NULL)
             GROUP BY analysis.lingxing_sid, analysis.category,
@@ -135,5 +134,5 @@ def performance_changes(sids: list[int], params: dict) -> dict:
             "excluded_incomplete_count": int(rows[0]["candidate_count"] - rows[0]["comparable_count"]) if rows else 0,
         },
         "limit": limit, "offset": offset,
-        "coverage_rule": "both periods require one complete business row per day; incomplete and zero-baseline items are excluded",
+        "coverage_rule": "business rows only (snapshot rows excluded); both periods require one complete business row per day; incomplete and zero-baseline items are excluded",
     }

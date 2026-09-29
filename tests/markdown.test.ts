@@ -22,7 +22,9 @@ describe('markdown renderer', () => {
     const output = accepted(task);
     expect(output).toContain('T-1');
     expect(output).toContain('私聊');
-    expect(output).toContain('取消 T-1');
+    expect(output).toContain('引用这条任务消息后发送 `取消`');
+    expect(output).toContain('无需复制任务编号');
+    expect(output).not.toContain('取消 T-1');
   });
 
   it('renders approval details inside the card without text commands', () => {

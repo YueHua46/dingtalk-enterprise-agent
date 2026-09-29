@@ -20,7 +20,11 @@ export const crossBorderOpsDynamicTools = [{
   }, {
     type: 'function',
     name: 'query',
-    description: '查询公司自有店铺的日报、广告、评论、排名或对应分析数据。daily.aggregate 对指定单一时段按 dimensions 中的 store/site/asin 任意组合聚合，measures=[units,revenue]，order_by=units|revenue，order=asc|desc，支持 start_date/end_date/site/asin/limit/offset，返回并列数量与完整性。其 coverage 只衡量已进入业务源的候选记录；total 是该查询口径的聚合行数，不能证明未出现业务行的授权店铺销量为零或已计入合计。需要判断授权对象全集时可结合 scope，并按相同查询条件核对业务覆盖。多站点数值可一次按 store+site 维度分页读取；若按 revenue 排序必须限定单一 site，因为跨站点销售额不可直接混算。daily.performance_changes 用于两个等长时段的变化。根据任务目标选择，不额外引入比较。店铺范围由服务端按当前用户计算，不得传入 corp_id、user_id 扩大权限。',
+    description: [
+      '查询公司自有店铺的日报、广告、评论、排名数据。店铺范围由服务端按当前用户计算，不得传入 corp_id、user_id；可选 params.store_sids 缩小到已授权店铺。',
+      '首选 daily.metrics：一次调用完成任意分组的汇总、排名、漏斗与广告诊断和两期对比。params：start_date/end_date（或 days，默认最近 7 个完整日，最长 92 天）；dimensions ⊆ [store, site, asin, sku, date]（date=逐日趋势）；measures 可选 units, revenue, orders, sessions, page_views, ad_spend, ad_sales, ad_clicks, ad_orders, non_ad_clicks, cvr, order_cvr, aov, acos, tacos, cpc, ad_cvr, ad_sales_share, price, rating, review_count, main_category_rank, sub_category_rank, inventory, buy_box_pct；过滤 site, asins（最多 200 个）, skus；compare = previous_period | previous_year | {start_date, end_date}，返回 baseline 与 change（abs、pct）；order_by 可用任一 measure 或 <measure>_change；limit ≤ 200。返回 totals_by_site（按站点、本币的全部分组合计，适合回答“某站点总销量/销售额/客单价”）以及每行 coverage（缺失或不完整的业务行会标出，而不是丢弃分组）。比率为小数（0.0909=9.09%）；金额为站点本币，跨币种分组的金额为 null，按金额排序须包含 site/store 维度或指定 site。',
+      'daily.performance_changes 用于发现两期销量变化最大的店铺或 ASIN（grain=asin|store，direction=decline|growth|all，days）；随后用 daily.metrics 带 asins 与 compare 一次取它们的漏斗与广告指标。daily.product 只在需要某个 ASIN 的逐日原始字段时使用。daily.availability 查询数据最新入库日期。其余数据集（ads.*、reviews.*、rank.*）用于广告搜索词、差评与排名明细。'
+    ].join('\n'),
     inputSchema: {
       type: 'object',
       additionalProperties: false,

@@ -63,8 +63,11 @@ function authInitError(detail: string, output: string): Error {
   return new Error(DWS_AUTH_INIT_FAILED + ': ' + detail + (tail ? '；进程输出尾部：' + tail : ''));
 }
 
+const STATUS_CACHE_TTL_MS = 2 * 60 * 1000;
+
 export class DwsBroker {
   private readonly schemaCache = new Map<string, { parameters: Record<string, unknown>; cli_path: string }>();
+  private readonly statusCache = new Map<string, { identity: DwsIdentity; expiresAt: number }>();
   public constructor(private readonly config: Config) {}
 
   /** Read the exact leaf contract from the installed CLI version. This is
@@ -134,6 +137,44 @@ export class DwsBroker {
     const node = await this.runCommand(user, ['drive', '+inspect', '--node', nodeId]);
     const version = await this.runCommand(user, ['drive', '+version-history', '--node', nodeId, '--limit', '1']);
     return { node, version };
+  }
+
+  /**
+   * DingTalk's Stream callback does not consistently include quote metadata
+   * for replies sent by a user identity. The message detail API does, so a
+   * bare cancellation command can recover the referenced message without
+   * asking the operator to copy an internal task id.
+   */
+  public async resolveQuotedMessage(user: UserIdentity, messageId: string): Promise<{
+    messageId: string;
+    conversationId?: string;
+    quotedMessageId?: string;
+    quotedConversationId?: string;
+    quotedText?: string;
+  } | undefined> {
+    const result = await this.runCommand(user, [
+      'chat', '+messages-mget', '--msg-ids', messageId, '--no-reactions', '--no-threads'
+    ]) as Record<string, any>;
+    const messages = Array.isArray(result?.messages) ? result.messages : [];
+    const message = messages.find((item: any) => String(item?.messageId ?? '') === messageId) ?? messages[0];
+    if (!message || typeof message !== 'object') return undefined;
+    const quoted = message.quotedMessage ?? message.quoteMessage ?? message.originalMessage;
+    const quotedMessageId = firstNonEmptyString(
+      quoted?.messageId,
+      quoted?.openMessageId,
+      message.quotedMessageId,
+      message.originalMessageId
+    );
+    const conversationId = firstNonEmptyString(message.conversationId, message.openConversationId);
+    const quotedConversationId = firstNonEmptyString(quoted?.conversationId, quoted?.openConversationId);
+    const quotedText = firstNonEmptyString(quoted?.text, quoted?.content);
+    return {
+      messageId: firstNonEmptyString(message.messageId, message.openMessageId) ?? messageId,
+      ...(conversationId ? { conversationId } : {}),
+      ...(quotedMessageId ? { quotedMessageId } : {}),
+      ...(quotedConversationId ? { quotedConversationId } : {}),
+      ...(quotedText ? { quotedText } : {})
+    };
   }
 
   public async downloadDriveFile(user: UserIdentity, nodeId: string, directory: string, fileName: string): Promise<unknown> {
@@ -206,8 +247,27 @@ export class DwsBroker {
     }
   }
 
-  public async status(user: UserIdentity): Promise<DwsIdentity | null> {
+  /**
+   * Verified identities are cached briefly: every DWS call used to spawn the
+   * CLI twice just to re-check a token that was valid seconds earlier.
+   * Negative results are never cached, and authorization polling bypasses it.
+   */
+  public async status(user: UserIdentity, options: { fresh?: boolean } = {}): Promise<DwsIdentity | null> {
     const profileKey = user.corpId + ':' + user.userId;
+    const cached = this.statusCache.get(profileKey);
+    if (!options.fresh && cached && cached.expiresAt > Date.now()) return cached.identity;
+    const identity = await this.readStatus(user, profileKey);
+    if (identity) this.statusCache.set(profileKey, { identity, expiresAt: Date.now() + STATUS_CACHE_TTL_MS });
+    else this.statusCache.delete(profileKey);
+    return identity;
+  }
+
+  /** Drops a cached identity after the CLI reports an authorization failure. */
+  public invalidateStatus(user: UserIdentity): void {
+    this.statusCache.delete(user.corpId + ':' + user.userId);
+  }
+
+  private async readStatus(user: UserIdentity, profileKey: string): Promise<DwsIdentity | null> {
     const profilesResult = await this.run(['profile', 'list', '--format', 'json']);
     const profilesPayload = safeJson(profilesResult.stdout);
     const profilesData = profilesPayload?.data ?? profilesPayload;
@@ -300,7 +360,9 @@ export class DwsBroker {
     }
     const parsed = safeJson(result.stdout);
     if (parsed?.ok === false || parsed?.error) {
-      throw asCliCommandError([{ text: result.stdout }, { text: result.stderr }]);
+      const error = asCliCommandError([{ text: result.stdout }, { text: result.stderr }]);
+      if (/auth|token|unauthori[sz]ed|expired|login/i.test(error.message)) this.invalidateStatus(user);
+      throw error;
     }
     return parsed?.data ?? parsed;
   }
@@ -337,7 +399,7 @@ export class DwsBroker {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const identity = await this.status(user);
+        const identity = await this.status(user, { fresh: true });
         if (identity) return identity;
       } catch (error) {
         if (error instanceof Error && error.message.includes('identity mismatch')) throw error;
@@ -362,6 +424,10 @@ export function buildDeviceAuthorizationArgs(user: UserIdentity, registeredProfi
 
 function safeJson(value: string): any {
   try { return JSON.parse(value); } catch { return undefined; }
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim();
 }
 
 function resolveInvocation(command: string): { file: string; prefix: string[] } {

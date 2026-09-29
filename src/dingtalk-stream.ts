@@ -176,8 +176,9 @@ export function parseRobotMessage(downstream: DWClientDownStream): {
     if (payload.msgtype === 'text') {
       textParts.push(String(payload.text?.content ?? '').trim());
     } else if (payload.msgtype === 'richText') {
-      for (const item of asArray(payload.content?.richText)) {
-        if (item?.type === 'text' && item?.text) textParts.push(String(item.text));
+      for (const item of richTextItems(payload.content?.richText)) {
+        const itemText = richTextItemText(item);
+        if (itemText) textParts.push(itemText);
         const code = findDownloadCode(item);
         if (code) attachments.push(mediaAttachment(item.type === 'picture' ? 'image' : 'file', code, item.fileName ?? item.name));
       }
@@ -198,13 +199,16 @@ export function parseRobotMessage(downstream: DWClientDownStream): {
       payload.originalMsgId,
       payload.content?.quoteMessageId,
       payload.content?.originalMsgId,
-      payload.content?.originalMessageId
+      payload.content?.originalMessageId,
+      nestedString(payload.content, ['quoteMessageId', 'originalMsgId', 'originalMessageId', 'openMessageId', 'messageId'])
     );
+    const quoteContainers = nestedValues(payload.content, ['quoteContent', 'quotedMessage', 'originalMessage', 'replyMessage']);
     const quotedText = firstString(
       payload.content?.quoteContent?.text?.content,
       payload.content?.quoteContent?.text,
       payload.content?.quoteContent?.content,
-      payload.content?.quotedText
+      payload.content?.quotedText,
+      ...quoteContainers.map((value) => nestedString(value, ['content', 'text', 'title']))
     );
     return {
       envelope: payload,
@@ -306,6 +310,78 @@ function cardCallbackDiagnostic(downstream: DWClientDownStream): Record<string, 
 
 function asArray(value: unknown): any[] {
   return Array.isArray(value) ? value : [];
+}
+
+function embeddedValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
+  try { return JSON.parse(trimmed); } catch { return value; }
+}
+
+function richTextItems(value: unknown, depth = 0): any[] {
+  if (depth > 6) return [];
+  const parsed = embeddedValue(value);
+  if (typeof parsed === 'string' && parsed.trim()) return [{ type: 'text', text: parsed.trim() }];
+  if (Array.isArray(parsed)) return parsed.flatMap((item) => richTextItems(item, depth + 1));
+  if (!parsed || typeof parsed !== 'object') return [];
+  const record = parsed as Record<string, any>;
+  if (typeof record.text === 'string' || typeof record.content === 'string' || findDownloadCode(record)) return [record];
+  const items: any[] = [];
+  for (const [key, child] of Object.entries(record)) {
+    if (['quoteContent', 'quotedMessage', 'originalMessage', 'replyMessage'].includes(key)) continue;
+    items.push(...richTextItems(child, depth + 1));
+  }
+  return items;
+}
+
+function richTextItemText(item: any): string | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  return firstString(
+    typeof item.text === 'string' ? item.text : undefined,
+    item.text?.content,
+    typeof item.content === 'string' ? item.content : undefined,
+    item.content?.text,
+    item.content?.content
+  );
+}
+
+function nestedValues(value: unknown, keys: string[], depth = 0): unknown[] {
+  if (depth > 6) return [];
+  const parsed = embeddedValue(value);
+  if (Array.isArray(parsed)) return parsed.flatMap((item) => nestedValues(item, keys, depth + 1));
+  if (!parsed || typeof parsed !== 'object') return [];
+  const output: unknown[] = [];
+  for (const [key, child] of Object.entries(parsed as Record<string, unknown>)) {
+    if (keys.includes(key)) output.push(embeddedValue(child));
+    output.push(...nestedValues(child, keys, depth + 1));
+  }
+  return output;
+}
+
+function nestedString(value: unknown, keys: string[], depth = 0): string | undefined {
+  if (depth > 6) return undefined;
+  const parsed = embeddedValue(value);
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const found = nestedString(item, keys, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const record = parsed as Record<string, unknown>;
+  for (const key of keys) {
+    const found = firstString(record[key]);
+    if (found) return found;
+    const nested = nestedString(record[key], keys, depth + 1);
+    if (nested) return nested;
+  }
+  for (const child of Object.values(record)) {
+    const found = nestedString(child, keys, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function findDownloadCode(value: any): string | undefined {

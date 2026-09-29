@@ -175,6 +175,9 @@ def _daily_query(dataset: str, params: dict, sids: list[int]):
     if dataset == "daily.aggregate":
         from services.agent_daily_aggregate_service import aggregate_daily
         return aggregate_daily(sids, params)
+    if dataset == "daily.metrics":
+        from services.agent_daily_metrics_service import daily_metrics
+        return daily_metrics(sids, params)
     if dataset == "daily.summary":
         summary = db.daily_product_analysis.get_summary(end, **scope) if start == end else db.daily_product_analysis.get_summary_range(start, end, **scope)
         revenue = db.daily_product_analysis.get_revenue_by_site(end, **scope) if start == end else db.daily_product_analysis.get_revenue_by_site_range(start, end, **scope)
@@ -196,6 +199,8 @@ def _daily_query(dataset: str, params: dict, sids: list[int]):
         limit = max(1, min(int(params.get("limit") or 100), 200))
         offset = max(0, min(int(params.get("offset") or 0), 10000))
         clause, extra = db.daily_product_analysis._access_filter_clause(None, None, set(sids), lingxing_sid_column="analysis.lingxing_sid")
+        # Snapshot rows duplicate the business row with zero-filled sales.
+        clause += "" if params.get("include_snapshots") else " AND analysis.source_type <> 'snapshot'"
         sql = SELECT_BY_DATE_RANGE_SQL.replace("ORDER BY", f"{clause}\nORDER BY") + " LIMIT %s OFFSET %s"
         rows = db.daily_product_analysis.fetch_all(sql, (start, end, *extra, limit, offset))
         return [serialize_product_detail_row(row, None) for row in rows]
@@ -207,6 +212,7 @@ def _daily_query(dataset: str, params: dict, sids: list[int]):
         if (end - start).days > 29:
             raise ValueError("daily.product 最多查询 30 天")
         clause, extra = db.daily_product_analysis._access_filter_clause(None, None, set(sids), lingxing_sid_column="analysis.lingxing_sid")
+        clause += "" if params.get("include_snapshots") else " AND analysis.source_type <> 'snapshot'"
         sql = SELECT_BY_ASIN_SQL.replace("ORDER BY", f" AND analysis.analysis_date BETWEEN %s AND %s {clause}\nORDER BY") + " LIMIT 500"
         rows = db.daily_product_analysis.fetch_all(sql, (asin, start, end, *extra))
         return [serialize_product_detail_row(row, None) for row in rows]

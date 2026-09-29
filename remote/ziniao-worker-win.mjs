@@ -19,6 +19,25 @@ const authUrlPattern = /https:\/\/open\.ziniao\.com\/memberAuth\?[^\s"'<>]+/;
 
 function emit(value) { process.stdout.write(JSON.stringify(value) + '\n'); }
 function fail(code) { emit({ type: 'result', ok: false, code }); }
+function parseSuccessOutput(stdout) {
+  const text = String(stdout ?? '').trim();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return { message: text.slice(0, 4096) }; }
+}
+async function attachScreenshotData(args, parsed) {
+  if (!Array.isArray(args) || args[0] !== 'page' || args[1] !== 'screenshot') return parsed;
+  const data = parsed && typeof parsed === 'object' && parsed.data && typeof parsed.data === 'object'
+    ? parsed.data : parsed;
+  const filePath = data && typeof data.filePath === 'string' ? data.filePath : undefined;
+  if (!filePath) return parsed;
+  try {
+    const bytes = await readFile(filePath);
+    if (bytes.length > 12 * 1024 * 1024) return parsed;
+    return { ...(data ?? {}), base64: bytes.toString('base64') };
+  } catch {
+    return parsed;
+  }
+}
 function profile(digest) { return 'dingtalk-' + digest.slice(0, 24); }
 function homeFor(digest) { return join(root, digest); }
 function cliEnv(digest) {
@@ -173,10 +192,21 @@ async function main() {
     const args = request.args;
     if (!validArgs(args)) return fail('INVALID_COMMAND');
     if (bridgeCommands.has(args[0]) && !await bridgeReady()) return fail('ZINIAO_LOCAL_CLIENT_REQUIRED');
-    const result = await execute([...args, '--format', 'json'], digest);
-    let parsed;
-    try { parsed = JSON.parse(result.stdout); } catch { return fail('ZINIAO_INVALID_RESPONSE'); }
-    if (result.code !== 0 || parsed?.ok === false) {
+    // --format is a leaf flag, not a CLI-wide flag. In particular `store open`,
+    // `page screenshot` and `zclaw invoke` reject it. JSON is the CLI default
+    // for commands that support structured output.
+    const result = await execute(args, digest);
+    if (result.code !== 0) {
+      const message = String(result.stderr || result.stdout);
+      if (/需要\s*Boss|Boss\s*权限|permission denied|权限不足/i.test(message)) return fail('ZINIAO_PERMISSION_DENIED');
+      if (/unauthori[sz]ed|api.?key|credential|keychain|未找到配置文件/i.test(message)) {
+        await writeFile(join(homeFor(digest), '.ziniao-auth-invalid'), '', { mode: 0o600 });
+        return fail('ZINIAO_AUTH_REQUIRED');
+      }
+      return fail(/unknown flag/i.test(message) ? 'ZINIAO_CLI_UNKNOWN_FLAG' : 'ZINIAO_COMMAND_FAILED');
+    }
+    const parsed = parseSuccessOutput(result.stdout);
+    if (parsed?.ok === false) {
       const message = String(parsed?.error?.message ?? result.stderr);
       if (/需要\s*Boss|Boss\s*权限|permission denied|权限不足/i.test(message)) return fail('ZINIAO_PERMISSION_DENIED');
       if (parsed?.error?.type === 'auth' || /unauthori[sz]ed|api.?key|credential|keychain/i.test(message)) {
@@ -185,7 +215,8 @@ async function main() {
       }
       return fail('ZINIAO_COMMAND_FAILED');
     }
-    emit({ type: 'result', ok: true, data: parsed?.data ?? parsed });
+    const normalized = parsed && typeof parsed === 'object' && 'data' in parsed ? parsed.data : parsed;
+    emit({ type: 'result', ok: true, data: await attachScreenshotData(args, normalized) });
   } finally {
     await releaseCliLock();
   }

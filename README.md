@@ -63,6 +63,9 @@ Copy-Item .env.example .env
 | `DWS_BOT_PROFILE` | 可选。已授权的机器人发送 Profile，仅 DWS 卡片降级与群消息回退路径需要；员工授权引导私聊走钉钉原生机器人接口，不依赖它 |
 | `MODEL_BASE_URL` / `MODEL_API_KEY` | 兼容 Responses API 的模型中转地址与密钥 |
 | `MODEL_NAME` | 中转支持的模型名 |
+| `IMAGE_BASE_URL` / `IMAGE_API_KEY` | 原生图像生成/改图渠道地址与密钥；未填写 `IMAGE_API_KEY` 时兼容复用 `MODEL_API_KEY` |
+| `IMAGE_MODEL` / `IMAGE_PROVIDER` | 默认生图模型与渠道别名 |
+| `IMAGE_PROVIDERS_JSON` | 可选的多渠道注册表；通过 `apiKeyEnv`、`baseUrlEnv`、`modelEnv` 引用环境变量，不把密钥写进 JSON |
 | `LINGXING_MCP_KEY` | 领星官方 MCP 的共享服务密钥；仅放在未入库的 `.env`，通过请求头注入 |
 | `SIF_MCP_KEY` | SIF MCP 的共享服务密钥；仅放在未入库的 `.env`，通过请求头注入 |
 | `INTERNAL_API_TOKEN` | `/internal/messages` 的 32 字节以上随机 Token |
@@ -74,6 +77,27 @@ Copy-Item .env.example .env
 ```
 
 不要提交 `.env`，不要在日志、任务文本或用户记忆中保存 Token、AppSecret、密码或设备验证码。
+
+### 原生生图与改图
+
+`image.generate` 是宿主动态工具，不依赖关键词路由。`operation=generate` 使用文字生成，`operation=edit` 使用当前任务中收到的图片附件进行改图；结果会先经过类型、大小和安全扫描，再直接投递到原钉钉会话。
+
+单个 Gemini 渠道只需要配置：
+
+```env
+IMAGE_BASE_URL=http://43.142.171.134:8080/antigravity
+IMAGE_API_KEY=
+IMAGE_MODEL=gemini-3.1-flash-image
+IMAGE_PROVIDER=gemini
+```
+
+新增同类渠道时，不需要改业务代码，可以使用注册表：
+
+```env
+IMAGE_PROVIDERS_JSON={"providers":{"gemini":{"driver":"gemini-native","baseUrlEnv":"IMAGE_BASE_URL","apiKeyEnv":"IMAGE_API_KEY","modelEnv":"IMAGE_MODEL"}}}
+```
+
+完全不同协议的渠道只需新增一次 Provider 适配器；后续同协议模型均由配置切换。
 
 ## Docker 启动
 
@@ -119,7 +143,7 @@ Compose 将 `DWS_KEYCHAIN_DIR` 固定到 `/var/lib/dws/keychain`。该路径位�
 - 需要员工 OAuth：在发起人私聊发送设备授权入口。
 - 写操作：返回目标、参数和影响，用户回复 `确认 <任务编号>` 才执行。
 - 内部只读 Skill 读取：无需确认；shell 提权和工作区文件修改不会通过业务确认放行。
-- 取消：回复 `取消 <任务编号>`。
+- 取消：引用对应的任务受理消息或任务卡片后回复 `取消`；无需复制任务编号，系统会按当前用户和原会话定位对应任务。
 - 完成或失败：回到原会话；授权和个人资源信息只回发起人私聊。
 
 ## 原生 AI 流式卡片

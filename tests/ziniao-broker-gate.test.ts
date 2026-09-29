@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { UserIdentity } from '../src/types.js';
-import { ZiniaoBroker, type ZiniaoAuthSession } from '../src/ziniao-broker.js';
+import { parseZiniaoSuccessOutput, ZiniaoBroker, type ZiniaoAuthSession } from '../src/ziniao-broker.js';
 
 const userA: UserIdentity = { corpId: 'corp-1', userId: 'user-a' };
 const userB: UserIdentity = { corpId: 'corp-1', userId: 'user-b' };
@@ -35,6 +35,20 @@ class TestBroker extends ZiniaoBroker {
 
 const baseConfig = { ZINIAO_BIN: 'ziniao-cli', ZINIAO_USERS_DIR: './data/ziniao/users' } as const;
 
+describe('Ziniao CLI output normalization', () => {
+  it('accepts JSON, plain text and empty successful output', () => {
+    expect(parseZiniaoSuccessOutput('{"ok":true,"data":{"storeId":"1"}}')).toEqual({ storeId: '1' });
+    expect(parseZiniaoSuccessOutput('店铺已关闭')).toEqual({ message: '店铺已关闭' });
+    expect(parseZiniaoSuccessOutput('  \r\n')).toBeNull();
+  });
+
+  it('preserves a structured CLI error envelope for classification', () => {
+    expect(parseZiniaoSuccessOutput('{"ok":false,"error":{"type":"business","message":"failed"}}')).toEqual({
+      ok: false, error: { type: 'business', message: 'failed' }
+    });
+  });
+});
+
 describe('ZiniaoBroker serialization', () => {
   it('holds one bridge session across commands so foreign users cannot interleave', async () => {
     const broker = new TestBroker(baseConfig);
@@ -58,6 +72,18 @@ describe('ZiniaoBroker serialization', () => {
     const b1 = broker.runCommand(userB, ['store', 'list']);
     await b1;
     expect(broker.runs.map((run) => run.user)).toEqual(['user-a', 'user-b']);
+  });
+
+  it('lets a bridge session check its own authorization and call the server API', async () => {
+    const broker = new TestBroker(baseConfig);
+    await broker.runCommand(userA, ['store', 'list']);
+    const foreign = broker.runCommand(userB, ['account', 'list']);
+    expect(await broker.status(userA)).toEqual({ profileKey: 'profile' });
+    await broker.runCommand(userA, ['account', 'list']);
+    expect(broker.runs.map((run) => run.user)).toEqual(['user-a', 'user-a']);
+    await broker.endSession(userA);
+    await foreign;
+    expect(broker.runs.map((run) => run.user)).toEqual(['user-a', 'user-a', 'user-b']);
   });
 
   it('keeps the executor occupied until an authorization settles', async () => {

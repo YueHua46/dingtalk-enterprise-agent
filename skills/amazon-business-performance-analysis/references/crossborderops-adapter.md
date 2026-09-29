@@ -28,7 +28,7 @@
 
 当前钉钉 Agent 只通过 `crossborderops.query` 实时读取公司自有店铺数据。共享密钥领星 `action` 已暂停暴露，因为它不能证明逐店铺裁剪；用户主动提供的领星报表仍可作为分析输入。
 
-单一时段的筛选、聚合和排序使用 `daily.aggregate`。按用户问题选择 `dimensions`（`store`、`site`、`asin` 的组合）、`measures`（`units`、`revenue`）、`order_by` 与 `order`，并传入实际所需的 `start_date`、`end_date`；结果包含分页、并列数量和完整性覆盖。跨站点销售额不能直接混合排序；未出现在数据源中的实体无法参与排名。是否按 ASIN 跨店铺聚合取决于用户所问粒度，不能把“店铺 × 站点 × ASIN”行数说成独立 ASIN 数量。单期问题不引入基线。
+通用指标查询使用 `daily.metrics`：按问题选择 `dimensions`（`store`、`site`、`asin`、`sku`、`date` 的组合）与 `measures`（销量、销售额、订单、Sessions、广告与派生比率、价格/评分/排名/库存等 Listing 状态），需要变化时加 `compare`。它只统计业务行（排除 snapshot 快照行），每行给出 `coverage`：`business_rows` 少于 `expected_rows` 或存在 `incomplete_rows` 时，如实说明该对象数据不完整，而不是把缺失当零或整行丢弃。`totals_by_site` 是按站点本币的全部分组合计。`daily.aggregate` 为兼容保留，只支持销量与销售额且会排除不完整分组，新查询不再使用它。以下为其旧说明：单一时段的筛选、聚合和排序使用 `daily.aggregate`。按用户问题选择 `dimensions`（`store`、`site`、`asin` 的组合）、`measures`（`units`、`revenue`）、`order_by` 与 `order`，并传入实际所需的 `start_date`、`end_date`；结果包含分页、并列数量和完整性覆盖。跨站点销售额不能直接混合排序；未出现在数据源中的实体无法参与排名。是否按 ASIN 跨店铺聚合取决于用户所问粒度，不能把“店铺 × 站点 × ASIN”行数说成独立 ASIN 数量。单期问题不引入基线。
 
 开放式销量下滑发现使用 `daily.performance_changes`：后端按当前用户授权 SID 对店铺 × 站点 × ASIN 做两期等长聚合，默认最近完整 7 日对比前 7 日，返回销量与销售额差额、日期和完整性约束。仅完整且有非零基线的数据进入下滑榜；未进入榜单不等于“销量正常”，需要检查缺失数据和新品。`daily.top_products` 是畅销榜，不能替代下滑榜；`daily.products` 已限制时间窗和分页，不用于全量扫描。SIF 公开信号仅用于补充市场解释，不能替代内部销售数据或单独证明原因。
 

@@ -2,6 +2,7 @@ import { generatedDwsCapabilities } from './generated-dws-capabilities.js';
 import { CROSSBORDEROPS_DATASETS } from './crossborderops-data-client.js';
 import { ZINIAO_READ_CAPABILITIES } from './ziniao-policy.js';
 import { nativeReadOnlyMcpTools } from './mcp-tool-list.js';
+import { AMAZON_OPERATIONS } from './amazon-tool.js';
 import type { RiskLevel } from './types.js';
 
 export interface CapabilityDescriptor {
@@ -31,7 +32,9 @@ const fixed: CapabilityDescriptor[] = [
   { id: 'agent.memory', purpose: '读取或按用户明确要求管理长期偏好', risk: 'high', identity: 'dingtalk_user', scope: '当前用户记忆', source: 'memory', freshness: 'static', supports: ['用户明确保存的偏好'], skills: [] },
   ...CROSSBORDEROPS_DATASETS.map((dataset) => ({
     id: `crossborderops.${dataset}`,
-    purpose: dataset === 'daily.performance_changes'
+    purpose: dataset === 'daily.metrics'
+      ? '通用经营指标：任意 store/site/asin/sku/date 分组的销量、销售额、订单、流量、转化、广告与 Listing 状态，支持两期对比、按站点合计与逐行完整性标注'
+      : dataset === 'daily.performance_changes'
       ? '按授权店铺或 ASIN 粒度比较两个等长时段的销量变化，只列完整可比对象；支持 grain=store|asin 与 direction=decline|growth|all，返回数据完整性、分页和店铺本币金额'
       : dataset === 'daily.aggregate'
         ? '在指定单一时段按店铺、站点、ASIN 任意组合维度聚合销量与销售额并分页；按所需维度一次查询，limit 最大 100，按 total/offset 翻页并核对数据完整性；可一次获取多站点 store+site 行，按销售额排序须限定单一站点；不要求基线时段'
@@ -51,12 +54,28 @@ const fixed: CapabilityDescriptor[] = [
     identity: 'scoped_service' as const, scope: '仅工具目录，不读取共享密钥业务数据', source: 'lingxing',
     freshness: 'live' as const, supports: ['工具发现'], skills: ['amazon-business-performance-analysis']
   })),
+  { id: 'analysis.python', purpose: '在任务沙箱中运行 Python，对已取得的证据文件做精确的派生计算或运行 Skill 分析脚本；代码与输出即计算证据', risk: 'read', identity: 'none', scope: '当前任务沙箱，无网络', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
   { id: 'internet.search', purpose: '检索公开网页', risk: 'read', identity: 'none', scope: '公开网页', source: 'internet', freshness: 'live', supports: ['公开事实'], skills: [] },
+  ...[...AMAZON_OPERATIONS].map((operation) => ({
+    id: `amazon.${operation}`, purpose: `实时采集 Amazon 公开页面证据：${operation}`, risk: 'read' as const,
+    identity: 'public_service' as const, scope: 'Amazon 公开商品或搜索页面；不含公司内部店铺数据', source: 'amazon',
+    freshness: 'live' as const, supports: ['Amazon 页面观察事实'], skills: ['amazon-page-research']
+  })),
+  { id: 'image.generate', purpose: '调用已配置的原生图像模型生成或编辑图片，并投递到当前钉钉会话', risk: 'write', identity: 'none', scope: '当前任务附件与原会话', source: 'image', freshness: 'static', supports: ['生成图片', '编辑图片', '图片投递回执'], skills: [] },
   { id: 'reference.read_guide', purpose: '读取已安装 Skill 的操作说明', risk: 'read', identity: 'none', scope: '本地 Skill 文件', source: 'skill', freshness: 'static', supports: ['方法说明'], skills: [] },
   { id: 'reference.list_guides', purpose: '列出已安装 Skill 的名称与用途', risk: 'read', identity: 'none', scope: '本地 Skill 文件', source: 'skill', freshness: 'static', supports: ['方法说明'], skills: [] },
 ];
 
+let catalogCache: CapabilityDescriptor[] | undefined;
+let catalogIndex: Map<string, CapabilityDescriptor> | undefined;
+
 export function capabilityCatalog(): CapabilityDescriptor[] {
+  // The catalog is derived from static tables; build it once per process.
+  catalogCache ??= buildCatalog();
+  return catalogCache;
+}
+
+function buildCatalog(): CapabilityDescriptor[] {
   return [
     ...Object.entries(generatedDwsCapabilities).map(([name, value]) => ({
       id: `dingtalk.${name}`, purpose: value.description, risk: value.risk,
@@ -80,12 +99,17 @@ function inputShapeFor(source: string): string {
     case 'sif': return '{toolId: ID, params: object}';
     case 'lingxing': return '{toolId: help|search, params: object}；仅工具目录';
     case 'internet': return '{query: string}';
+    case 'amazon': return '{asin 或 keywords, marketplace: 站点代码}；以各 amazon 子工具的参数定义为准';
     case 'skill': return '{name: Skill 名称, subSkill?: 名称, reference?: 名称}';
     case 'artifact': return '{path: output 相对路径}；宿主校验文件哈希、类型与大小';
+    case 'analysis': return '{code: Python 源码, purpose?: 说明}；读取 evidence/index.json 所列的结果文件计算';
+    case 'image': return '{operation: generate|edit, prompt: string, inputAttachmentIds?: string[], provider?: string}';
     default: return '{arguments: object}；具体输入由宿主适配器校验';
   }
 }
 
 export function capabilityById(id: string): CapabilityDescriptor | undefined {
-  return capabilityCatalog().find((item) => item.id === id);
+  // Reverse so the first descriptor for a duplicated ID wins, as with find().
+  catalogIndex ??= new Map([...capabilityCatalog()].reverse().map((item) => [item.id, item]));
+  return catalogIndex.get(id);
 }

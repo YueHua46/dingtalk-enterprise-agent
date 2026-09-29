@@ -17,13 +17,19 @@ export class HybridCodexClient implements CodexClientLike {
     const enabled = this.config.FILE_WORKER_MODE === 'all' || (this.config.FILE_WORKER_MODE === 'test' && allowed.has(`${surface.type}:${surface.id}`));
     this.routes.set(taskId, (mode ? mode === 'worker' : enabled) ? this.remote : this.local);
   }
-  private route(taskId?: string): CodexClientLike { return taskId ? this.routes.get(taskId) ?? this.local : this.local; }
+  private route(taskId?: string): CodexClientLike {
+    return (taskId ? this.routes.get(taskId) : undefined)
+      ?? (this.config.FILE_WORKER_MODE === 'all' ? this.remote : this.local);
+  }
   public async start(): Promise<void> {
-    await this.local.start();
+    if (this.config.FILE_WORKER_MODE !== 'all') await this.local.start();
     if (this.config.FILE_WORKER_MODE !== 'off') await this.remote.start();
   }
   public async stop(): Promise<void> { await Promise.all([this.local.stop(), this.remote.stop()]); }
-  public isReady(): boolean { return this.local.isReady() && (this.config.FILE_WORKER_MODE === 'off' || this.remote.isReady()); }
+  public isReady(): boolean {
+    return (this.config.FILE_WORKER_MODE === 'all' || this.local.isReady())
+      && (this.config.FILE_WORKER_MODE === 'off' || this.remote.isReady());
+  }
   public async startThread(user: UserIdentity, taskId?: string): Promise<string> {
     const client = this.route(taskId);
     const threadId = await client.startThread(user, taskId);
@@ -57,6 +63,14 @@ export class HybridCodexClient implements CodexClientLike {
   public async inspectInput(taskId: string, name: string, excerpt: string, pages?: number[]): Promise<{ name: string; size: number; sha256: string; pageCount?: number }> {
     if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
     return this.remote.inspectInput(taskId, name, excerpt, pages);
+  }
+  public async writeEvidence(taskId: string, evidenceId: string, content: string): Promise<string> {
+    if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
+    return this.remote.writeEvidence(taskId, evidenceId, content);
+  }
+  public async runPython(taskId: string, code: string): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
+    if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
+    return this.remote.runPython(taskId, code);
   }
   public usesWorker(taskId: string): boolean { return this.route(taskId) === this.remote; }
 }

@@ -4,6 +4,7 @@ import type { EffectiveStoreScope } from './crossborderops-access-client.js';
 
 export const CROSSBORDEROPS_DATASETS = [
   'daily.availability',
+  'daily.metrics',
   'daily.performance_changes',
   'daily.aggregate',
   'daily.summary',

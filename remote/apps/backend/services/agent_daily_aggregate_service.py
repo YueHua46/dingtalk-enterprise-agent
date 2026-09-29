@@ -61,6 +61,7 @@ def aggregate_daily(sids: list[int], params: dict) -> dict:
             analysis.analysis_date, analysis.source_type, analysis.raw_payload
           FROM {T_DAILY_PRODUCT_ANALYSIS_VIEW} analysis
           WHERE analysis.status='active' AND analysis.lingxing_sid = ANY(%s)
+            AND analysis.source_type <> 'snapshot'
             AND analysis.analysis_date BETWEEN %s AND %s
             AND analysis.asin IS NOT NULL
         ), base AS (
@@ -68,8 +69,7 @@ def aggregate_daily(sids: list[int], params: dict) -> dict:
             SUM(COALESCE(normalized.daily_sales, 0)) AS units,
             SUM(COALESCE(normalized.daily_revenue, 0)) AS revenue,
             COUNT(DISTINCT normalized.analysis_date) AS observed_days,
-            BOOL_AND(normalized.source_type <> 'snapshot'
-              AND normalized.daily_sales IS NOT NULL AND normalized.daily_revenue IS NOT NULL
+            BOOL_AND(normalized.daily_sales IS NOT NULL AND normalized.daily_revenue IS NOT NULL
               AND COALESCE(NULLIF(normalized.raw_payload ->> 'business_complete', '')::boolean, TRUE)) AS business_complete
           FROM normalized
           WHERE (%s IS NULL OR normalized.site = %s)
@@ -130,13 +130,6 @@ def aggregate_daily(sids: list[int], params: dict) -> dict:
         "filters": {"site": site, "asin": asin},
         "rows": result_rows, "total": complete, "limit": limit, "offset": offset,
         "coverage": {"candidate_count": candidates, "complete_count": complete, "excluded_incomplete_count": candidates - complete},
-        "coverage_rule": "all recorded active store-site-ASIN constituents require one complete business row per day; entities absent from source data cannot be ranked",
-        "population_provenance": {
-            "authorization_filter": "current_dingtalk_user",
-            "result_population": "observed_business_constituents",
-            "coverage_count_basis": "observed_candidates_only",
-            "absent_authorized_entities": "unknown_not_zero",
-            "full_authorized_population_verified": False,
-        },
+        "coverage_rule": "business rows only (snapshot rows excluded); every store-site-ASIN constituent requires one complete business row per day; entities absent from source data cannot be ranked",
         "currency_note": "revenue is in each store-site local currency; never aggregate across currencies",
     }

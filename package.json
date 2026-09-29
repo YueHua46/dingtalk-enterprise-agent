@@ -20,6 +20,7 @@
     "test:codex-thread": "node scripts/codex-thread-smoke.mjs",
     "test:codex-model": "node scripts/codex-model-smoke.mjs",
     "test:codex-native-web": "node scripts/codex-native-web-smoke.mjs",
+    "test:image-native": "npm run build && node scripts/image-native-smoke.mjs",
     "test:codex-readonly": "node scripts/codex-readonly-smoke.mjs",
     "test:codex-existing": "node scripts/codex-existing-thread-smoke.mjs",
     "check:env": "node scripts/check-env.mjs .env",

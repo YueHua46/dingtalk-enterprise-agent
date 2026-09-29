@@ -8,6 +8,9 @@ schemas/codex/
 data/
 logs/
 *.log
+__pycache__/
+*.py[cod]
+*.egg-info/
 
 # Local runtime state and generated artifacts
 .docker-codex/

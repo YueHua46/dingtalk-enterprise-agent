@@ -27,10 +27,26 @@ describe('TaskWorkflow evidence contract', () => {
     expect(result.factEvidence.sales_change).not.toContain(unrelated.id);
   });
 
-  it('does not let a revised plan silently drop required facts', () => {
+  it('treats the plan as the agent-owned plan and lets it be revised within a budget', () => {
     const workflow = new TaskWorkflow();
     workflow.plan(contract);
-    expect(() => workflow.plan({ ...contract, requiredFacts: [] })).toThrow('WORKFLOW_REQUIRED_FACT_REMOVAL_FORBIDDEN');
+    expect(workflow.plan({ goal: '修订后的目标', requiredFacts: [] }).deliverables).toEqual([]);
+    for (let index = 0; index < 4; index += 1) workflow.plan(contract);
+    expect(() => workflow.plan(contract)).toThrow('WORKFLOW_PLAN_BUDGET_EXCEEDED');
+  });
+
+  it('rejects unregistered sources and names the valid source families', () => {
+    const workflow = new TaskWorkflow();
+    expect(() => workflow.plan({ goal: 'x', requiredFacts: [{ id: 'fact', description: 'x', acceptableSources: ['dingtalk.message'] }] }))
+      .toThrow(/WORKFLOW_SOURCE_UNREGISTERED: dingtalk.message.*dingtalk.*/);
+  });
+
+  it('accepts a completion without a plan and keeps only real citations', () => {
+    const workflow = new TaskWorkflow();
+    const evidence = workflow.record('dingtalk.todo.list', true);
+    const result = workflow.complete({ status: 'answered', answer: '你今天有 2 个待办', factEvidence: { todos: [evidence.id, 'made-up'] } });
+    expect(result.factEvidence).toEqual({ todos: [evidence.id] });
+    expect(result.missingFacts).toEqual([]);
   });
 
   it('will not declare a whole task blocked after exploring only another source', () => {
@@ -58,10 +74,24 @@ describe('TaskWorkflow evidence contract', () => {
     expect(() => workflow.complete({ status: 'blocked', answer: '等待回复', factEvidence: {}, missingFacts: ['sales_change'] })).toThrow('WORKFLOW_CLARIFICATION_PENDING');
   });
 
-  it('does not ask the user to resolve an internal execution or formatting problem', () => {
+  it('bounds clarification rounds and never stacks a second pending question', () => {
     const workflow = new TaskWorkflow();
-    workflow.plan(contract);
-    expect(() => workflow.clarify('请确认提交格式', '我还在组织输出')).toThrow('WORKFLOW_CLARIFICATION_NOT_PLANNED');
+    workflow.clarify('请指定文档', '写入目标不明确');
+    expect(() => workflow.clarify('还有一个问题', '原因')).toThrow('WORKFLOW_CLARIFICATION_PENDING');
+    workflow.state.clarification!.answer = '周报';
+    workflow.clarify('请指定日期', '日期不明确');
+    workflow.state.clarification!.answer = '上周';
+    expect(() => workflow.clarify('再确认一次', '原因')).toThrow('WORKFLOW_CLARIFICATION_BUDGET_EXCEEDED');
+    expect(() => workflow.clarify('', '原因')).toThrow('WORKFLOW_CLARIFICATION_BUDGET_EXCEEDED');
+  });
+
+  it('keeps bounded excerpts with the task for later verification', () => {
+    const workflow = new TaskWorkflow();
+    const evidence = workflow.record('crossborderops.daily.product', true);
+    workflow.storeExcerpt(evidence.id, 'x'.repeat(20_000));
+    expect(workflow.state.excerpts?.[evidence.id]).toHaveLength(12_000);
+    for (let index = 0; index < 45; index += 1) workflow.storeExcerpt('id-' + index, 'row');
+    expect(Object.keys(workflow.state.excerpts!)).toHaveLength(40);
   });
 
   it('requires contiguous pages of one query for a complete collection', () => {

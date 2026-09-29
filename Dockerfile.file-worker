@@ -17,13 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir \
     python-docx openpyxl python-pptx pypdf pdfplumber pymupdf \
-    reportlab pillow pytesseract xlsxwriter
+    reportlab pillow pytesseract xlsxwriter \
+    pandas numpy matplotlib beautifulsoup4
 RUN npm install --global @openai/codex@0.155.1 && npm cache clean --force
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY file-skills /opt/file-skills
+# Read-only copy of the business skills so their analysis scripts can run in a task sandbox.
+COPY skills /opt/agent-skills
 RUN mkdir -p /work/tasks && chmod 0711 /work/tasks
 ENV PATH=/opt/venv/bin:$PATH FILE_WORKER_ROOT=/work/tasks FILE_SKILLS_DIR=/opt/file-skills
 EXPOSE 8081

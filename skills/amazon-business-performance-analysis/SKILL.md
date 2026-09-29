@@ -7,7 +7,9 @@ description: 基于 CrossBorderOps 后台、领星等授权来源的真实店铺
 
 面向当前用户有权查看的店铺，完成从经营结果到原因、再到行动建议的诊断。当前钉钉 Agent 实时经营数据使用按用户店铺范围裁剪的 CrossBorderOps 后台；也可以分析用户提供的报表。领星共享密钥的通用业务工具尚未实现逐店铺隔离，不能用于当前用户的实时取数。不要依赖 SP-API 或 Amazon Selling Partner Connector。
 
-在本项目的钉钉 Agent 中，使用 `reference.read_guide` 读取本 Skill 和下列参考资料：`name` 固定为 `amazon-business-performance-analysis`，`reference` 传参考文件名（不带 `.md`）。容器内 shell 已关闭，不要通过 shell 读参考文件。
+在本项目的钉钉 Agent 中，使用 `reference.read_guide` 读取本 Skill 和下列参考资料：`name` 固定为 `amazon-business-performance-analysis`，`reference` 传参考文件名（不带 `.md`）。
+
+取数与计算纪律：优先用一次服务端查询覆盖所需对象，不要逐个 ASIN 重复调用 `daily.product`。汇总、排名、站点合计、漏斗与广告诊断、两期对比都用 `daily.metrics`（例如某站点总量：`dimensions=["site"]` 或看 `totals_by_site`；原因诊断：`daily.performance_changes` 找出下滑 ASIN 后，用 `daily.metrics` 带 `asins`、`compare="previous_period"` 一次取流量、转化、广告与 Listing 状态）。服务端已计算的合计与比率可直接引用；另外需要的派生数字（二次汇总、占比、贡献度等）都用 `analysis.python` 读取该查询保存在 `evidence/` 下的结果文件计算（文件清单见 `evidence/index.json`），答复中的数字与计算输出保持一致。
 
 ## 工作方式
 

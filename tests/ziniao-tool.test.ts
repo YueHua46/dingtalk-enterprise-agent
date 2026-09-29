@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ZiniaoBroker } from '../src/ziniao-broker.js';
 import { ZiniaoTool } from '../src/ziniao-tool.js';
+import { classifyZiniaoImpact } from '../src/ziniao-impact.js';
 
 const user = { corpId: 'corp-a', userId: 'seller-1' };
 
@@ -39,5 +40,62 @@ describe('Ziniao user isolation and command policy', () => {
     expect(result).toBe(snapshot);
     expect(broker.queueStatus).toHaveBeenCalledWith(user);
     expect(broker.runCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('Ziniao effect-based confirmation', () => {
+  const task = '打开 BAGWAT-US 店铺，如有登录则登录，切换到英国站点和中文界面，然后截图首页';
+  const impact = (capability: string, args: string[] = [], purpose?: string) =>
+    classifyZiniaoImpact({ capability, args, ...(purpose ? { purpose } : {}) }, task).kind;
+
+  it('runs session preparation and observation without a business approval', async () => {
+    const broker = { runCommand: vi.fn(async () => ({ ok: true })) } as unknown as ZiniaoBroker;
+    const tool = new ZiniaoTool(broker);
+    for (const input of [
+      { capability: 'store.open', args: ['--name', 'BAGWAT-US'] },
+      { capability: 'page.visit', args: ['--store-id', '123', '--url', 'https://sellercentral.amazon.co.uk/home'] },
+      { capability: 'page.click', args: ['--selector', '#signInSubmit'], purpose: '登录店铺' },
+      { capability: 'page.click', args: ['--selector', '#marketplace-selector'], purpose: '切换英国站点' },
+      { capability: 'page.click', args: ['--selector', '#language-zh'], purpose: '切换界面语言为中文' },
+      { capability: 'page.screenshot', args: ['--store-id', '123'] },
+      { capability: 'store.close', args: ['--id', '123'] }
+    ]) {
+      const parsed = tool.parse(input);
+      expect(tool.action(parsed, task).risk).toBe('read');
+      await tool.execute(user, parsed, false, {}, task);
+    }
+    expect(broker.runCommand).toHaveBeenCalledTimes(7);
+  });
+
+  it('requires approval for business changes, ambiguous clicks and mixed automation', () => {
+    expect(impact('account.update', ['--id', '123'])).toBe('business');
+    expect(impact('page.click', ['--selector', '#save-product'], '切换语言为中文')).toBe('business');
+    expect(impact('page.click', ['--selector', '#button'])).toBe('uncertain');
+    expect(impact('page.click', ['--selector', '#button'], '切换语言为中文')).toBe('uncertain');
+    expect(impact('store.open', ['--name', 'BAGWAT-US', '--url', 'https://example.com/orders/delete'])).toBe('uncertain');
+    expect(impact('page.exec', ['--script', 'fetch("/orders/ship")'])).toBe('uncertain');
+    expect(impact('page.exec', ['--script', 'document.title'])).toBe('observe');
+    expect(impact('page.exec', ['--script', 'location.href'])).toBe('observe');
+    expect(impact('page.exec', ['--script', 'document.title = "changed"'])).toBe('uncertain');
+    const steps = JSON.stringify([{ type: 'screenshot' }, { type: 'click', selector: '#save-product' }]);
+    expect(impact('automation.run', ['--steps', steps], '切换英国站点')).toBe('business');
+    expect(impact('zclaw.invoke', ['list_opened_stores'])).toBe('observe');
+    expect(impact('zclaw.invoke', ['list_stores'])).toBe('observe');
+  });
+
+  it('checks each automation step before skipping confirmation', () => {
+    const steps = JSON.stringify([
+      { type: 'visit', url: 'https://sellercentral.amazon.co.uk/home' },
+      { type: 'click', selector: '#marketplace-selector' },
+      { type: 'click', selector: '#language-zh' },
+      { type: 'screenshot' }
+    ]);
+    expect(impact('automation.run', ['--steps', steps], '切换英国站点和中文界面')).toBe('session');
+    expect(impact('automation.run', ['--steps', steps])).toBe('uncertain');
+  });
+
+  it('classifies safe and unsafe raw API paths by the endpoint effect', () => {
+    expect(impact('api.call', ['/superbrowser/rest/v1/erp/security/access_rule/list'])).toBe('observe');
+    expect(impact('api.call', ['/superbrowser/rest/v1/erp/security/access_rule/edit'])).toBe('uncertain');
   });
 });

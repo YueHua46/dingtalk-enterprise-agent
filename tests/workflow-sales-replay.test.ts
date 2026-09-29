@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from './test-config.js';
 import { InMemoryRepository } from '../src/persistence.js';
-import { TaskOrchestrator } from '../src/task-orchestrator.js';
+import { TaskOrchestrator, MAX_REVIEW_ROUNDS } from '../src/task-orchestrator.js';
+import type { ReviewResult } from '../src/evidence-reviewer.js';
 import type { AgentRequest } from '../src/types.js';
 
 const config = loadConfig({
@@ -12,75 +13,155 @@ const config = loadConfig({
 
 const request: AgentRequest = {
   requestId: 'sales-replay', messageId: 'sales-replay', user: { corpId: 'corp', userId: 'user-1' },
-  surface: { type: 'group', id: 'group-1' }, text: '我想知道我最近哪些亚马逊店铺的哪些 ASIN 销量不好，什么原因。',
+  surface: { type: 'group', id: 'group-1' }, text: '使用你亚马逊的运营经验分析我们部分ASIN销量不好的原因。',
   attachments: [], receivedAt: Date.now()
 };
 
-describe('sales task replay', () => {
-  it('cannot end at a Lingxing directory restriction and completes after scoped sales evidence', async () => {
-    const repo = new InMemoryRepository();
-    const sent: string[] = [];
-    const direct: string[] = [];
-    let turns = 0;
-    const call = (namespace: string, tool: string, args: unknown) => ({ method: 'item/tool/call', params: { namespace, tool, arguments: args } });
+const call = (namespace: string, tool: string, args: unknown) => ({ method: 'item/tool/call', params: { namespace, tool, arguments: args } });
+const pass: ReviewResult = { status: 'pass', issues: [], reason: 'supported' };
+const revise = (problem: string): ReviewResult => ({ status: 'revise', reason: problem,
+  issues: [{ severity: 'blocking', category: 'fact', location: '', problem, fix: '按证据修正' }] });
+
+function setup(codex: Record<string, unknown>) {
+  const repo = new InMemoryRepository();
+  const sent: string[] = [];
+  const orchestrator = new TaskOrchestrator(config, repo, { interrupt: vi.fn(async () => undefined), ...codex } as any, {} as any, {
+    async send(_surface, markdown) { sent.push(markdown); }
+  });
+  vi.spyOn((orchestrator as any).crossBorderOpsTool, 'execute').mockImplementation(async (_user: unknown, input: { dataset: string }) => ({
+    dataset: input.dataset, scope: { lingxing_sids: [44] },
+    data: { current_period: { start_date: '2026-09-21', end_date: '2026-09-27' }, rows: [{ lingxing_sid: 44, asin: 'B000000001', current_units: 3, baseline_units: 9 }] },
+    evidence: { source: 'crossborderops', queried_at: '2026-09-28T00:00:00Z', authorized_lingxing_sids: [44] }
+  }));
+  return { repo, sent, orchestrator };
+}
+
+describe('enforced task completion', () => {
+  it('lets the agent own its plan, rejects an unsupported blocked claim, and delivers after one review', async () => {
+    let reviews = 0;
     const codex = {
-      startThread: vi.fn().mockResolvedValueOnce('thread-old').mockResolvedValueOnce('thread-new'),
+      startThread: vi.fn(async () => 'thread-1'),
       turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
-        turns += 1;
-        if (turns === 1) return { text: '旧会话称领星受限，无法继续。', threadId: 'thread-old' };
-        const directory = await onTool(call('lingxing', 'catalog', { toolId: 'help' }));
-        expect(directory.success).toBe(true);
-        const premature = await onTool(call('agent', 'workflow', { operation: 'complete', completion: {
-          status: 'blocked', answer: '领星受限，无法找出销量下降的 ASIN', factEvidence: {}, missingFacts: ['sales_change', 'cause_evidence']
+        const planned = await onTool(call('agent', 'workflow', { operation: 'plan', contract: {
+          goal: '诊断销量下滑 ASIN 的原因', requiredFacts: [{ id: 'sales_change', description: '两期内部销量', acceptableSources: ['crossborderops.*'] }]
         } }));
+        expect(planned.success).toBe(true);
+        const premature = await onTool(call('agent', 'workflow', { operation: 'complete', completion: {
+          status: 'blocked', answer: '领星受限，无法分析', factEvidence: {}, missingFacts: ['sales_change'] } }));
         expect(premature.success).toBe(false);
         expect(premature.contentItems[0].text).toContain('WORKFLOW_SOURCE_NOT_ATTEMPTED');
-        const sales = await onTool(call('crossborderops', 'query', { dataset: 'daily.performance_changes', params: { days: 7 } }));
+        const sales = await onTool(call('crossborderops', 'query', { dataset: 'daily.performance_changes', params: {} }));
         expect(sales.success).toBe(true);
-        const evidenceId = String(sales.contentItems.at(-1).text).match(/证据 ID：([^；]+)/)?.[1];
-        expect(evidenceId).toBeTruthy();
-        const detail = await onTool(call('crossborderops', 'query', { dataset: 'daily.product', params: { asin: 'B000000001', days: 14 } }));
-        expect(detail.success).toBe(true);
-        const causeId = String(detail.contentItems.at(-1).text).match(/证据 ID：([^；]+)/)?.[1];
-        expect(causeId).toBeTruthy();
         const final = await onTool(call('agent', 'workflow', { operation: 'complete', completion: {
-          status: 'answered', answer: '最近完整 7 日，示例店铺的 B000000001 销量由 9 降至 3；同期流量由 100 降至 50，流量下降是可核验的伴随因素，尚不能断言唯一原因。',
-          factEvidence: { sales_change: [evidenceId], cause_evidence: [causeId] }, missingFacts: []
-        } }));
+          status: 'answered', answer: 'B000000001 销量由 9 降至 3；可能原因是流量下降（推断，待核查）。建议先核查广告预算。' } }));
         expect(final.success).toBe(true);
-        return { text: '未核验的自由回答', threadId: 'thread-new' };
-      }),
-      interrupt: vi.fn(async () => undefined)
+        return { text: '未核验的自由回答', threadId: 'thread-1' };
+      })
     };
-    const orchestrator = new TaskOrchestrator(config, repo, codex as any, {} as any, {
-      async send(_surface, markdown) { sent.push(markdown); },
-      async sendDirect(_user, markdown) { direct.push(markdown); }
-    });
-    vi.spyOn((orchestrator as any).contractPlanner, 'plan').mockResolvedValue({
-      mode: 'read', goal: '分析授权店铺与 ASIN 的销量下滑', deliverables: ['店铺 ASIN 与原因'],
-      requiredFacts: [
-        { id: 'sales_change', description: '两期内部销量比较', acceptableSources: ['crossborderops.*'] },
-        { id: 'cause_evidence', description: '下滑对象的流量转化等诊断数据', acceptableSources: ['crossborderops.*'] }
-      ],
-      assumptions: ['最近完整 7 日'], openQuestions: [], completionCriteria: ['有销量证据']
-    });
-    vi.spyOn((orchestrator as any).mcpReadTool, 'execute').mockResolvedValue({ tools: [] });
-    vi.spyOn((orchestrator as any).crossBorderOpsTool, 'execute').mockImplementation(async (_user: unknown, input: { dataset: string }) => ({
-      dataset: input.dataset, scope: { lingxing_sids: [44] },
-      data: input.dataset === 'daily.performance_changes'
-        ? { current_period: { start_date: '2026-09-15', end_date: '2026-09-21' }, rows: [
-          { lingxing_sid: 44, asin: 'B000000001', current_units: 3, baseline_units: 9 }
-        ] }
-        : [{ asin: 'B000000001', baseline_sessions: 100, current_sessions: 50 }],
-      evidence: { source: 'crossborderops', queried_at: '2026-09-24T00:00:00Z', authorized_lingxing_sids: [44] }
-    }));
-    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ supported: true, reason: 'supported' });
+    const { repo, sent, orchestrator } = setup(codex);
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockImplementation(async () => { reviews += 1; return pass; });
     const task = await orchestrator.accept(request);
     await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
     expect(sent.some((message) => message.includes('由 9 降至 3'))).toBe(true);
-    expect(direct).toEqual([]);
     expect(sent.some((message) => message.includes('未核验的自由回答'))).toBe(false);
-    expect(codex.startThread).toHaveBeenCalledTimes(2);
+    expect(reviews).toBe(1);
+    expect(codex.startThread).toHaveBeenCalledTimes(1);
+    await orchestrator.stop();
+  });
+
+  it('returns all verifier issues to the agent in one round and accepts the corrected answer', async () => {
+    const feedback: string[] = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
+        await onTool(call('crossborderops', 'query', { dataset: 'daily.product', params: {} }));
+        const first = await onTool(call('agent', 'workflow', { operation: 'complete', completion: { status: 'answered', answer: '点击 63 次' } }));
+        expect(first.success).toBe(false);
+        feedback.push(first.contentItems[0].text);
+        const second = await onTool(call('agent', 'workflow', { operation: 'complete', completion: { status: 'answered', answer: '点击 53 次' } }));
+        expect(second.success).toBe(true);
+        return { text: 'done', threadId: 'thread-1' };
+      })
+    };
+    const { repo, sent, orchestrator } = setup(codex);
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review')
+      .mockResolvedValueOnce({ status: 'revise', reason: 'x', issues: [
+        { severity: 'blocking', category: 'fact', location: '点击 63 次', problem: '证据为 53 次', fix: '改为 53 次' },
+        { severity: 'blocking', category: 'inference', location: '导致', problem: '推断写成事实', fix: '标注为推断' }
+      ] })
+      .mockResolvedValueOnce(pass);
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(feedback[0]).toContain('改为 53 次');
+    expect(feedback[0]).toContain('标注为推断');
+    expect(feedback[0]).toContain(`第 1/${MAX_REVIEW_ROUNDS} 轮`);
+    expect(sent).toContain('点击 53 次');
+    await orchestrator.stop();
+  });
+
+  it('validates a plain final message without asking the agent to call complete', async () => {
+    const codex = {
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
+        await onTool(call('crossborderops', 'query', { dataset: 'daily.product', params: {} }));
+        return { text: '直接输出的最终答复', threadId: 'thread-1' };
+      })
+    };
+    const { repo, sent, orchestrator } = setup(codex);
+    const review = vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue(pass);
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(sent).toContain('直接输出的最终答复');
+    expect(codex.turn).toHaveBeenCalledTimes(1);
+    expect(review).toHaveBeenCalledTimes(1);
+    await orchestrator.stop();
+  });
+
+  it('starts one repair turn with the issues when a plain final message fails verification', async () => {
+    const prompts: string[] = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async (_id: string, prompt: string) => {
+        prompts.push(prompt);
+        return { text: prompts.length === 1 ? '初稿' : '修正稿', threadId: 'thread-1' };
+      })
+    };
+    const { repo, sent, orchestrator } = setup(codex);
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValueOnce(revise('数值与证据不符')).mockResolvedValueOnce(pass);
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('数值与证据不符');
+    expect(sent).toContain('修正稿');
+    await orchestrator.stop();
+  });
+
+  it('does not reject an answer because the verifier is unavailable', async () => {
+    const codex = {
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async () => ({ text: '答复', threadId: 'thread-1' }))
+    };
+    const { repo, sent, orchestrator } = setup(codex);
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'unavailable', issues: [], reason: 'timeout' });
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(sent).toContain('答复');
+    expect(codex.turn).toHaveBeenCalledTimes(1);
+    await orchestrator.stop();
+  });
+
+  it('always terminates: delivers after the final verifier round', async () => {
+    let turns = 0;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async () => ({ text: `第 ${++turns} 稿`, threadId: 'thread-1' }))
+    };
+    const { repo, sent, orchestrator } = setup(codex);
+    const review = vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue(revise('仍有问题'));
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(review).toHaveBeenCalledTimes(MAX_REVIEW_ROUNDS);
+    expect(sent).toContain(`第 ${MAX_REVIEW_ROUNDS} 稿`);
     await orchestrator.stop();
   });
 });

@@ -2,10 +2,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from './test-config.js';
 import { createServer } from '../src/server.js';
 import type { TaskOrchestrator } from '../src/task-orchestrator.js';
+import { issueModelTaskToken } from '../src/file-worker-auth.js';
+import { randomUUID } from 'node:crypto';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('HTTP server', () => {
+  it('serves standalone Codex web search only to an authenticated worker task', async () => {
+    const secret = 'w'.repeat(32);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ output: [{ content: [{ text: 'Example Domain\nWeb search queries: example.com\nSources:\n[1] [example.com](https://example.com/)' }] }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', MODEL_BASE_URL: 'https://model.example/v1', MODEL_API_KEY: 'model-key', MODEL_TOOL_COMPAT_PROXY: 'true', FILE_WORKER_SECRET: secret }), {} as TaskOrchestrator);
+    const payload = { id: 'session-1', commands: { search_query: [{ q: 'example.com' }] } };
+    const denied = await app.inject({ method: 'POST', url: '/internal/model/v1/alpha/search', payload });
+    expect(denied.statusCode).toBe(403);
+    const allowed = await app.inject({ method: 'POST', url: '/internal/model/v1/alpha/search', headers: { authorization: `Bearer ${issueModelTaskToken(secret, randomUUID())}` }, payload });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toMatchObject({ encrypted_output: null, results: [{ ref_id: 'turn0search0', url: 'https://example.com/' }] });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await app.close();
+  });
   it('keeps the directory endpoint behind the internal token', async () => {
     const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', INTERNAL_API_TOKEN: 'x'.repeat(32) }), {} as TaskOrchestrator);
     const denied = await app.inject({ method: 'GET', url: '/internal/directory/candidates' });

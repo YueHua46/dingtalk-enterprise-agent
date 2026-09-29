@@ -23,6 +23,15 @@ const schema = z.object({
   MODEL_TOOL_COMPAT_PROXY: z.enum(['true', 'false']).default('false'),
   MODEL_API_KEY: z.string().min(1).optional(),
   MODEL_NAME: z.string().default('gpt-5.6-sol'),
+  // Native image generation/editing channel. Kept separate from the text
+  // Responses relay because Gemini's native generateContent protocol is not
+  // the same wire contract as the Agent model.
+  IMAGE_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.string().url().optional()),
+  IMAGE_API_KEY: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
+  IMAGE_MODEL: z.string().default('gemini-3.1-flash-image'),
+  IMAGE_PROVIDER: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/).default('gemini'),
+  IMAGE_PROVIDERS_JSON: z.string().default(''),
+  IMAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
   TASK_WORKFLOW_MODE: z.enum(['off', 'shadow', 'enforce']).default('shadow'),
   LINGXING_MCP_KEY: z.string().min(1).optional(),
   SIF_MCP_KEY: z.string().min(1).optional(),

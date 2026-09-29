@@ -4,7 +4,7 @@ import type { CodexClient, CodexApprovalRequest } from '../src/codex-client.js';
 import type { DwsBroker } from '../src/dws-broker.js';
 import type { ZiniaoBroker } from '../src/ziniao-broker.js';
 import { InMemoryRepository } from '../src/persistence.js';
-import { isWhitelistedReadOnlyMcpElicitation, TaskOrchestrator, type MessageSender } from '../src/task-orchestrator.js';
+import { isScreenshotDeliveryRequest, isWhitelistedReadOnlyMcpElicitation, TaskOrchestrator, type MessageSender } from '../src/task-orchestrator.js';
 import { actionHash } from '../src/security.js';
 import type { AgentRequest, ConversationSurface, ToolAction, UserIdentity } from '../src/types.js';
 
@@ -49,6 +49,14 @@ describe('native MCP elicitation policy', () => {
       params: { ...base.params, message: 'Allow the lingxing MCP server to run tool "help"?', requestedSchema: { type: 'object', properties: { value: { type: 'string' } } } }
     })).toBe(false);
     expect(isWhitelistedReadOnlyMcpElicitation({ ...base, params: { ...base.params, mode: 'url' } })).toBe(false);
+  });
+});
+
+describe('screenshot delivery intent', () => {
+  it('recognizes group delivery wording as direct screenshot intent', () => {
+    expect(isScreenshotDeliveryRequest('截图发我')).toBe(true);
+    expect(isScreenshotDeliveryRequest('把当前页面截图直接发到群里，不要说明文字')).toBe(true);
+    expect(isScreenshotDeliveryRequest('获取当前页面截图')).toBe(false);
   });
 });
 
@@ -179,6 +187,174 @@ describe('TaskOrchestrator integration', () => {
     expect(direct).toEqual([expect.objectContaining({ userId: 'user-2', markdown: expect.stringContaining('memberAuth') })]);
     expect(broker.runCommand).toHaveBeenNthCalledWith(1, expect.objectContaining({ userId: 'user-1' }), ['store', 'list'], expect.anything());
     expect(broker.runCommand).toHaveBeenNthCalledWith(2, expect.objectContaining({ userId: 'user-2' }), ['store', 'list'], expect.anything());
+  });
+
+  it('opens a store and takes a screenshot without creating an approval', async () => {
+    const repo = new InMemoryRepository();
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      runCommand: vi.fn(async (_user: UserIdentity, args: string[]) => {
+        if (args[0] === 'store' && args[1] === 'open') return { storeId: '123', storeName: 'BAGWAT-US' };
+        if (args[0] === 'page' && args[1] === 'extract') return { stores: [{ storeId: '123', storeName: 'BAGWAT-US' }] };
+        return { base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' };
+      })
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-session'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const screenshotResponses: any[] = [];
+        for (const [capability, args] of [
+          ['store.open', ['--name', 'BAGWAT-US']],
+          ['page.extract', ['--mode', 'running']],
+          ['page.screenshot', ['--store-id', '123']],
+          // A model may repeat the screenshot after the verifier asks for a
+          // repair. The host must keep the user-facing file delivery idempotent.
+          ['page.screenshot', ['--store-id', '123']]
+        ] as const) {
+          const result = await onRequest({ method: 'item/tool/call', params: {
+            namespace: 'ziniao', tool: 'cli', arguments: { capability, args }
+          } });
+          expect(result.success).toBe(true);
+          if (capability === 'page.screenshot') screenshotResponses.push(JSON.parse(result.contentItems[0].text));
+        }
+        expect(screenshotResponses[0]).toMatchObject({ delivered: true, delivery: { kind: 'screenshot', capabilityId: 'ziniao.cli' } });
+        expect(screenshotResponses[1]).toMatchObject({ delivered: true, deduplicated: true, delivery: { kind: 'screenshot' } });
+        return { text: '截图完成', threadId: 'thread-ziniao-session' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const delivered: string[] = [];
+    const sender: MessageSender = {
+      async send() {},
+      async sendFile(_user, _surface, filePath) { delivered.push(filePath); },
+      async beginApprovalCard() { throw new Error('unexpected approval'); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-session', '打开 BAGWAT-US 店铺，截图首页'));
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(broker.runCommand).toHaveBeenCalledTimes(3);
+    expect(delivered).toHaveLength(1);
+    expect((await repo.audits).filter((item: any) => item.eventType === 'ziniao.screenshot_deduplicated')).toHaveLength(1);
+    expect(await repo.getApproval(task!.id)).toBeUndefined();
+  });
+
+  it('delivers a new screenshot after the page generation changes', async () => {
+    const repo = new InMemoryRepository();
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      runCommand: vi.fn(async (_user: UserIdentity, args: string[]) => {
+        if (args[0] === 'store' && args[1] === 'open') return { storeId: '123', storeName: 'BAGWAT-US' };
+        if (args[0] === 'page' && args[1] === 'extract') return { stores: [{ storeId: '123', storeName: 'BAGWAT-US' }] };
+        if (args[0] === 'page' && args[1] === 'visit') return { url: 'https://sellercentral.amazon.co.uk/' };
+        return { base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' };
+      })
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-generation'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        for (const [capability, args] of [
+          ['store.open', ['--name', 'BAGWAT-US']],
+          ['page.extract', ['--mode', 'running']],
+          ['page.screenshot', ['--store-id', '123']],
+          ['page.visit', ['--url', 'https://sellercentral.amazon.co.uk/']],
+          ['page.screenshot', ['--store-id', '123']]
+        ] as const) {
+          const response = await onRequest({ method: 'item/tool/call', params: {
+            namespace: 'ziniao', tool: 'cli', arguments: { capability, args }
+          } });
+          expect(response.success).toBe(true);
+        }
+        return { text: '两张截图完成', threadId: 'thread-ziniao-generation' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const delivered: string[] = [];
+    const sender: MessageSender = {
+      async send() {},
+      async sendFile(_user, _surface, filePath) { delivered.push(filePath); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-generation', '打开店铺，截图后切换英国站点再截图'));
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(broker.runCommand).toHaveBeenCalledTimes(5);
+    expect(delivered).toHaveLength(2);
+    expect((await repo.getWorkflow(task!.id))?.ziniao?.screenshotDeliveries).toHaveLength(2);
+  });
+
+  it('does not suppress an independent artifact after a screenshot delivery', async () => {
+    const repo = new InMemoryRepository();
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    const sha256 = (await import('node:crypto')).createHash('sha256').update(png).digest('hex');
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      runCommand: vi.fn(async (_user: UserIdentity, args: string[]) => {
+        if (args[0] === 'store' && args[1] === 'open') return { storeId: '123', storeName: 'BAGWAT-US' };
+        if (args[0] === 'page' && args[1] === 'extract') return { stores: [{ storeId: '123', storeName: 'BAGWAT-US' }] };
+        return { base64: png.toString('base64') };
+      })
+    } as unknown as ZiniaoBroker;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-artifact'),
+      usesWorker: vi.fn(() => true),
+      selectTask: vi.fn(),
+      inspectOutput: vi.fn(async () => ({ name: 'independent.png', size: png.length, sha256 })),
+      downloadOutput: vi.fn(async () => png),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        for (const request of [
+          { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'store.open', args: ['--name', 'BAGWAT-US'] } },
+          { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'page.extract', args: ['--mode', 'running'] } },
+          { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'page.screenshot', args: ['--store-id', '123'] } },
+          { namespace: 'artifact', tool: 'submit', arguments: { path: 'independent.png' } }
+        ]) {
+          const response = await onRequest({ method: 'item/tool/call', params: request });
+          expect(response.success).toBe(true);
+        }
+        return { text: '截图和独立附件都已发送', threadId: 'thread-ziniao-artifact' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const delivered: string[] = [];
+    const sender: MessageSender = {
+      async send() {},
+      async sendFile(_user, _surface, filePath) { delivered.push(filePath); }
+    };
+    const dws = { status: vi.fn(async () => ({ profileKey: 'dws-saved' })) } as unknown as DwsBroker;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-artifact', '打开店铺，截图发我，再发送一个独立附件'));
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(delivered).toHaveLength(2);
+    expect((await repo.audits).some((item: any) => item.eventType === 'artifact.submitted')).toBe(true);
+  });
+
+  it('blocks page operations until the opened store is verified', async () => {
+    const repo = new InMemoryRepository();
+    const broker = {
+      status: vi.fn(async () => ({ profileKey: 'saved' })),
+      runCommand: vi.fn(async () => ({ storeId: '123', storeName: 'BAGWAT-US' }))
+    } as unknown as ZiniaoBroker;
+    let results: Array<{ success: boolean; text: string }> = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-ziniao-precondition'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        for (const [capability, args] of [
+          ['store.open', ['--name', 'BAGWAT-US']],
+          ['page.screenshot', ['--store-id', '123']]
+        ] as const) {
+          const response = await onRequest({ method: 'item/tool/call', params: {
+            namespace: 'ziniao', tool: 'cli', arguments: { capability, args }
+          } });
+          results.push({ success: response.success, text: response.contentItems?.[0]?.text ?? '' });
+        }
+        return { text: '完成', threadId: 'thread-ziniao-precondition' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, { async send() {} }, undefined, undefined, broker);
+    const task = await orchestrator.accept(request('ziniao-precondition', '打开店铺后截图'));
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('failed'));
+    expect(results[0]).toMatchObject({ success: true });
+    expect(results[1]).toMatchObject({ success: false, text: expect.stringContaining('尚未确认运行中的店铺') });
+    expect(broker.runCommand).toHaveBeenCalledTimes(1);
   });
 
   it('waits for the originating user before a Ziniao write', async () => {
@@ -1179,5 +1355,121 @@ describe('TaskOrchestrator integration', () => {
     expect((broker.runCommand as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     const stored = await repo.findTask(task!.id);
     expect(stored?.status).toBe('completed');
+  });
+
+  it('cancels a task by quoting its task card and sending bare cancel', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const codex = { interrupt: vi.fn(async () => undefined) } as unknown as CodexClient;
+    const sender: MessageSender = {
+      async send(_surface, markdown) { sent.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender);
+    const original = request('quoted-task-request', '查询一个较慢的任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+    await repo.setTaskCard(task.id, 'quoted-task-card');
+
+    const handled = await orchestrator.handleControl({
+      ...request('quoted-cancel', '<@robot-open-id> 取消'),
+      quotedMessageId: 'quoted-task-card'
+    });
+
+    expect(handled).toBe(true);
+    expect((await repo.findTask(task.id))?.status).toBe('cancelled');
+    expect(sent.join('\n')).toContain('已取消');
+  });
+
+  it('cancels a task by quoting its original request message', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, {} as DwsBroker, sender);
+    const original = request('quoted-original-request', '查询一个待取消任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+
+    expect(await orchestrator.handleControl({
+      ...request('quoted-original-cancel', '取消'),
+      quotedMessageId: original.messageId
+    })).toBe(true);
+    expect((await repo.findTask(task.id))?.status).toBe('cancelled');
+    expect(sent.join('\n')).toContain('已取消');
+    expect(sent.join('\n')).not.toContain(task.id);
+  });
+
+  it('resolves a missing Stream quote through the current user DWS profile', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const original = request('dws-quote-original', '查询一个待取消任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+    const dws = {
+      resolveQuotedMessage: vi.fn(async () => ({
+        messageId: 'dws-quote-cancel',
+        conversationId: original.surface.id,
+        quotedMessageId: original.messageId,
+        quotedConversationId: original.surface.id,
+        quotedText: original.text
+      }))
+    } as unknown as DwsBroker;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, dws, sender);
+
+    expect(await orchestrator.handleControl(request('dws-quote-cancel', '<@robot-open-id> 取消'))).toBe(true);
+    expect(dws.resolveQuotedMessage).toHaveBeenCalledWith(original.user, 'dws-quote-cancel');
+    expect((await repo.findTask(task.id))?.status).toBe('cancelled');
+    expect(sent.join('\n')).toContain('已取消');
+  });
+
+  it('does not create a task when a bare cancel has no resolvable quote', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const dws = { resolveQuotedMessage: vi.fn(async () => undefined) } as unknown as DwsBroker;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, dws, sender);
+
+    expect(await orchestrator.handleControl(request('unquoted-bare-cancel', '取消'))).toBe(true);
+    expect(sent.join('\n')).toContain('请引用对应的任务受理消息');
+    expect(await repo.findTaskByMessageReference(
+      { corpId: 'corp-1', userId: 'user-1' },
+      { type: 'direct', id: 'user-1' },
+      'unquoted-bare-cancel'
+    )).toBeUndefined();
+  });
+
+  it('falls back to the task number contained in quoted task-card text', async () => {
+    const repo = new InMemoryRepository();
+    const sender: MessageSender = { async send() {} };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, {} as DwsBroker, sender);
+    const original = request('quoted-text-request', '查询一个待取消任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+
+    expect(await orchestrator.handleControl({
+      ...request('quoted-text-cancel', '取消'),
+      quotedMessageId: 'dingtalk-message-id-not-equal-to-card-track-id',
+      quotedText: `### 已受理\n\n- 任务编号：${task.id}\n- 当前状态：排队中`
+    })).toBe(true);
+    expect((await repo.findTask(task.id))?.status).toBe('cancelled');
+  });
+
+  it('does not cancel a quoted task from another user or surface', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, {} as DwsBroker, sender);
+    const original = request('quoted-private-request', '查询私聊任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+
+    expect(await orchestrator.handleControl({
+      ...request('quoted-cross-surface-cancel', '取消'),
+      surface: { type: 'group', id: 'group-1' },
+      quotedMessageId: task.request.messageId
+    })).toBe(true);
+    expect((await repo.findTask(task.id))?.status).toBe('queued');
+    expect(sent.join('\n')).toContain('未找到可取消的任务');
+    expect(sent.join('\n')).not.toContain('任务编号');
   });
 });

@@ -1,71 +1,168 @@
 import type { Config } from './config.js';
 import type { TaskContract, TaskCompletion, EvidenceRecord } from './task-workflow.js';
 
+export interface ReviewIssue {
+  severity: 'blocking' | 'advisory';
+  category: string;
+  location: string;
+  problem: string;
+  fix: string;
+}
+
+/**
+ * pass: deliverable as is. revise: at least one blocking issue.
+ * unavailable: the verifier itself failed (network, timeout, unparseable
+ * output). That is an infrastructure outcome, never a verdict on the answer.
+ */
+export interface ReviewResult {
+  status: 'pass' | 'revise' | 'unavailable';
+  issues: ReviewIssue[];
+  reason: string;
+}
+
+export interface ReviewInput {
+  request: string;
+  quotedText?: string;
+  clarificationAnswer?: string;
+  contract?: TaskContract;
+  completion: TaskCompletion;
+  evidence: EvidenceRecord[];
+  excerpts: Record<string, string>;
+  computeAvailable: boolean;
+  round: number;
+  maxRounds: number;
+}
+
+const EXCERPT_BUDGET_CHARS = 160_000;
+const EXCERPT_MAX_CHARS = 12_000;
+const REVIEW_TIMEOUT_MS = 90_000;
+
+// One rubric, one call, every issue at once. Earlier designs chained several
+// narrow judges that each saw different inputs and stopped at the first
+// failure; they contradicted each other and forced one-issue-per-round loops.
+const RUBRIC = [
+  '你是企业 Agent 的交付前核验器。你的职责是拦截会误导用户的错误，不是改写风格或施加个人偏好。',
+  '依据优先级：用户原话、引用消息与澄清回答（request / quotedText / clarificationAnswer）是唯一目标来源；contract 是 Agent 自己的工作计划，仅作参考，与原话冲突时以原话为准。',
+  '一次性完成下列全部检查，列出所有问题，不要只报第一个：',
+  '1. goal：答复是否回答了用户实际要求的对象、时间含义、指标、分析动作和交付物；是否用另一个可查询的问题替代了原问题；关键交付物是否缺失。',
+  '2. fact：答复中每个具体数据（数值、日期、名称、排名、状态）必须能在 evidence 中找到同对象、同口径、同时段的依据。直接从证据行读取的数值逐项核对。由多行派生的数值（求和、均值、比率、环比、排名），若存在 analysis.python 证据，则核对答复与其输出一致，并检查代码读取的证据文件与筛选条件是否正确；不存在计算证据时，只在你能直接、确定地核对时才判断对错，不要凭心算推翻答复。computeAvailable=true 时，重要的派生数值既无计算证据又无法直接核对，列为 blocking 并要求用 analysis.python 计算；computeAvailable=false 时列为 advisory。',
+  '3. coverage：声称“全部”“共 N 个”“完整排名”时，用 dataQuality 的 total、offset、returnedRowCount、filters、dimensions 核对分页是否连续覆盖；授权范围不等于数据覆盖，没有业务行不等于零；不同币种或计量单位没有可信换算时不能比较或排名。completion.coverageGaps 是宿主观察到的覆盖差异。若答复把部分结果说成全部、把缺失当零、或隐去会改变结论的缺口，列为 blocking；答复已如实限定范围则不是问题。',
+  '4. inference：用户要求分析原因、诊断、建议或运用经验判断时，基于证据的推断和运营建议本身就是交付物，不要因为用户没逐字要求建议就要求删除。要求是：推断与已证事实可区分（例如“可能”“推测”“待验证”或分级标注），并说明依据；把推断写成已被数据证实、或断言证据无法支持的因果关系，才是 blocking。逐条检查原因陈述：只有同期变化或相关性、却用“导致”“抑制了”“核心诱因是”等确定措辞的，是 blocking；断言证据里根本没有的对象属性（如主图质量、评价内容、竞品动作、促销活动）而未标为待核查的，是 blocking。修正方法是改为分级措辞，而不是删除分析或建议。通用行业常识无需证据；平台规则、费率、阈值、价格等可能变化的具体数字没有本任务证据时是 blocking。',
+  '5. relevance：只有当额外内容替换了用户目标、淹没了答案、或披露与请求无关的业务明细或个人信息时才是问题。必要的口径说明、数据截至日、数据缺口、下一步建议不是问题。',
+  '6. safety：答复不得包含凭证、令牌、内部文件路径、证据 ID 或工具参数。',
+  '严重级别：blocking = 用户会因此得到错误事实、错误对象、把猜测当事实、隐去关键缺口、或缺少核心交付物；advisory = 可改进但不影响正确性。风格、措辞、篇幅偏好一律不是 blocking。',
+  '每个问题都给出可直接执行的修正方法 fix（例如改为哪个数值、删除哪一句、补充哪个口径、用 analysis.python 计算什么）。',
+  '当 round 等于 maxRounds 时，这是最后一轮：只保留你完全确定的 blocking 问题。',
+  '只输出 JSON：{"issues":[{"severity":"blocking|advisory","category":"goal|fact|coverage|inference|relevance|safety","location":"答复中的原句或小节","problem":"具体问题","fix":"具体修正方法"}]}。没有问题时输出 {"issues":[]}。'
+].join('\n');
+
 export class EvidenceReviewer {
   public constructor(private readonly config: Pick<Config, 'MODEL_BASE_URL' | 'MODEL_API_KEY' | 'MODEL_NAME'>, private readonly http: typeof fetch = fetch) {}
 
-  public async review(contract: TaskContract, completion: TaskCompletion, evidence: EvidenceRecord[], excerpts: Record<string, string>, originalRequest = ''): Promise<{ supported: boolean; reason: string }> {
-    if (!this.config.MODEL_BASE_URL || !this.config.MODEL_API_KEY) return { supported: false, reason: 'reviewer_unavailable' };
-    for (const ids of Object.values(completion.factEvidence)) {
-      for (const id of ids) if (!excerpts[id]) return { supported: false, reason: 'evidence_excerpt_unavailable' };
+  public async review(input: ReviewInput): Promise<ReviewResult> {
+    if (!this.config.MODEL_BASE_URL || !this.config.MODEL_API_KEY) return { status: 'unavailable', issues: [], reason: 'reviewer_not_configured' };
+    const payload = buildPayload(input);
+    let lastError = 'review_failed';
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const issues = await this.ask(payload);
+        const blocking = issues.filter((issue) => issue.severity === 'blocking');
+        return blocking.length
+          ? { status: 'revise', issues, reason: blocking.map((issue) => issue.problem).join('；').slice(0, 400) }
+          : { status: 'pass', issues, reason: 'supported' };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
     }
-    const citedIds = [...new Set(Object.values(completion.factEvidence).flat())];
-    if (citedIds.length > 20) return { supported: false, reason: 'evidence_review_budget_exceeded: cite at most 20 relevant records' };
-    const recentOtherIds = Object.keys(excerpts).filter((id) => !citedIds.includes(id)).slice(-20);
-    const excerptIds = [...citedIds, ...recentOtherIds].slice(0, 20);
-    const payload = {
-      originalRequest,
-      goal: contract.goal,
-      deliverables: contract.deliverables,
-      completionCriteria: contract.completionCriteria,
-      facts: contract.requiredFacts,
-      completion,
-      evidence,
-      dataQuality: Object.fromEntries(Object.entries(excerpts).flatMap(([id, value]) => {
-        try {
-          const result = JSON.parse(value) as { dataset?: unknown; data?: Record<string, unknown> };
-          if (!result.data || typeof result.data !== 'object') return [];
-          const { coverage, period, current_period, baseline_period, total, limit, offset, filters, dimensions, coverage_rule, population_provenance, currency_note, rows } = result.data;
-          if (!coverage && !coverage_rule) return [];
-          const currencies = Array.isArray(rows) ? [...new Set(rows.map((row) => row && typeof row === 'object' ? (row as Record<string, unknown>).currency : undefined).filter((value): value is string => typeof value === 'string'))] : [];
-          return [[id, { dataset: result.dataset, coverage, period, current_period, baseline_period, total, limit, offset,
-            returnedRowCount: Array.isArray(rows) ? rows.length : undefined, filters, dimensions,
-            coverage_rule, population_provenance, currency_note, currencies }]];
-        } catch { return []; }
-      })),
-      excerpts: Object.fromEntries(excerptIds.map((id) => [id, excerpts[id]!.slice(0, 12_000)]))
-    };
-    const scope = await this.ask({ originalRequest, deliverables: contract.deliverables, answer: completion.answer },
-      '你是独立的答复边界审查器。以用户原话为最高依据，逐段逐字段审查最终答复。对每个数字、指标、表格列、列表和小节做删除测试：删掉它后，用户要求的交付物是否仍完整且可正确解释？如果是，且用户没有要求该内容，它就是额外信息；必要的时间口径、来源、并列名次、授权或数据缺口除外。不要把“相关”“有帮助”“真实”当作用户要求。只问一个数值时，不应追加其他指标、内部标识或另一个维度的榜单；明确给定的标题、时间、对象等筛选条件也不能用相似结果替代。用户只问简单事实或定义时，回答应简洁。契约若扩大范围，以原话为准。存在额外字段、无关小节或替代目标时 supported=false，reason 点名应删除或修正的部分。只输出 JSON：{"supported":boolean,"reason":"简短原因"}。');
-    if (!scope.supported) return scope;
-    const factual = await this.ask(payload, '你是独立的事实与目标审查器。先核对最终答复是否实际回答 originalRequest 指定的对象、指标、时间含义、分析动作与范围；契约如偏离原请求，以原请求为准。不得用另一个可查询的问题替代，也不得附带与回答无关的个人或业务明细。再逐项核对数值、计算、单位、时间范围、数据粒度、来源、排序并列情况和覆盖范围；每个当前事实只能由同对象同粒度的本任务证据支持。对任何声称列全、共多少或代表全部授权范围的分页结果，用 dataQuality 的 filters、dimensions、total、offset、returnedRowCount 核对同口径证据是否连续覆盖全部页；缺页或换了查询口径时，即使另有源数据缺口声明，也不能把已取页面说成完整数据范围的全部结果。不同币种或其他不同计量单位的数据，在没有可信换算证据时不能产生跨单位赢家、前列或绝对领先等比较结论；分别列出不同单位的数值也不能暗示二者共同领先。dataQuality 中的 currency_note 和 currencies 是明确的可比性约束。授权范围不等于完整数据范围。业务聚合即使返回 total=1/1 且 coverage 完整，也只能证明已观测候选在其数据口径内完整，不能证明未出现业务行的授权对象为零。若答复声称全部授权对象的确定总额、完整清单或完整排名，须有本任务授权对象全集及与业务记录逐对象对齐的证据；缺少这种证据时，只能按已记录或已核实数据的范围表述，不能把模型自己的假设当证据。completion.coverageGaps 是宿主观察到的授权对象与业务记录覆盖差异，只作为证据供你判断答案的实际声称；不要据此强制修改 completion.status 或要求固定答复形式。若答案声称覆盖全部授权对象、把缺失记录当零，或隐去会改变该结论的数据缺口，应指出具体证据不足；若答案清楚限定为已观测记录并准确说明边界，可以接受其自然表述。聚合结果自己的 coverage 只计算已观测候选，不能证明不存在未入库对象。没有实时证据时可解释稳定的基本概念；精确比例以及“大多数”“绝大多数”等无来源的量化断言、价格、资格门槛或可能变化的平台规则均不可凭常识补写。历史聊天与 Skill 只能提供方法，不能证明实时事实。任一关键事实、目标匹配或完成状态不实则 supported=false。仅输出 JSON：{"supported":boolean,"reason":"简短原因"}。');
-    if (!factual.supported) return factual;
-    if (citedIds.some((id) => evidence.some((item) => item.id === id && item.capabilityId === 'crossborderops.daily.aggregate'))) {
-      const population = await this.ask(payload, '你只审查统计总体是否被证据支持。先读 answer 的每个总体限定语，再读 originalRequest、所引证据的 filters、dimensions、coverage_rule 与授权范围证据。业务聚合的 total 和 coverage 只针对已观测业务候选；它们不能证明所有授权对象都有业务行，更不能把无业务行等同零。若答复声称所有授权店铺或目标总体的确定总额、全量排名或完整清单，必须有同一任务中授权总体及其业务覆盖的证据；没有则 supported=false，reason 指出具体越界措辞。只说已记录或已核实范围的数值，并如实限定数据边界，可以 supported=true。不要要求固定模板、固定完成状态或无关补充指标。只输出 JSON：{"supported":boolean,"reason":"简短原因"}。');
-      if (!population.supported) return population;
-    }
-    return this.ask(payload, '你是独立的因果审查器。逐句找出最终答复中解释“为什么”、原因、影响机制、排除某因素、证实某因素的措辞，并核对本任务工具数据能否证明。汇总趋势不能证明某个商品的原因；两个指标同日变化不能证明因果；评论数量、广告消耗、转化率等相关性不能单独证明流量或销量受其影响。把变化称为正常波动、异常、无影响或排除风险，同样需要相应的基线与判定依据，不能仅因基数小就下此结论。只有相关证据时必须清楚标为可能、线索或待核查，不能写成已证实、造成、导致、排除。建议可以提出待查方向，但不得假装已验证。任何一处越界则 supported=false。仅输出 JSON：{"supported":boolean,"reason":"简短原因"}。');
+    return { status: 'unavailable', issues: [], reason: lastError.slice(0, 200) };
   }
 
-  private async ask(payload: unknown, instruction: string): Promise<{ supported: boolean; reason: string }> {
+  private async ask(payload: unknown): Promise<ReviewIssue[]> {
     const endpoint = this.config.MODEL_BASE_URL!.replace(/\/+$/, '') + '/responses';
     const response = await this.http(endpoint, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.config.MODEL_API_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.config.MODEL_NAME, stream: false, input: [
-        { role: 'system', content: instruction },
+        { role: 'system', content: RUBRIC },
         { role: 'user', content: JSON.stringify(payload) }
       ] }),
-      signal: AbortSignal.timeout(15_000)
+      signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS)
     });
-    if (!response.ok) return { supported: false, reason: `review_http_${response.status}` };
+    if (!response.ok) throw new Error(`review_http_${response.status}`);
     const body = await response.json() as { output?: Array<{ content?: Array<{ text?: string }> }> };
     const text = body.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? '').join('') ?? '';
-    try {
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      const parsed = JSON.parse(text.slice(start, end + 1)) as { supported?: unknown; reason?: unknown };
-      return { supported: parsed.supported === true, reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : 'review_invalid' };
-    } catch { return { supported: false, reason: 'review_invalid' }; }
+    return parseIssues(text);
   }
+}
+
+export function parseIssues(text: string): ReviewIssue[] {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('review_invalid');
+  const parsed = JSON.parse(text.slice(start, end + 1)) as { issues?: unknown };
+  if (!Array.isArray(parsed.issues)) throw new Error('review_invalid');
+  const clip = (value: unknown, limit: number) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
+  return parsed.issues.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object') return [];
+    const item = raw as Record<string, unknown>;
+    const problem = clip(item.problem, 400);
+    if (!problem) return [];
+    return [{ severity: item.severity === 'blocking' ? 'blocking' as const : 'advisory' as const,
+      category: clip(item.category, 40) || 'other', location: clip(item.location, 200), problem, fix: clip(item.fix, 400) }];
+  }).slice(0, 20);
+}
+
+export function formatIssues(issues: ReviewIssue[]): string {
+  return issues.map((issue, index) => `${index + 1}. [${issue.severity === 'blocking' ? '必须修正' : '建议'}·${issue.category}] ${issue.location ? `「${issue.location}」` : ''}${issue.problem}${issue.fix ? `\n   修正：${issue.fix}` : ''}`).join('\n');
+}
+
+function buildPayload(input: ReviewInput): Record<string, unknown> {
+  const successful = input.evidence.filter((item) => item.status === 'success');
+  const cited = [...new Set(Object.values(input.completion.factEvidence).flat())];
+  // Computations first (they carry the derived numbers), then citations, then
+  // the most recent remaining evidence, until the character budget is spent.
+  const ordered = [
+    ...successful.filter((item) => item.capabilityId === 'analysis.python').map((item) => item.id).reverse(),
+    ...cited,
+    ...successful.map((item) => item.id).reverse()
+  ];
+  const excerpts: Record<string, string> = {};
+  let budget = EXCERPT_BUDGET_CHARS;
+  for (const id of new Set(ordered)) {
+    const text = input.excerpts[id];
+    if (!text || budget <= 0) continue;
+    const slice = text.slice(0, Math.min(EXCERPT_MAX_CHARS, budget));
+    excerpts[id] = slice;
+    budget -= slice.length;
+  }
+  const missingExcerpts = successful.filter((item) => !input.excerpts[item.id]).map((item) => item.id);
+  return {
+    request: input.request,
+    ...(input.quotedText ? { quotedText: input.quotedText } : {}),
+    ...(input.clarificationAnswer ? { clarificationAnswer: input.clarificationAnswer } : {}),
+    ...(input.contract ? { contract: input.contract } : {}),
+    completion: input.completion,
+    computeAvailable: input.computeAvailable,
+    round: input.round,
+    maxRounds: input.maxRounds,
+    evidence: input.evidence,
+    dataQuality: dataQuality(input.excerpts),
+    excerpts,
+    ...(missingExcerpts.length ? { excerptsUnavailable: missingExcerpts } : {})
+  };
+}
+
+function dataQuality(excerpts: Record<string, string>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(excerpts).flatMap(([id, value]) => {
+    try {
+      const result = JSON.parse(value) as { dataset?: unknown; data?: Record<string, unknown> };
+      if (!result.data || typeof result.data !== 'object') return [];
+      const { coverage, period, current_period, baseline_period, total, limit, offset, filters, dimensions, coverage_rule, population_provenance, currency_note, rows } = result.data;
+      if (!coverage && !coverage_rule && total === undefined) return [];
+      const currencies = Array.isArray(rows) ? [...new Set(rows.map((row) => row && typeof row === 'object' ? (row as Record<string, unknown>).currency : undefined).filter((value): value is string => typeof value === 'string'))] : [];
+      return [[id, { dataset: result.dataset, coverage, period, current_period, baseline_period, total, limit, offset,
+        returnedRowCount: Array.isArray(rows) ? rows.length : undefined, filters, dimensions,
+        coverage_rule, population_provenance, currency_note, currencies }]];
+    } catch { return []; }
+  }));
 }

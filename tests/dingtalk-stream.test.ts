@@ -83,6 +83,28 @@ describe('DingTalk message normalization', () => {
       quotedText: '这是被引用的正文'
     });
   });
+
+  it('normalizes embedded rich-text quote replies produced by user messaging', () => {
+    const parsed = parseRobotMessage(downstream({
+      ...base,
+      isInAtList: true,
+      msgtype: 'richText',
+      content: {
+        richText: JSON.stringify({
+          items: [{ type: 'text', text: '<@robot-open-id> 取消' }],
+          quotedMessage: {
+            openMessageId: 'quoted-open-message-id',
+            content: '被引用的原任务'
+          }
+        })
+      }
+    }));
+    expect(parsed).toMatchObject({
+      text: '<@robot-open-id> 取消',
+      quotedMessageId: 'quoted-open-message-id',
+      quotedText: '被引用的原任务'
+    });
+  });
 });
 
 describe('DingTalk Stream callback lifecycle', () => {

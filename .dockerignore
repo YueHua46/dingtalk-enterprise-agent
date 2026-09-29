@@ -18,4 +18,7 @@ docs/
 schemas/
 tests/
 *.log
+__pycache__/
+*.py[cod]
+*.egg-info/
 tmp-card-index.js

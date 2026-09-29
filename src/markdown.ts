@@ -26,7 +26,7 @@ export function accepted(task: TaskRecord): string {
     '- 当前状态：排队中',
     '- 来源：' + (task.request.surface.type === 'group' ? '群聊' : '私聊'),
     '',
-    '任务执行期间可发送 `取消 ' + task.id + '`。'
+    '如需停止任务，请引用这条任务消息后发送 `取消`；无需复制任务编号。'
   ].join('\n');
 }
 
@@ -74,8 +74,8 @@ export function failed(taskId: string, message: string): string {
   ].join('\n');
 }
 
-export function cancelled(taskId: string): string {
-  return '### 已取消\n\n任务编号：' + taskId + '\n\n已停止后续执行。';
+export function cancelled(_taskId: string): string {
+  return '### 已取消\n\n已停止后续执行。';
 }
 
 export function route(surface: ConversationSurface, body: string): { surface: ConversationSurface; body: string } {

@@ -37,17 +37,17 @@ Codex 的业务写入必须经过结构化动态工具，不能把通用 shell �
 
 项目发布 Nexscope 的 53 个 Amazon 子 Skill、`zach22-1999/amazon-skills` 的 7 个 Skill，以及基于 `awesome-amazon-ec-skills` 的只读社区目录 Skill。Awesome 仓库只是第三方项目索引，不会递归自动安装其中链接的所有代码。部分 Zach Skill 依赖 Sorftime MCP 或 Python 脚本；未配置对应运行能力时，只使用其不依赖这些组件的分析流程。
 
-镜像还安装 `@ziniao-open/cli` 并发布 13 个紫鸟 Skill。Codex 通过 `ziniao.cli` 结构化工具调用业务命令。配置 `ZINIAO_REMOTE_HOST` 后，网关通过专用 SSH 密钥连接 jennov-75 上的强制命令 worker；该密钥不能获得交互 shell、端口转发或 X11 转发。worker 以当前钉钉用户的 `corpId + userId` 哈希选择专属 HOME，紫鸟 CLI 配置保存在 `/home/jennov/.local/share/dingtalk-ziniao/users/<用户哈希>`。不同运营人员不能共享同一个 HOME，也不依赖全局 current profile。未配置远端主机时才使用容器内的 CLI 和 `ziniao-data` 持久卷。
+镜像还安装 `@ziniao-open/cli` 并发布 13 个紫鸟 Skill。Codex 通过 `ziniao.cli` 结构化工具调用业务命令。配置 `ZINIAO_REMOTE_HOST` 后，网关通过专用 SSH 密钥连接所选执行机上的强制命令 worker；该密钥不能获得交互 shell、端口转发或 X11 转发。worker 以当前钉钉用户的 `corpId + userId` 哈希选择专属 HOME，不同运营人员不能共享同一个 HOME，也不依赖全局 current profile。未配置远端主机时才使用容器内的 CLI 和 `ziniao-data` 持久卷。
 
-首次真正调用紫鸟工具时，网关先检查该用户目录的有效配置；没有配置时运行 `ziniao-cli config init --new --profile <用户专属标识>`，把授权链接只发给当前发起人私聊，等待授权完成后继续原任务。数据库仅记录非敏感 profile 标识和授权时间，不保存 API Key。明确只读的命令直接执行，其余命令必须先经当前用户业务确认并进入幂等记录。店铺和页面命令依赖 jennov-75 本机紫鸟客户端的 ZClaw Bridge（127.0.0.1:9481）；客户端登录不等于 Bridge 就绪。若 Bridge 未启动，worker 拒绝开启首次授权并报告客户端未就绪。当前 Linux 客户端 6.25.3 已登录，但实测该端口未监听，需升级或由紫鸟官方确认 Linux Bridge 支持后复测，不能将远端通道接通误认为店铺操作已可用。
+首次真正调用紫鸟工具时，网关先检查该用户目录的有效配置；没有配置时运行 `ziniao-cli config init --new --profile <用户专属标识>`，把授权链接只发给当前发起人私聊，等待授权完成后继续原任务。数据库仅记录非敏感 profile 标识和授权时间，不保存 API Key。确认按**具体操作的业务效果**判定：查询、打开/关闭浏览器中的店铺、登录、切换站点或界面语言、导航、截图无需业务确认；创建/修改/删除商品、订单、店铺配置、成员权限等业务数据，以及效果不明的页面交互或通用调用，进入原会话确认与幂等记录。`page.click`、`page.input` 和 `automation.run` 要附当前步骤的 `purpose`，宿主结合用户原请求、目标元素和自动化每一步判定；调用方自述的目的不能覆盖明显的业务变更目标。店铺和页面命令依赖执行机本机紫鸟客户端的 ZClaw Bridge（127.0.0.1:9481）；客户端登录不等于 Bridge 就绪。2026-09-28 生产 `.env` 已明确指向 Windows 执行机 `192.168.3.111`，gateway 已重建且 Bridge 探测通过。Linux jennov-75 的客户端 6.25.3 虽已登录，但 Bridge 端口未监听。
 
-### Windows 紫鸟执行机候选（192.168.3.111）
+### Windows 紫鸟生产执行机（192.168.3.111）
 
 Windows 的 `info` 仅是 SSH/紫鸟 CLI 进程运行账号，不是运营人员身份。`remote/ziniao-worker-win.mjs` 以网关提供的 `sha256([corpId,userId])` 选择 `C:\ProgramData\DingtalkZiniao\users\<哈希>` 作为独立 `USERPROFILE`，使用 `dingtalk-<哈希前24位>` 专属 CLI profile。worker 不读取 `C:\Users\info\.ziniao-cli`，也不执行全局 `config use`。各人的授权流程要分别写入各自的加密 API Key 引用；若该目录未授权，直接返回 `ZINIAO_AUTH_REQUIRED`，不能回退使用 Windows 当前登录者的 Key。根目录和 users 目录 ACL 仅允许 SYSTEM、Administrators；网关 SSH 公钥被限制为强制运行 worker，无交互 shell 或端口转发。
 
-这只是 CLI 凭证隔离，不等同于 Windows 系统账号隔离；本机管理员仍是受信任的运维主体。当前 Windows 客户端与 Bridge 已就绪，单个现有紫鸟登录能列出店铺，未授权的隔离目录会被正确拒绝。但还没有用两个店铺权限不同的紫鸟成员分别授权并验证可见店铺集合，因此**不能认定 Bridge 店铺/页面能力已实现按 API Key 的服务端权限隔离**。在完成该 A/B 验证前，不要把生产网关切换到 Windows 执行机，也不要把 Windows GUI 的现有登录视为其他运营人员的授权。授权链接只发对应用户私聊，不收集明文 API Key。
+这只是 CLI 凭证隔离，不等同于 Windows 系统账号隔离；本机管理员仍是受信任的运维主体。Windows 客户端与 Bridge 已就绪，单个现有紫鸟登录能列出店铺，未授权的隔离目录会被正确拒绝。2026-09-28 按用户明确要求跳过双成员 A/B 验证并切换生产网关；因此**仍不能认定 Bridge 店铺/页面能力已实现按 API Key 的服务端权限隔离**。不要把 Windows GUI 的现有登录视为其他运营人员的授权。授权链接只发对应用户私聊，不收集明文 API Key。
 
-验证通过后，将 `.env` 中 `ZINIAO_REMOTE_HOST` 指向 `192.168.3.111`、`ZINIAO_REMOTE_USER` 设为 `info`、`ZINIAO_REMOTE_KEY_PATH` 设为 `/home/agent/.ziniao-cli/ssh/id_windows_ed25519`、`ZINIAO_REMOTE_KNOWN_HOSTS_PATH` 设为 `/home/agent/.ziniao-cli/ssh/known_hosts_windows`，再重建/重启 gateway。默认配置仍指向 Linux jennov-75；不得在完成上述验证前切换。
+当前生产 `.env` 设置为 `ZINIAO_REMOTE_HOST=192.168.3.111`、`ZINIAO_REMOTE_USER=info`、`ZINIAO_REMOTE_KEY_PATH=/home/agent/.ziniao-cli/ssh/id_windows_ed25519`、`ZINIAO_REMOTE_KNOWN_HOSTS_PATH=/home/agent/.ziniao-cli/ssh/known_hosts_windows`。`docker-compose.yml` 的缺省值仍指向 Linux jennov-75；迁移或恢复部署时须保留这四项配置。
 
 ### 紫鸟执行机串行化（Gate 与机器锁）
 
@@ -77,6 +77,7 @@ Windows 的 `info` 仅是 SSH/紫鸟 CLI 进程运行账号，不是运营人员
 
 - 执行机锁残留：worker 崩溃可能在执行机留下 `cli.lock`；等待 `ZINIAO_LOCK_STALE_MS` 后会被后续请求自动回收，一般无需人工处理。确需立即恢复时，确认无 CLI 进程运行后由运维手工删除锁文件。
 - 同用户自排队：同一次任务内的桥接命令会复用既有会话租约（闸门内做了同用户重入识别），若日志出现同一用户会话互相等待，属于闸门缺陷，请提 issue 并附 `ziniao_gate_*` 指标。
+- CLI 输出兼容：`--format` 不是全局参数，不能统一追加到 `store open/close`、`page screenshot`、`zclaw invoke` 等命令。worker 先按退出码判断成功或失败；成功时接受 JSON、普通文本或空输出并归一化返回，避免把已成功的会话命令误报为 `ZINIAO_INVALID_RESPONSE`。
 - 闸门与机器锁互不替代：闸门负责公平排队和用户体验，机器锁负责硬性互斥；`ZINIAO_GATE_DISABLED=true` 只关闭前者，不能用于绕过串行约束。
 
 ## 3. 首次启动
@@ -126,11 +127,25 @@ Client，不会把机器人 AppKey/AppSecret 传给登录端点。机器人凭�
 
 网关不保存或输出 access token、refresh token、设备验证码和 AppSecret。
 
+### Amazon 页面原子工具
+
+Gateway 镜像内置 `vendor/amazon-skill` Python 包，通过宿主动态命名空间 `amazon.*` 暴露七个只读页面工具：`search_products`、`image_search`、`get_product_detail`、`get_related_products`、`get_promotions`、`get_reviews`、`get_keyword_rank`。用 `reference.read_guide` 读取 `amazon-page-research` Skill 的组合方法。与 CrossBorderOps 的内部经营数据分开标注来源；Amazon 页面结果为实时观察，不授予内部店铺权限。
+
+普通页面工具覆盖 BE (`amazon.com.be`)；StyleSnap 以图搜品仅覆盖 US/DE/IT/ES/JP，BE 的 `/shopthelook` 当前返回 404。ASIN 详情成功时宿主尝试从允许的 Amazon 图片域下载第一张主图，校验 MIME、大小和安全扫描后生成当前任务内的 `mainImageAttachmentId`，可传给 `image.generate` 的 `operation=edit`。页面主图下载失败时仍返回已解析的商品字段并明确 `mainImageDownloadError`。评论页跳转登录时退到商品页可见评论，并标记 `source=product_detail_visible_reviews`；排名仅在第一页验证配送邮编后提供位置，否则返回 `unavailable`。
+
+验收：`npm run build`、`npm test`、`python -m unittest discover -s vendor/amazon-skill/tests -v`。真实 Amazon 页面双问法矩阵见 `scripts/amazon-tool-e2e.mjs`，需设置 `AMAZON_E2E_IMAGE` 为任务测试图片路径后运行；模型选工具的双问法矩阵见 `scripts/amazon-agent-e2e.mjs`，依赖可用的模型额度。
+
 ### Gemini 原生联网
 
 当前 Sub2API 账号使用 Antigravity OAuth 路由。该路由不能在同一上游请求中混用 Google Search 内建工具与自定义函数工具。因此网关将 `internet.search` 作为 Codex 动态工具始终提供给模型：是否调用完全由模型决定，不做关键词分流；实际查询由单独的 Gemini Responses 请求携带 `tools: [{"type":"web_search"}]` 执行，并要求返回 grounding 来源后才算成功。它是同一 Agent 任务中的模型决策工具调用，**不是**同一个 Gemini 请求里同时声明 Google Search 和钉钉函数。
 
 当前 Sub2API Antigravity Responses 桥还会丢失 Codex 命名空间子工具名。启用 `MODEL_TOOL_COMPAT_PROXY=true` 后，网关对所有命名空间工具统一执行可逆名称映射（例如 `dingtalk.dws` ↔ `dingtalk__dws`），只处理协议字段，不读取消息内容或按关键词决定工具。模型中转恢复可用后运行 `docker compose exec -T gateway npm run test:codex-native-web` 做真实联网验收；检查模型确实调用了工具、Gemini 返回 grounding、最终答案包含来源。
+
+### Gemini 原生生图/改图
+
+生图不复用文本 Agent 的 `MODEL_*` 协议，而是由宿主动态工具 `image.generate` 调用 Gemini 原生 `generateContent`。`IMAGE_BASE_URL` 配置到兼容 Gemini 原生接口的网关根路径（例如 `/antigravity`），适配器会请求 `/v1beta/models/<IMAGE_MODEL>:generateContent`；`operation=edit` 只允许读取当前任务已接收并完成安全处理的图片附件。生成结果经过类型、大小、ClamAV（如已配置）和 SHA-256 幂等校验后，使用当前机器人通道发送回原会话。
+
+默认渠道由 `IMAGE_PROVIDER`、`IMAGE_BASE_URL`、`IMAGE_API_KEY`、`IMAGE_MODEL` 配置。新增同协议渠道只改 `IMAGE_PROVIDERS_JSON` 注册表，密钥应使用 `apiKeyEnv` 引用环境变量；只有新增完全不同协议时才需要增加一次 Provider 适配器。
 
 若必须在**同一个 Gemini API 请求**中同时拥有 Google Search 和自定义函数，需要改用支持 Gemini 3 工具组合的官方 Gemini API 路由及相应凭证，而非当前 Antigravity OAuth 路由。公网 `MODEL_BASE_URL` 目前使用 HTTP 时，`npm run check:env` 会报错；正式使用前应改为 HTTPS。
 

@@ -17,6 +17,11 @@ const urlPattern = /https:\/\/open\.ziniao\.com\/memberAuth\?[^\s"'<>]+/;
 
 function emit(value) { process.stdout.write(JSON.stringify(value) + '\n'); }
 function fail(code) { emit({ type: 'result', ok: false, code }); }
+function parseSuccessOutput(stdout) {
+  const text = String(stdout ?? '').trim();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return { message: text.slice(0, 4096) }; }
+}
 function profile(digest) { return 'dingtalk-' + digest.slice(0, 24); }
 function homeFor(digest) { return join(root, digest); }
 function cliEnv(digest) {
@@ -162,10 +167,20 @@ async function main() {
     if (!Array.isArray(args) || args.length < 2 || args.length > 42 ||
         args.some((arg) => typeof arg !== 'string' || arg.length > 4000 || /[\0\r\n]/.test(arg)) ||
         !allowed.has(args[0]) || /^(config|doctor|skills)$/.test(args[0])) return fail('INVALID_COMMAND');
-    const result = await execute([...args, '--format', 'json'], digest);
-    let parsed;
-    try { parsed = JSON.parse(result.stdout); } catch { return fail('ZINIAO_INVALID_RESPONSE'); }
-    if (result.code !== 0 || parsed?.ok === false) {
+    // --format is supported only by some leaf commands; structured output is
+    // the default where available.
+    const result = await execute(args, digest);
+    if (result.code !== 0) {
+      const message = String(result.stderr || result.stdout);
+      if (/需要\s*Boss|Boss\s*权限|permission denied|权限不足/i.test(message)) return fail('ZINIAO_PERMISSION_DENIED');
+      if (/unauthori[sz]ed|api.?key|credential|keychain|未找到配置文件/i.test(message)) {
+        await writeFile(join(homeFor(digest), '.ziniao-auth-invalid'), '', { mode: 0o600 });
+        return fail('ZINIAO_AUTH_REQUIRED');
+      }
+      return fail(/unknown flag/i.test(message) ? 'ZINIAO_CLI_UNKNOWN_FLAG' : 'ZINIAO_COMMAND_FAILED');
+    }
+    const parsed = parseSuccessOutput(result.stdout);
+    if (parsed?.ok === false) {
       const message = String(parsed?.error?.message ?? result.stderr);
       if (/需要\s*Boss|Boss\s*权限|permission denied|权限不足/i.test(message)) return fail('ZINIAO_PERMISSION_DENIED');
       if (parsed?.error?.type === 'auth' || /unauthori[sz]ed|api.?key|credential|keychain/i.test(message)) {
@@ -174,7 +189,7 @@ async function main() {
       }
       return fail('ZINIAO_COMMAND_FAILED');
     }
-    emit({ type: 'result', ok: true, data: parsed?.data ?? parsed });
+    emit({ type: 'result', ok: true, data: parsed && typeof parsed === 'object' && 'data' in parsed ? parsed.data : parsed });
   } finally {
     await releaseCliLock();
   }

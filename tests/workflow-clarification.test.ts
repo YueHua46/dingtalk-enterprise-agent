@@ -35,10 +35,7 @@ describe('workflow clarification', () => {
       interrupt: vi.fn(async () => undefined)
     };
     const orchestrator = new TaskOrchestrator(config, repo, codex as any, {} as any, { async send(_surface, markdown) { sent.push(markdown); } });
-    vi.spyOn((orchestrator as any).contractPlanner, 'plan').mockResolvedValue({
-      mode: 'conversation', goal: '确定受众后起草文案', deliverables: ['文案'], requiredFacts: [], assumptions: [], openQuestions: ['受众'], completionCriteria: ['提供文案']
-    });
-    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ supported: true, reason: 'reviewed' });
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'pass', issues: [], reason: 'reviewed' });
     const task = await orchestrator.accept(request('start', '起草文案'));
     await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('waiting_clarification'));
     expect(sent).toContain('请提供文案受众');

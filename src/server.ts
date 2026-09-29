@@ -11,6 +11,8 @@ import { adaptModelRequest, restoreModelResponse, restoreSseChunk } from './mode
 import type { ZiniaoGateMetrics } from './ziniao-gate.js';
 import { DingTalkDirectory, type DirectoryCandidate } from './dingtalk-directory.js';
 import { verifyModelTaskToken } from './file-worker-auth.js';
+import { NativeWebTool } from './native-web-tool.js';
+import { StandaloneWebSearch } from './standalone-web-search.js';
 
 export interface ReadinessProbe {
   check(): Promise<Record<string, string>>;
@@ -80,6 +82,19 @@ export async function createServer(
   });
 
   if (config.MODEL_TOOL_COMPAT_PROXY === 'true' && config.MODEL_BASE_URL) {
+    const standaloneSearch = new StandaloneWebSearch(new NativeWebTool(config));
+    app.post<{ Body: Record<string, unknown> }>('/internal/model/v1/alpha/search', { bodyLimit: 64 * 1024 }, async (request, reply) => {
+      const workerTaskId = config.FILE_WORKER_SECRET && typeof request.headers.authorization === 'string'
+        ? verifyModelTaskToken(config.FILE_WORKER_SECRET, request.headers.authorization) : undefined;
+      if (!workerTaskId) return reply.code(403).send({ error: 'worker_only' });
+      try {
+        reply.header('cache-control', 'no-store');
+        return await standaloneSearch.execute(request.body);
+      } catch (error) {
+        request.log.warn({ code: error instanceof Error ? error.message : 'WEB_SEARCH_FAILED' }, 'standalone web search failed');
+        return reply.code(502).send({ error: error instanceof Error ? error.message : 'WEB_SEARCH_FAILED' });
+      }
+    });
     app.post<{ Body: Record<string, unknown> }>('/internal/model/v1/responses', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
       const workerTaskId = config.FILE_WORKER_SECRET && typeof request.headers.authorization === 'string'
         ? verifyModelTaskToken(config.FILE_WORKER_SECRET, request.headers.authorization) : undefined;

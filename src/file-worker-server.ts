@@ -95,6 +95,22 @@ const server = createServer(async (request, response) => {
       finally { await handle.close().catch(() => undefined); }
       return json(response, 200, { name: basename(file.path), size: file.size, sha256: digest.digest('hex'), pageCount: verification.pageCount });
     }
+    if (request.method === 'PUT' && segments[2] === 'evidence' && /^[A-Za-z0-9._-]{1,120}\.json$/.test(segments[3] ?? '') && !segments[3]!.startsWith('.') && segments.length === 4) {
+      const task = await loadTask(taskId);
+      const body = await readBody(request, 4 * 1024 * 1024);
+      const directory = await ensureOwnedDirectory(join(task.root, 'evidence'), task.uid);
+      const path = join(directory, segments[3]!);
+      if (await lstat(path).then((info) => info.isSymbolicLink(), () => false)) throw new Error('EVIDENCE_SYMLINK');
+      await writeFile(path, body, { mode: 0o600 });
+      if (process.getuid?.() === 0) await chown(path, task.uid, task.uid);
+      return json(response, 200, { path: `evidence/${segments[3]}` });
+    }
+    if (request.method === 'POST' && segments[2] === 'python' && segments.length === 3) {
+      const task = await loadTask(taskId);
+      const body = JSON.parse(await readBody(request, 64 * 1024)) as { code?: unknown };
+      if (typeof body.code !== 'string' || !body.code.trim() || body.code.length > 20_000) throw new Error('ANALYSIS_CODE_INVALID');
+      return json(response, 200, await runPython(task, body.code));
+    }
     if (request.method === 'GET' && segments[2] === 'outputs' && segments.length === 4) {
       const task = await loadTask(taskId);
       const file = await checkedOutput(task, decodeURIComponent(segments[3]!));
@@ -140,12 +156,13 @@ server.listen(settings.port, '0.0.0.0');
 
 function attachRpc(ws: WebSocket, taskId: string, task: TaskPaths): void {
   const args = [
-    'app-server', '-c', 'features.shell_tool=true', '-c', 'web_search="disabled"',
+    'app-server', '-c', 'features.shell_tool=true', '-c', 'features.standalone_web_search=true', '-c', 'web_search="live"',
     '-c', 'model_provider="enterprise_proxy"',
     '-c', 'model_providers.enterprise_proxy.name="Enterprise Proxy"',
     '-c', `model_providers.enterprise_proxy.base_url=${JSON.stringify(settings.modelProxyUrl)}`,
     '-c', 'model_providers.enterprise_proxy.env_key="OPENAI_API_KEY"',
     '-c', 'model_providers.enterprise_proxy.wire_api="responses"',
+    '-c', 'model_providers.enterprise_proxy.supports_standalone_web_search=true',
     '-c', 'model_providers.enterprise_proxy.supports_websockets=false'
   ];
   const child = spawn(settings.codexBin, args, {
@@ -206,7 +223,7 @@ async function ensureTask(taskId: string): Promise<TaskPaths> {
   let uid: number;
   do { uid = randomInt(200_000, 2_000_000_000); } while (occupied.has(uid));
   const task = paths(root, uid);
-  const directories = [task.input, task.output, task.tmp, task.home, task.workspace, join(task.home, '.codex')];
+  const directories = [task.input, task.output, task.tmp, task.home, task.workspace, join(task.home, '.codex'), join(root, 'evidence')];
   for (const path of directories) {
     await mkdir(path, { recursive: true, mode: 0o700 });
   }
@@ -221,6 +238,34 @@ async function loadTask(taskId: string): Promise<TaskPaths> {
   const metadata = JSON.parse(await readFile(join(owners, `${taskId}.json`), 'utf8')) as { uid: number };
   if (!Number.isInteger(metadata.uid) || metadata.uid < 200_000) throw new Error('TASK_OWNER_INVALID');
   return paths(root, metadata.uid);
+}
+
+async function ensureOwnedDirectory(path: string, uid: number): Promise<string> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  if ((await lstat(path)).isSymbolicLink()) throw new Error('DIRECTORY_SYMLINK');
+  if (process.getuid?.() === 0) await chown(path, uid, uid);
+  return path;
+}
+
+/** Runs analysis code as the task's own uid inside its directory; no network on this service's network. */
+async function runPython(task: TaskPaths, code: string): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const script = join(task.tmp, `analysis-${randomUUID()}.py`);
+  await writeFile(script, code, { flag: 'wx', mode: 0o600 });
+  if (process.getuid?.() === 0) await chown(script, task.uid, task.uid);
+  const clip = (value: unknown, limit: number) => String(value ?? '').slice(0, limit);
+  try {
+    const { stdout, stderr } = await execFileAsync('/opt/venv/bin/python', [script], {
+      cwd: task.root, uid: task.uid, gid: task.uid, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+      env: { PATH: process.env.PATH, HOME: task.home, TMPDIR: task.tmp, MPLBACKEND: 'Agg', MPLCONFIGDIR: task.tmp, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }
+    });
+    return { exitCode: 0, stdout: clip(stdout, 64_000), stderr: clip(stderr, 8_000), timedOut: false };
+  } catch (error) {
+    const failure = error as { code?: unknown; killed?: boolean; signal?: unknown; stdout?: unknown; stderr?: unknown; message?: string };
+    return { exitCode: typeof failure.code === 'number' ? failure.code : 1, stdout: clip(failure.stdout, 64_000),
+      stderr: clip(failure.stderr ?? failure.message, 8_000), timedOut: Boolean(failure.killed && failure.signal) };
+  } finally {
+    await rm(script, { force: true });
+  }
 }
 
 function paths(root: string, uid: number): TaskPaths {

@@ -87,6 +87,7 @@ services:
       - no-new-privileges:true
     networks:
       - file-worker-net
+      - worker-egress
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://127.0.0.1:8081/healthz"]
@@ -180,3 +181,4 @@ volumes:
 networks:
   file-worker-net:
     internal: true
+  worker-egress:

@@ -10,7 +10,7 @@ export const ZINIAO_NAMESPACES = new Set([
 export const ZINIAO_READ_CAPABILITIES = new Set([
   'account.list', 'account.auth-list', 'account.auth-users', 'account.tag-list',
   'staff.list', 'department.list', 'role.list', 'role.detail', 'role.staff-roles',
-  'role.permissions', 'device.list', 'store.list', 'store.resolve',
+  'role.permissions', 'device.list', 'device.plan-list', 'account.tag-of-store', 'store.list', 'store.resolve',
   // In-process capability: returns the executor queue snapshot without
   // touching the CLI, the SSH channel, or the machine lock.
   'utility.queue-status'
