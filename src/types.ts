@@ -42,6 +42,7 @@ export interface AgentRequest {
   attachments: Attachment[];
   quotedMessageId?: string;
   quotedText?: string;
+  botMentioned?: boolean;
   receivedAt: number;
 }
 

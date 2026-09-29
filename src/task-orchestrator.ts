@@ -301,6 +301,7 @@ export class TaskOrchestrator {
   }>();
   private readonly approvalCards = new Map<string, { taskId: string; userId: string; challengeId: string; expired: boolean }>();
   private readonly cancelledTasks = new Set<string>();
+  private readonly cardWriteDrains = new Map<string, () => Promise<void>>();
   private readonly ziniaoFailures = new Map<string, { code: string; guidance: string }>();
   /** Per-task bridge state. A page operation is valid only after the task's
    * store.open has returned an identity and running-store verification matched it. */
@@ -440,6 +441,7 @@ export class TaskOrchestrator {
       const resolved = await this.resolveReferencedCancellationTask(request);
       const referenced = resolved.task;
       if (!referenced) {
+        if (request.surface.type === 'group' && request.botMentioned === false) return true;
         await this.sender.send(request.surface, '未找到可取消的任务。请引用对应的任务受理消息或任务卡片后发送“取消”。', '未找到任务');
         return true;
       }
@@ -462,7 +464,10 @@ export class TaskOrchestrator {
       const threadId = this.activeThreads.get(request.user.corpId + ':' + request.user.userId);
       if (threadId) await this.codex.interrupt(threadId).catch(() => undefined);
       const task = await this.repo.findTask(activeId);
-      if (task) await this.deliverTask(task, md.cancelled(activeId), '已取消。', 3, '已取消');
+      if (task) {
+        await this.drainCardWrites(task.id);
+        await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
+      }
       return true;
     }
     for (const [taskId, pending] of this.approvals) {
@@ -498,7 +503,7 @@ export class TaskOrchestrator {
         await this.finishApprovalCard(taskId, 'cancelled');
         pending.resolve(pending.method === 'business' ? false : approvalResponse(pending.method, false));
         const task = await this.repo.findTask(taskId);
-        if (task) await this.deliverTask(task, md.cancelled(taskId), '已取消。', 3, '已取消');
+        if (task) await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
         return true;
       }
     }
@@ -516,7 +521,7 @@ export class TaskOrchestrator {
       if (isCancellation(request.text, waiting.id) || isCancellation(request.text)) {
         this.clearClarificationTimer(waiting.id);
         await this.repo.updateTask(waiting.id, 'cancelled');
-        await this.deliverTask(waiting, md.cancelled(waiting.id), '已取消。', 3, '已取消');
+        await this.deliverTask(waiting, cancelledTaskMessage(), '已取消。', 3, '已取消');
         return true;
       }
       clarification.answer = request.text;
@@ -544,13 +549,18 @@ export class TaskOrchestrator {
 
     if (control.action === 'cancel') {
       if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
-        await this.sender.send(request.surface, '### 无需取消\n\n任务 `' + task.id + '` 当前状态：`' + task.status + '`。', '任务状态');
+        if (task.status === 'cancelled') {
+          await this.finishApprovalCard(task.id, 'cancelled');
+          await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
+          return true;
+        }
+        await this.sender.send(request.surface, terminalCancellationMessage(task.status), '任务状态');
         return true;
       }
       await this.repo.decideApproval(task.id, 'cancelled');
       await this.repo.updateTask(task.id, 'cancelled');
       this.cancelledTasks.add(task.id);
-      await this.deliverTask(task, md.cancelled(task.id), '已取消。', 3, '已取消');
+      await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
       return true;
     }
 
@@ -637,7 +647,17 @@ export class TaskOrchestrator {
 
   private async cancelReferencedTask(request: AgentRequest, task: TaskRecord): Promise<void> {
     if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
-      await this.sender.send(request.surface, '### 无需取消\n\n任务 `' + task.id + '` 当前状态：`' + task.status + '`。', '任务状态');
+      if (task.status === 'cancelled') {
+        // Cancellation is idempotent, but the visible card may still be stale
+        // after an older gateway version or a transient card-update failure.
+        // Re-applying the terminal card state repairs that user-visible drift.
+        await this.finishApprovalCard(task.id, 'cancelled');
+        await this.drainCardWrites(task.id);
+        await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
+        await this.repo.audit({ requestId: request.requestId, taskId: task.id, user: request.user, eventType: 'task.cancel_card_repaired', payload: { messageId: request.messageId } });
+        return;
+      }
+      await this.sender.send(request.surface, terminalCancellationMessage(task.status), '任务状态');
       return;
     }
     this.cancelledTasks.add(task.id);
@@ -653,7 +673,13 @@ export class TaskOrchestrator {
     const key = task.request.user.corpId + ':' + task.request.user.userId;
     const threadId = task.threadId ?? this.activeThreads.get(key);
     if (threadId) await this.codex.interrupt(threadId).catch(() => undefined);
-    await this.deliverTask(task, md.cancelled(task.id), '已取消。', 3, '已取消');
+    await this.drainCardWrites(task.id);
+    await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
+    await this.repo.audit({ requestId: request.requestId, taskId: task.id, user: request.user, eventType: 'task.cancelled_by_quote', payload: { messageId: request.messageId } });
+  }
+
+  private async drainCardWrites(taskId: string): Promise<void> {
+    await (this.cardWriteDrains.get(taskId)?.() ?? Promise.resolve()).catch(() => undefined);
   }
 
   public async recover(): Promise<void> {
@@ -735,12 +761,13 @@ export class TaskOrchestrator {
     const commentaryItems = new Set<string>();
     const commentaryText = new Map<string, string>();
     let cardWrites: Promise<void> = Promise.resolve();
+    this.cardWriteDrains.set(task.id, () => cardWrites);
     let cardWorkerRunning = false;
     let pendingCard: { content: string; status: 1 | 2 | 3 | 4 | 5; mode: 'static' | 'stream' | 'activity' } | undefined;
     let lastCardWriteAt = 0;
     const cardCadenceMs = 550;
     const queueCard = (content: string, status: 1 | 2 | 3 | 4 | 5, mode: 'static' | 'stream' | 'activity' = 'stream') => {
-      if (!task.cardBizId || !this.sender.updateTaskCard) return;
+      if (!task.cardBizId || !this.sender.updateTaskCard || this.cancelledTasks.has(task.id)) return;
       // Keep only the newest complete snapshot. Queuing every token-sized snapshot
       // makes the client render stale states long after the model has advanced.
       pendingCard = { content, status, mode };
@@ -748,11 +775,16 @@ export class TaskOrchestrator {
       cardWorkerRunning = true;
       cardWrites = cardWrites.catch(() => undefined).then(async () => {
         while (pendingCard) {
+          if (this.cancelledTasks.has(task.id)) {
+            pendingCard = undefined;
+            break;
+          }
           const next = pendingCard;
           pendingCard = undefined;
           try {
             const waitMs = Math.max(0, cardCadenceMs - (Date.now() - lastCardWriteAt));
             if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+            if (this.cancelledTasks.has(task.id)) continue;
             if (next.mode === 'activity') await this.sender.updateTaskActivity!(task.cardBizId!, next.content, next.status);
             else await this.sender.updateTaskCard!(task.cardBizId!, next.content, next.status, next.mode);
             lastCardWriteAt = Date.now();
@@ -980,6 +1012,7 @@ export class TaskOrchestrator {
             const detail = error instanceof Error ? error.message : String(error);
             throw new Error(`${MODEL_RETRY_UNSAFE_AFTER_TOOL}: ${detail}`);
           }
+          if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
           if (delayMs === undefined || !isRetryableModelError(error)) throw error;
           const nextAttempt = attempt + 2;
           const reason = modelFailureReason(error);
@@ -1021,7 +1054,7 @@ export class TaskOrchestrator {
       // a late timer would switch a PROCESSING-aware template back from
       // INPUTTING while the answer snapshots are already visible.
       clearTimeout(progressTimer);
-      if (this.cancelledTasks.delete(task.id)) {
+      if (this.cancelledTasks.has(task.id)) {
         await this.finishApprovalCard(task.id, 'cancelled');
         return;
       }
@@ -1072,7 +1105,7 @@ export class TaskOrchestrator {
       await this.deliverTask(task, result.text, result.text, 3, 'Agent智能助手');
       await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'task.completed' });
     } catch (error) {
-      if (this.cancelledTasks.delete(task.id)) {
+      if (this.cancelledTasks.has(task.id)) {
         await this.repo.updateTask(task.id, 'cancelled');
         await this.finishApprovalCard(task.id, 'cancelled');
         return;
@@ -1106,6 +1139,9 @@ export class TaskOrchestrator {
       await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'task.failed', payload: { message } });
     } finally {
       clearTimeout(progressTimer);
+      await cardWrites.catch(() => undefined);
+      this.cancelledTasks.delete(task.id);
+      this.cardWriteDrains.delete(task.id);
       this.ziniaoFailures.delete(task.id);
       this.ziniaoBridgeStates.delete(task.id);
       this.preparedAttachments.delete(task.id);
@@ -1123,6 +1159,22 @@ export class TaskOrchestrator {
     if (task.cardBizId && this.sender.updateTaskCard) {
       try {
         await this.sender.updateTaskCard(task.cardBizId, cardContent, status);
+        if ((status === 3 || status === 5) && this.sender.updateTaskActivity) {
+          try {
+            // The activity field is independent from the streaming answer.
+            // Finalizing the answer alone otherwise leaves "正在整理回答"
+            // spinning forever on DingTalk clients.
+            await this.sender.updateTaskActivity(task.cardBizId, '', status);
+          } catch (activityError) {
+            await this.repo.audit({
+              requestId: task.request.requestId,
+              taskId: task.id,
+              user: task.request.user,
+              eventType: 'card.activity_clear_failed',
+              payload: { reason: safeDeliveryError(activityError) }
+            });
+          }
+        }
         return;
       } catch (error) {
         await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, eventType: 'card.update_failed', payload: { reason: safeDeliveryError(error) } });
@@ -2356,6 +2408,15 @@ export class TaskOrchestrator {
     await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
       eventType: 'oauth.init_failed', payload: { reason } });
   }
+}
+
+function terminalCancellationMessage(status: 'completed' | 'cancelled' | 'failed'): string {
+  const label = status === 'completed' ? '已完成' : status === 'cancelled' ? '已取消' : '已结束';
+  return '### 无需取消\n\n该任务' + label + '，无需重复操作。';
+}
+
+function cancelledTaskMessage(): string {
+  return '### 已取消\n\n该任务已取消。';
 }
 
 function sanitizeFileReply(value: string): string {

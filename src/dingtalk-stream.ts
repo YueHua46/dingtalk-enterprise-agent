@@ -89,6 +89,7 @@ export class DingTalkStreamAdapter {
         attachments: parsed.attachments,
         ...(parsed.quotedMessageId ? { quotedMessageId: parsed.quotedMessageId } : {}),
         ...(parsed.quotedText ? { quotedText: parsed.quotedText } : {}),
+        ...(typeof message.isInAtList === 'boolean' ? { botMentioned: message.isInAtList } : {}),
         receivedAt: Date.now()
       };
       client.socketCallBackResponse(downstream.headers.messageId, { status: EventAck.SUCCESS });
@@ -170,7 +171,6 @@ export function parseRobotMessage(downstream: DWClientDownStream): {
   try {
     const payload = JSON.parse(downstream.data) as RobotEnvelope;
     if (!payload.msgId || !payload.senderStaffId || !payload.sessionWebhook) return undefined;
-    if (payload.conversationType === '2' && payload.isInAtList === false) return undefined;
     const attachments: AgentRequest['attachments'] = [];
     const textParts: string[] = [];
     if (payload.msgtype === 'text') {
@@ -210,9 +210,16 @@ export function parseRobotMessage(downstream: DWClientDownStream): {
       payload.content?.quotedText,
       ...quoteContainers.map((value) => nestedString(value, ['content', 'text', 'title']))
     );
+    const normalizedText = textParts.filter(Boolean).join('\n').trim() || '[无文本内容]';
+    // The Stream payload may omit quote metadata even when the message detail
+    // API contains it. Let an exact bare cancellation command reach the
+    // orchestrator, which resolves the quote using the sender's DWS identity
+    // and refuses to cancel anything when no matching quote exists.
+    if (payload.conversationType === '2' && payload.isInAtList === false
+      && normalizedText !== '取消') return undefined;
     return {
       envelope: payload,
-      text: textParts.filter(Boolean).join('\n').trim() || '[无文本内容]',
+      text: normalizedText,
       attachments,
       ...(quotedMessageId ? { quotedMessageId } : {}),
       ...(quotedText ? { quotedText } : {})

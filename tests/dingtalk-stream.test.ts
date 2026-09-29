@@ -68,6 +68,39 @@ describe('DingTalk message normalization', () => {
     }));
     expect(ignored).toBeUndefined();
 
+    const quotedBareCancel = parseRobotMessage(downstream({
+      ...base,
+      isInAtList: false,
+      msgtype: 'text',
+      text: { content: '取消' },
+      content: {
+        originalMsgId: 'quoted-task-card-message-id',
+        quoteContent: { text: { content: '正在整理回答' } }
+      }
+    }));
+    expect(quotedBareCancel).toMatchObject({
+      text: '取消',
+      quotedMessageId: 'quoted-task-card-message-id'
+    });
+
+    const cancelWithoutStreamQuote = parseRobotMessage(downstream({
+      ...base,
+      isInAtList: false,
+      msgtype: 'text',
+      text: { content: '取消' }
+    }));
+    expect(cancelWithoutStreamQuote?.text).toBe('取消');
+    expect(cancelWithoutStreamQuote?.quotedMessageId).toBeUndefined();
+
+    const quotedNonControl = parseRobotMessage(downstream({
+      ...base,
+      isInAtList: false,
+      msgtype: 'text',
+      text: { content: '帮我看看' },
+      content: { originalMsgId: 'quoted-message-id' }
+    }));
+    expect(quotedNonControl).toBeUndefined();
+
     const quoted = parseRobotMessage(downstream({
       ...base,
       isInAtList: true,

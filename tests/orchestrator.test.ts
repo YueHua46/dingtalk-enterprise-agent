@@ -558,7 +558,8 @@ describe('TaskOrchestrator integration', () => {
     };
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', DINGTALK_CARD_ACTIVITY_IN_PROCESSING: 'true' }), repo, codex, {} as DwsBroker, sender);
     await orchestrator.accept(request('message-dual', '测试'));
-    await waitUntil(() => writes.at(-1)?.content === answer && writes.at(-1)?.status === 3);
+    await waitUntil(() => writes.some((item) => item.kind === 'answer' && item.content === answer && item.status === 3)
+      && writes.some((item) => item.kind === 'activity' && item.content === '' && item.status === 3));
     const toolWrite = writes.find((item) => item.kind === 'activity' && item.content.includes('读取 Skill'));
     const firstAnswer = writes.findIndex((item) => item.kind === 'answer');
     const activityClear = writes.findIndex((item) => item.kind === 'activity' && item.content === '');
@@ -566,7 +567,8 @@ describe('TaskOrchestrator integration', () => {
     expect(firstAnswer).toBeGreaterThan(writes.indexOf(toolWrite!));
     expect(activityClear).toBe(firstAnswer + 1);
     expect(writes[activityClear]?.status).toBe(2);
-    expect(writes.filter((item) => item.kind === 'activity' && item.status === 3)).toHaveLength(0);
+    expect(writes.filter((item) => item.kind === 'activity' && item.content === '' && item.status === 3)).toHaveLength(1);
+    expect(writes.at(-1)).toEqual({ kind: 'activity', content: '', status: 3 });
     expect(writes.filter((item) => item.kind === 'answer').every((item) => !item.content.includes('正在使用工具'))).toBe(true);
   });
 
@@ -1426,7 +1428,12 @@ describe('TaskOrchestrator integration', () => {
   it('cancels by a real card message id that differs from the card outTrackId', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
-    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const cardWrites: Array<{ kind: 'card' | 'activity'; content: string; status: number }> = [];
+    const sender: MessageSender = {
+      async send(_surface, markdown) { sent.push(markdown); },
+      async updateTaskCard(_bizId, content, status) { cardWrites.push({ kind: 'card', content, status }); },
+      async updateTaskActivity(_bizId, content, status) { cardWrites.push({ kind: 'activity', content, status }); }
+    };
     const original = request('real-card-original-request', '执行一个较慢任务');
     const surfaceId = await repo.ensureSurface(original.user, original.surface);
     const task = await repo.createTask(original, surfaceId);
@@ -1454,7 +1461,53 @@ describe('TaskOrchestrator integration', () => {
       '2026-09-29 17:20:11'
     );
     expect((await repo.findTask(task.id))?.status).toBe('cancelled');
-    expect(sent.join('\n')).toContain('已取消');
+    expect(cardWrites).toEqual([
+      { kind: 'card', content: '已取消。', status: 3 },
+      { kind: 'activity', content: '', status: 3 }
+    ]);
+    expect(sent).toHaveLength(0);
+
+    expect(await orchestrator.handleControl(request('real-card-cancel-again', '取消'))).toBe(true);
+    expect(cardWrites).toEqual([
+      { kind: 'card', content: '已取消。', status: 3 },
+      { kind: 'activity', content: '', status: 3 },
+      { kind: 'card', content: '已取消。', status: 3 },
+      { kind: 'activity', content: '', status: 3 }
+    ]);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('waits for an in-flight progress update before finalizing a cancelled card', async () => {
+    const repo = new InMemoryRepository();
+    const writes: string[] = [];
+    let releaseProgress!: () => void;
+    const progress = new Promise<void>((resolve) => { releaseProgress = resolve; });
+    const sender: MessageSender = {
+      async send() { throw new Error('card delivery expected'); },
+      async updateTaskCard(_bizId, content) { writes.push('card:' + content); },
+      async updateTaskActivity(_bizId, content) { writes.push('activity:' + content); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo,
+      { interrupt: vi.fn(async () => undefined) } as unknown as CodexClient, {} as DwsBroker, sender);
+    const original = request('progress-race-original', '执行较慢任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+    await repo.setTaskCard(task.id, 'progress-race-card');
+    await repo.updateTask(task.id, 'running');
+    (orchestrator as any).cardWriteDrains.set(task.id, async () => {
+      await progress;
+      writes.push('old-progress');
+    });
+
+    const cancellation = orchestrator.handleControl({
+      ...request('progress-race-cancel', '取消'),
+      quotedMessageId: 'progress-race-card'
+    });
+    await waitUntil(() => writes.length === 0 && (orchestrator as any).cancelledTasks.has(task.id));
+    releaseProgress();
+    expect(await cancellation).toBe(true);
+    expect(writes).toEqual(['old-progress', 'card:已取消。', 'activity:']);
+    expect((await repo.findTask(task.id))?.status).toBe('cancelled');
   });
 
   it('does not create a task when a bare cancel has no resolvable quote', async () => {
@@ -1474,6 +1527,21 @@ describe('TaskOrchestrator integration', () => {
       { type: 'direct', id: 'user-1' },
       'unquoted-bare-cancel'
     )).toBeUndefined();
+  });
+
+  it('ignores an unmentioned group cancel that does not quote a task', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sender: MessageSender = { async send(_surface, content) { sent.push(content); } };
+    const dws = { resolveQuotedMessage: vi.fn(async () => undefined) } as unknown as DwsBroker;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo,
+      {} as CodexClient, dws, sender);
+    expect(await orchestrator.handleControl({
+      ...request('unmentioned-group-cancel', '取消'),
+      surface: { type: 'group', id: 'group-1' },
+      botMentioned: false
+    })).toBe(true);
+    expect(sent).toHaveLength(0);
   });
 
   it('falls back to the task number contained in quoted task-card text', async () => {
