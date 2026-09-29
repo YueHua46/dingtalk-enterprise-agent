@@ -150,6 +150,7 @@ export class DwsBroker {
     conversationId?: string;
     quotedMessageId?: string;
     quotedConversationId?: string;
+    quotedCreateTime?: string;
     quotedText?: string;
   } | undefined> {
     const result = await this.runCommand(user, [
@@ -167,14 +168,48 @@ export class DwsBroker {
     );
     const conversationId = firstNonEmptyString(message.conversationId, message.openConversationId);
     const quotedConversationId = firstNonEmptyString(quoted?.conversationId, quoted?.openConversationId);
+    const quotedCreateTime = firstNonEmptyString(quoted?.createTime, quoted?.createdAt, quoted?.createAt);
     const quotedText = firstNonEmptyString(quoted?.text, quoted?.content);
     return {
       messageId: firstNonEmptyString(message.messageId, message.openMessageId) ?? messageId,
       ...(conversationId ? { conversationId } : {}),
       ...(quotedMessageId ? { quotedMessageId } : {}),
       ...(quotedConversationId ? { quotedConversationId } : {}),
+      ...(quotedCreateTime ? { quotedCreateTime } : {}),
       ...(quotedText ? { quotedText } : {})
     };
+  }
+
+  /**
+   * Returns message ids immediately preceding a quoted bot card/message. A
+   * delivered card's DingTalk openMessageId is different from its outTrackId,
+   * so the preceding user request is the stable task correlation point.
+   */
+  public async precedingConversationMessageIds(
+    user: UserIdentity,
+    conversationId: string,
+    quotedMessageId: string,
+    quotedCreateTime: string
+  ): Promise<string[]> {
+    const timestamp = dingTalkMessageTime(quotedCreateTime);
+    if (!timestamp) return [];
+    const result = await this.runCommand(user, [
+      'chat', '+chat-messages', '--conversation-id', conversationId,
+      '--start', new Date(timestamp - 5 * 60_000).toISOString(),
+      '--end', new Date(timestamp + 2_000).toISOString(),
+      '--order', 'desc', '--limit', '100', '--no-reactions'
+    ]) as Record<string, any>;
+    const messages = Array.isArray(result?.messages) ? result.messages : [];
+    const quoteIndex = messages.findIndex((item: any) => firstNonEmptyString(item?.messageId, item?.openMessageId) === quotedMessageId);
+    const older = quoteIndex >= 0
+      ? messages.slice(quoteIndex + 1)
+      : messages.filter((item: any) => {
+        const itemTime = dingTalkMessageTime(firstNonEmptyString(item?.createTime, item?.createdAt));
+        return itemTime !== undefined && itemTime <= timestamp;
+      });
+    return older
+      .map((item: any) => firstNonEmptyString(item?.messageId, item?.openMessageId))
+      .filter((value: string | undefined): value is string => Boolean(value));
   }
 
   public async downloadDriveFile(user: UserIdentity, nodeId: string, directory: string, fileName: string): Promise<unknown> {
@@ -428,6 +463,15 @@ function safeJson(value: string): any {
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim();
+}
+
+function dingTalkMessageTime(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? value.replace(' ', 'T') + '+08:00'
+    : value;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function resolveInvocation(command: string): { file: string; prefix: string[] } {

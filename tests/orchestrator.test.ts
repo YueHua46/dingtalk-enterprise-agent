@@ -1412,7 +1412,8 @@ describe('TaskOrchestrator integration', () => {
         quotedMessageId: original.messageId,
         quotedConversationId: original.surface.id,
         quotedText: original.text
-      }))
+      })),
+      precedingConversationMessageIds: vi.fn(async () => [])
     } as unknown as DwsBroker;
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, dws, sender);
 
@@ -1422,11 +1423,48 @@ describe('TaskOrchestrator integration', () => {
     expect(sent.join('\n')).toContain('已取消');
   });
 
+  it('cancels by a real card message id that differs from the card outTrackId', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const original = request('real-card-original-request', '执行一个较慢任务');
+    const surfaceId = await repo.ensureSurface(original.user, original.surface);
+    const task = await repo.createTask(original, surfaceId);
+    await repo.setTaskCard(task.id, 'card-out-track-id');
+    await repo.updateTask(task.id, 'running');
+    const dws = {
+      resolveQuotedMessage: vi.fn(async () => ({
+        messageId: 'real-card-cancel-message',
+        conversationId: original.surface.id,
+        quotedMessageId: 'dingtalk-card-open-message-id',
+        quotedConversationId: original.surface.id,
+        quotedCreateTime: '2026-09-29 17:20:11',
+        quotedText: '[交互卡片消息]'
+      })),
+      precedingConversationMessageIds: vi.fn(async () => [original.messageId])
+    } as unknown as DwsBroker;
+    const codex = { interrupt: vi.fn(async () => undefined) } as unknown as CodexClient;
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender);
+
+    expect(await orchestrator.handleControl(request('real-card-cancel-message', '<@robot-open-id> 取消'))).toBe(true);
+    expect(dws.precedingConversationMessageIds).toHaveBeenCalledWith(
+      original.user,
+      original.surface.id,
+      'dingtalk-card-open-message-id',
+      '2026-09-29 17:20:11'
+    );
+    expect((await repo.findTask(task.id))?.status).toBe('cancelled');
+    expect(sent.join('\n')).toContain('已取消');
+  });
+
   it('does not create a task when a bare cancel has no resolvable quote', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
     const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
-    const dws = { resolveQuotedMessage: vi.fn(async () => undefined) } as unknown as DwsBroker;
+    const dws = {
+      resolveQuotedMessage: vi.fn(async () => undefined),
+      precedingConversationMessageIds: vi.fn(async () => [])
+    } as unknown as DwsBroker;
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClient, dws, sender);
 
     expect(await orchestrator.handleControl(request('unquoted-bare-cancel', '取消'))).toBe(true);

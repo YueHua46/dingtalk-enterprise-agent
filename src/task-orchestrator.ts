@@ -437,13 +437,13 @@ export class TaskOrchestrator {
     // interpreted as a quoted-task control message, and the repository lookup
     // enforces the current user and originating conversation surface.
     if (quotedControlText(request.text) === '取消') {
-      const enrichedRequest = await this.enrichCancellationReference(request);
-      const referenced = await this.findReferencedCancellationTask(enrichedRequest);
+      const resolved = await this.resolveReferencedCancellationTask(request);
+      const referenced = resolved.task;
       if (!referenced) {
         await this.sender.send(request.surface, '未找到可取消的任务。请引用对应的任务受理消息或任务卡片后发送“取消”。', '未找到任务');
         return true;
       }
-      await this.cancelReferencedTask(enrichedRequest, referenced);
+      await this.cancelReferencedTask(resolved.request, referenced);
       return true;
     }
 
@@ -594,27 +594,44 @@ export class TaskOrchestrator {
     return task;
   }
 
-  private async enrichCancellationReference(request: AgentRequest): Promise<AgentRequest> {
-    if (request.quotedMessageId || request.quotedText) return request;
+  private async resolveReferencedCancellationTask(request: AgentRequest): Promise<{ request: AgentRequest; task?: TaskRecord }> {
+    const direct = await this.findReferencedCancellationTask(request);
+    if (direct) return { request, task: direct };
     try {
       const resolved = await this.dws.resolveQuotedMessage(request.user, request.messageId);
-      if (!resolved?.quotedMessageId && !resolved?.quotedText) return request;
+      if (!resolved?.quotedMessageId && !resolved?.quotedText) return { request };
       if (request.surface.type === 'group') {
-        if (resolved.conversationId && resolved.conversationId !== request.surface.id) return request;
-        if (resolved.quotedConversationId && resolved.quotedConversationId !== request.surface.id) return request;
+        if (resolved.conversationId && resolved.conversationId !== request.surface.id) return { request };
+        if (resolved.quotedConversationId && resolved.quotedConversationId !== request.surface.id) return { request };
       }
-      return {
+      const enrichedRequest: AgentRequest = {
         ...request,
         ...(resolved.quotedMessageId ? { quotedMessageId: resolved.quotedMessageId } : {}),
         ...(resolved.quotedText ? { quotedText: resolved.quotedText } : {})
       };
+      const exact = await this.findReferencedCancellationTask(enrichedRequest);
+      if (exact) return { request: enrichedRequest, task: exact };
+      const conversationId = resolved.quotedConversationId ?? resolved.conversationId;
+      if (conversationId && resolved.quotedMessageId && resolved.quotedCreateTime) {
+        const precedingIds = await this.dws.precedingConversationMessageIds(
+          request.user,
+          conversationId,
+          resolved.quotedMessageId,
+          resolved.quotedCreateTime
+        );
+        for (const messageId of precedingIds) {
+          const task = await this.repo.findTaskByMessageReference(request.user, request.surface, messageId);
+          if (task?.cardBizId || task?.approvalCardBizId) return { request: enrichedRequest, task };
+        }
+      }
+      return { request: enrichedRequest };
     } catch (error) {
       console.warn(JSON.stringify({
         event: 'cancel.quote_resolution_failed',
         messageId: request.messageId,
         reason: publicErrorDetail(error)
       }));
-      return request;
+      return { request };
     }
   }
 
