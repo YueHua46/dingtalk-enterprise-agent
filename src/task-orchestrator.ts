@@ -3,6 +3,7 @@ import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
 import { DwsTool } from './dws-tool.js';
 import { A2uiTool } from './a2ui-tool.js';
+import type { TaskCardView } from './a2ui-task-card.js';
 import { MediaPipeline } from './media.js';
 import { MemoryTool } from './memory-tool.js';
 import type { KnowledgeTool } from './knowledge-tool.js';
@@ -47,6 +48,7 @@ export interface MessageSender {
   beginTaskCard?(task: TaskRecord): Promise<string>;
   updateTaskCard?(bizId: string, content: string, flowStatus: 1 | 2 | 3 | 4 | 5, mode?: 'static' | 'stream'): Promise<void>;
   updateTaskActivity?(bizId: string, activity: string, flowStatus: 1 | 2 | 3 | 4 | 5): Promise<void>;
+  updateTaskProcess?(task: TaskRecord, view: TaskCardView): Promise<void>;
   /** Interactive approval card (agree/reject buttons). Returns the card
    *  outTrackId used to correlate the card callback, or undefined when the
    *  interactive card channel is unavailable (text fallback keeps working). */
@@ -307,6 +309,7 @@ export class TaskOrchestrator {
   private readonly approvalCards = new Map<string, { taskId: string; userId: string; challengeId: string; expired: boolean }>();
   private readonly cancelledTasks = new Set<string>();
   private readonly cardWriteDrains = new Map<string, () => Promise<void>>();
+  private readonly taskPresentations = new Map<string, CardPresentation>();
   private readonly ziniaoFailures = new Map<string, { code: string; guidance: string }>();
   /** Per-task bridge state. A page operation is valid only after the task's
    * store.open has returned an identity and running-store verification matched it. */
@@ -377,7 +380,7 @@ export class TaskOrchestrator {
     await this.repo.ensureUser(request.user);
     const surfaceId = await this.repo.ensureSurface(request.user, request.surface);
     const task = await this.repo.createTask(request, surfaceId);
-    if (this.sender.beginTaskCard && this.sender.updateTaskCard) {
+    if (this.sender.beginTaskCard && (this.sender.updateTaskCard || this.sender.updateTaskProcess)) {
       try {
         const bizId = await this.sender.beginTaskCard(task);
         await this.repo.setTaskCard(task.id, bizId);
@@ -770,16 +773,18 @@ export class TaskOrchestrator {
     this.active.set(key, task.id);
     await this.repo.updateTask(task.id, 'running');
     const presentation = new CardPresentation();
+    this.taskPresentations.set(task.id, presentation);
+    const nativeToolLabels = new Map<string, string>();
     const commentaryItems = new Set<string>();
     const commentaryText = new Map<string, string>();
     let cardWrites: Promise<void> = Promise.resolve();
     this.cardWriteDrains.set(task.id, () => cardWrites);
     let cardWorkerRunning = false;
-    let pendingCard: { content: string; status: 1 | 2 | 3 | 4 | 5; mode: 'static' | 'stream' | 'activity' } | undefined;
+    let pendingCard: { content: string; status: 1 | 2 | 3 | 4 | 5; mode: 'static' | 'stream' | 'activity' | 'process' } | undefined;
     let lastCardWriteAt = 0;
     const cardCadenceMs = 550;
-    const queueCard = (content: string, status: 1 | 2 | 3 | 4 | 5, mode: 'static' | 'stream' | 'activity' = 'stream') => {
-      if (!task.cardBizId || !this.sender.updateTaskCard || this.cancelledTasks.has(task.id)) return;
+    const queueCard = (content: string, status: 1 | 2 | 3 | 4 | 5, mode: 'static' | 'stream' | 'activity' | 'process' = 'stream') => {
+      if (!task.cardBizId || (!this.sender.updateTaskCard && !this.sender.updateTaskProcess) || this.cancelledTasks.has(task.id)) return;
       // Keep only the newest complete snapshot. Queuing every token-sized snapshot
       // makes the client render stale states long after the model has advanced.
       pendingCard = { content, status, mode };
@@ -797,7 +802,8 @@ export class TaskOrchestrator {
             const waitMs = Math.max(0, cardCadenceMs - (Date.now() - lastCardWriteAt));
             if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
             if (this.cancelledTasks.has(task.id)) continue;
-            if (next.mode === 'activity') await this.sender.updateTaskActivity!(task.cardBizId!, next.content, next.status);
+            if (next.mode === 'process') await this.sender.updateTaskProcess!(task, JSON.parse(next.content) as TaskCardView);
+            else if (next.mode === 'activity') await this.sender.updateTaskActivity!(task.cardBizId!, next.content, next.status);
             else await this.sender.updateTaskCard!(task.cardBizId!, next.content, next.status, next.mode);
             lastCardWriteAt = Date.now();
           } catch (error) {
@@ -809,6 +815,10 @@ export class TaskOrchestrator {
       });
     };
     const queueProgress = () => {
+      if (this.sender.updateTaskProcess) {
+        queueCard(JSON.stringify(presentation.snapshot()), 2, 'process');
+        return;
+      }
       // A separate activity variable belongs to PROCESSING. Switching to
       // INPUTTING before the first answer chunk exposes the AI text widget's
       // empty "..." placeholder for the entire tool-running period. Keep the
@@ -935,6 +945,18 @@ export class TaskOrchestrator {
           const params = event.params as Record<string, any> | undefined;
           const item = params?.item;
           const itemId = String(item?.id ?? params?.itemId ?? '');
+          // Read native execution metadata only; reasoning events and command text never enter the panel.
+          if (itemId && event.method === 'item/started' && ['commandExecution', 'mcpToolCall'].includes(item?.type)) {
+            const label = item.type === 'commandExecution' ? '执行文件处理命令' : '使用外部查询工具';
+            nativeToolLabels.set(itemId, label);
+            presentation.toolStarted(label);
+            queueProgress();
+          }
+          if (itemId && event.method === 'item/completed' && nativeToolLabels.has(itemId)) {
+            presentation.toolCompleted(nativeToolLabels.get(itemId)!, item?.status !== 'failed' && (item?.exitCode == null || item.exitCode === 0) && !item?.error);
+            nativeToolLabels.delete(itemId);
+            queueProgress();
+          }
           if (event.method === 'item/started' && item?.type === 'agentMessage' && item?.phase === 'commentary' && itemId) {
             commentaryItems.add(itemId);
           }
@@ -1136,7 +1158,7 @@ export class TaskOrchestrator {
       await this.repo.updateTask(task.id, 'completed', { threadId, resultSummary: result.text, resultVisibility: 'surface' });
       await this.finishApprovalCard(task.id, 'done');
       await cardWrites.catch(() => undefined);
-      if (task.cardBizId && this.sender.updateTaskCard) {
+      if (task.cardBizId && this.sender.updateTaskCard && !this.sender.updateTaskProcess) {
         let activityCleared = false;
         for (const snapshot of answerSnapshots(result.text)) {
           try {
@@ -1199,6 +1221,7 @@ export class TaskOrchestrator {
       await cardWrites.catch(() => undefined);
       this.cancelledTasks.delete(task.id);
       this.cardWriteDrains.delete(task.id);
+      this.taskPresentations.delete(task.id);
       this.ziniaoFailures.delete(task.id);
       this.ziniaoBridgeStates.delete(task.id);
       this.preparedAttachments.delete(task.id);
@@ -1213,6 +1236,24 @@ export class TaskOrchestrator {
   }
 
   private async deliverTask(task: TaskRecord, fallback: string, cardContent: string, status: 1 | 2 | 3 | 4 | 5, title: string): Promise<void> {
+    if (task.cardBizId && this.sender.updateTaskProcess) {
+      try {
+        const current = await this.repo.findTask(task.id);
+        const phase = current?.status === 'cancelled' ? 'cancelled' : current?.status === 'failed' ? 'failed'
+          : status === 3 ? 'completed' : current?.status.startsWith('waiting_') ? 'waiting' : 'running';
+        const presentation = this.taskPresentations.get(task.id);
+        const view: TaskCardView = presentation?.snapshot(cardContent, phase)
+          ?? { phase, activity: title, steps: '', answer: cardContent };
+        if (phase === 'waiting') view.activity = title;
+        await this.sender.updateTaskProcess(task, view);
+        return;
+      } catch (error) {
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'card.update_failed', payload: { reason: safeDeliveryError(error) } });
+      }
+      await this.sender.send(task.request.surface, fallback, title);
+      return;
+    }
     if (task.cardBizId && this.sender.updateTaskCard) {
       try {
         await this.sender.updateTaskCard(task.cardBizId, cardContent, status);
@@ -2531,6 +2572,12 @@ export class TaskOrchestrator {
   }
 
   private reportZiniaoActivity(task: TaskRecord, text: string): void {
+    if (task.cardBizId && this.sender.updateTaskProcess) {
+      const presentation = this.taskPresentations.get(task.id);
+      presentation?.commentary(text);
+      if (presentation) void this.sender.updateTaskProcess(task, presentation.snapshot()).catch(() => undefined);
+      return;
+    }
     if (!task.cardBizId || !this.sender.updateTaskActivity) return;
     const status = this.config.DINGTALK_CARD_ACTIVITY_IN_PROCESSING === 'true' ? 1 : 2;
     void this.sender.updateTaskActivity(task.cardBizId, text, status).catch(() => undefined);
@@ -2658,6 +2705,7 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
   const tool = String(params.tool ?? '');
   const args = params.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
   if (namespace === 'a2ui') return tool === 'explain' ? '查询卡片组件说明' : '整理卡片展示';
+  if (namespace === 'agent' && tool === 'workflow') return args.operation === 'complete' ? '核验并整理最终答复' : '整理任务安排';
   if (namespace === 'reference' && tool === 'read_guide') {
     const name = safeLabel(args.name);
     return name ? '读取 Skill：' + name : '读取 Skill 说明';

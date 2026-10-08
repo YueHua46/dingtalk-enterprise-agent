@@ -1,3 +1,4 @@
+import type { TaskCardPhase, TaskCardView } from './a2ui-task-card.js';
 /** User-visible activity only. Never feed reasoning or raw tool arguments here. */
 export class CardPresentation {
   private activity = '正在处理';
@@ -24,7 +25,7 @@ export class CardPresentation {
     const index = this.activeTools.lastIndexOf(label);
     if (index >= 0) this.activeTools.splice(index, 1);
     this.completed.push((success ? '已完成：' : '未完成：') + label);
-    if (this.completed.length > 3) this.completed.shift();
+    if (this.completed.length > 60) this.completed.shift();
     if (this.activeTools.length === 0) {
       this.activity = '正在整理结果';
       this.note = '';
@@ -51,6 +52,15 @@ export class CardPresentation {
     }
     if (this.note) return this.note;
     return this.activity === '正在整理结果' ? '正在整理回答' : this.activity;
+  }
+
+  public snapshot(answer = '', phase: TaskCardPhase = 'running'): TaskCardView {
+    const lines = this.completed.map(line => (line.startsWith('已完成') ? '✓ ' : '⚠ ') + escapeMarkdown(line));
+    const stopped = ['completed', 'failed', 'cancelled'].includes(phase);
+    lines.push(...this.activeTools.map(label => (stopped ? '⚠ 已停止：' : '◌ ') + escapeMarkdown(label)));
+    if (this.note && this.activeTools.length === 0) lines.push(escapeMarkdown(this.note));
+    if (lines.length === 0) lines.push('正在理解请求并准备处理。');
+    return { phase, activity: this.renderActivity(), steps: lines.join('\n\n'), answer };
   }
 }
 

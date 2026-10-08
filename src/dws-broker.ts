@@ -450,6 +450,15 @@ export class DwsBroker {
 
   /** The caller owns the persistent idempotency ledger. Never retry these writes. */
   public async sendA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<unknown> {
+    const created = await this.createA2ui(user, surface, messages);
+    const surfaceId = JSON.parse(messages[0]!).createSurface?.surfaceId;
+    if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('A2UI_FINALIZE_OUTCOME_UNKNOWN');
+    const finished = [JSON.stringify({ version: 'v1.0', updateDataModel: { surfaceId, path: '/hostStatus', value: 'finished' } })];
+    await this.updateA2ui(user, created.bizId, finished, 'FINISH');
+    return { ...created, renderingVerified: false };
+  }
+
+  public async createA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<{ accepted: true; bizId: string }> {
     if (surface.type === 'direct' && surface.id !== user.userId) throw new Error('A2UI_DIRECT_SURFACE_MISMATCH');
     const target = surface.type === 'group' ? ['--conversation-id', surface.id] : ['--open-dingtalk-id', user.userId];
     const created = await this.runCommand(user, ['chat', 'message', 'send-a2ui-card', ...target,
@@ -458,13 +467,13 @@ export class DwsBroker {
     if (created?.accepted === false || created?.success === false || created?.complete === false || typeof bizId !== 'string' || !bizId) {
       throw new Error('A2UI_DELIVERY_OUTCOME_UNKNOWN');
     }
-    const surfaceId = JSON.parse(messages[0]!).createSurface?.surfaceId;
-    if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('A2UI_FINALIZE_OUTCOME_UNKNOWN');
-    const finished = JSON.stringify([JSON.stringify({ version: 'v1.0', updateDataModel: { surfaceId, path: '/hostStatus', value: 'finished' } })]);
+    return { accepted: true, bizId };
+  }
+
+  public async updateA2ui(user: UserIdentity, bizId: string, messages: string[], flowStatus: 'INPUTTING' | 'FINISH'): Promise<void> {
     const updated = await this.runCommand(user, ['chat', 'message', 'update-a2ui-card', '--biz-id', bizId,
-      '--content', finished, '--flow-status', 'FINISH', '--yes']) as any;
+      '--content', JSON.stringify(messages), '--flow-status', flowStatus, '--yes']) as any;
     if (!updated || updated.accepted === false || updated.success === false || updated.complete === false) throw new Error('A2UI_FINALIZE_OUTCOME_UNKNOWN');
-    return { accepted: true, renderingVerified: false, bizId };
   }
 
   private async run(args: string[], timeout = 60_000, cwd?: string): Promise<{ stdout: string; stderr: string }> {
