@@ -2,6 +2,7 @@ import type { Config } from './config.js';
 import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
 import { DwsTool } from './dws-tool.js';
+import { A2uiTool } from './a2ui-tool.js';
 import { MediaPipeline } from './media.js';
 import { MemoryTool } from './memory-tool.js';
 import type { KnowledgeTool } from './knowledge-tool.js';
@@ -1460,6 +1461,30 @@ export class TaskOrchestrator {
         return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : String(error) }], success: false };
       }
     }
+    if (request.params.namespace === 'a2ui') {
+      try {
+        const tool = new A2uiTool(this.dws);
+        const name = request.params.tool;
+        // Validate model input before initiating authorization or any send.
+        const input = name === 'explain' ? undefined : tool.parse(name, request.params.arguments);
+        if (!await this.dws.status(task.request.user)) await this.ensureAuthorization(task, threadId);
+        if (name === 'explain') {
+          return { contentItems: [{ type: 'inputText', text: JSON.stringify(await tool.explain(task.request, request.params.arguments)) }], success: true };
+        }
+        const messages = tool.messages(task.id, input!);
+        const validated = await this.dws.lintA2ui(task.request.user, messages);
+        if (this.cancelledTasks.has(task.id)) throw new Error('A2UI_TASK_CANCELLED');
+        const action: ToolAction = { name: 'a2ui.present', risk: 'write', target: task.request.surface.id,
+          parameters: { surface: task.request.surface, messages } };
+        const result = await this.executeIdempotentWrite(task, action,
+          () => this.dws.sendA2ui(task.request.user, task.request.surface, validated));
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          surfaceId: task.request.surface.id, eventType: 'a2ui.accepted', payload: { renderingVerified: false } });
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
+      } catch (error) {
+        return { contentItems: [{ type: 'inputText', text: publicErrorDetail(error) }], success: false };
+      }
+    }
     if (request.params.namespace === 'reference' && request.params.tool === 'list_guides') {
       try {
         return { contentItems: [{ type: 'inputText', text: JSON.stringify(await this.guideTool.list()) }], success: true };
@@ -2632,6 +2657,7 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
   const namespace = String(params.namespace ?? '');
   const tool = String(params.tool ?? '');
   const args = params.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
+  if (namespace === 'a2ui') return tool === 'explain' ? '查询卡片组件说明' : '整理卡片展示';
   if (namespace === 'reference' && tool === 'read_guide') {
     const name = safeLabel(args.name);
     return name ? '读取 Skill：' + name : '读取 Skill 说明';

@@ -11,7 +11,7 @@ FROM ${NODE_IMAGE}
 RUN apt-get update \
   && apt-get install -y --no-install-recommends bubblewrap ca-certificates tini curl unzip openssh-client python3 python3-venv \
   && rm -rf /var/lib/apt/lists/*
-RUN npm install --global @openai/codex@0.155.1 dingtalk-workspace-cli@1.0.62 @ziniao-open/cli@1.1.3 \
+RUN npm install --global @openai/codex@0.155.1 dingtalk-workspace-cli@1.0.63 @ziniao-open/cli@1.1.3 \
   && npm cache clean --force
 WORKDIR /app
 COPY vendor/amazon-skill /opt/amazon-skill
