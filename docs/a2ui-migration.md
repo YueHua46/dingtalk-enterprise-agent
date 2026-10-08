@@ -24,12 +24,12 @@
 
 确认卡的业务动作和安全字段必须由宿主生成。自由布局可以改变展示方式，不能改变操作授权。
 
-现有任务流式卡和高危确认卡目前仍使用旧模板。需在真实钉钉客户端验证 JSON 渲染、事件载荷、更新和完结，再切换宿主生命周期；本次未部署或向实际会话发送测试卡。
+现有任务流式卡和高危确认卡目前仍使用旧模板。需在真实钉钉客户端验证 JSON 渲染、事件载荷、更新和完结，再切换宿主生命周期。2026-10-07 已部署第一阶段并完成真实群聊自然请求测试；三例均未主动调用 A2UI，尚未验证新 JSON 卡片的实际发送和客户端渲染，见 [真实测试记录](a2ui-natural-e2e-2026-10-07.md)。
 
 ## 验证与环境问题
 
 构建、单元测试，以及 DWS v1.0.63 离线 new-card preflight。CLI lint 不能证明实际客户端渲染。
 
-本机 v1.0.63 的 leaf Schema 查询出现 `Schema cache repair requires the isolated builder`；lint/explain 可用。发送/更新参数已按该版本 leaf Help 核对，正式上线前需修复 Schema 缓存并验证真实受理结果。
+Windows 本机 v1.0.63 的 leaf Schema 查询出现 `Schema cache repair requires the isolated builder`；lint/explain 可用。部署后的 Linux gateway 内 Schema 查询正常，已核对发送契约。新 JSON 卡片的真实受理结果仍待验证。
 
 来源：[DWS v1.0.63 发布说明](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/tag/v1.0.63)、[JSON 构建卡片文档](https://open.dingtalk.com/document/development/json-build-card)。
