@@ -1,8 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { Config } from './config.js';
 import type { ConversationSurface, DwsIdentity, UserIdentity } from './types.js';
@@ -428,60 +426,6 @@ export class DwsBroker {
       throw error;
     }
     return parsed?.data ?? parsed;
-  }
-
-  /** Offline validation still explicitly binds the invoking user's profile. */
-  public async lintA2ui(user: UserIdentity, messages: Record<string, unknown>[]): Promise<string[]> {
-    const directory = await mkdtemp(join(tmpdir(), 'agent-a2ui-'));
-    const file = join(directory, 'card.json');
-    try {
-      await writeFile(file, JSON.stringify(messages), { mode: 0o600, flag: 'wx' });
-      const result = await this.runCommand(user, ['aicard', 'lint', '--file', file, '--preflight', 'new-card', '--emit']) as any;
-      if (result?.valid !== true || result?.preflight?.valid !== true || !Array.isArray(result?.a2uiMessages)
-        || result.a2uiMessages.length === 0 || result.a2uiMessages.some((m: unknown) => typeof m !== 'string')) {
-        throw new Error('A2UI_PREFLIGHT_FAILED');
-      }
-      return result.a2uiMessages;
-    } finally {
-      await unlink(file).catch(() => undefined);
-      await rmdir(directory).catch(() => undefined);
-    }
-  }
-
-  /** The caller owns the persistent idempotency ledger. Never retry these writes. */
-  public async sendA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<unknown> {
-    // This entry point is used by Agent presentation tools. The installed DWS
-    // A2UI command sends as the OAuth user and has no robot identity parameter.
-    // Never impersonate the requester for host progress or Agent result cards.
-    throw new Error('A2UI_ROBOT_TRANSPORT_UNAVAILABLE');
-  }
-
-  /** Personal preview transport only; never use for an Agent response. */
-  public async sendPersonalA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<unknown> {
-    const created = await this.createA2ui(user, surface, messages);
-    const surfaceId = JSON.parse(messages[0]!).createSurface?.surfaceId;
-    if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('A2UI_FINALIZE_OUTCOME_UNKNOWN');
-    const finished = [JSON.stringify({ version: 'v1.0', updateDataModel: { surfaceId, path: '/hostStatus', value: 'finished' } })];
-    await this.updateA2ui(user, created.bizId, finished, 'FINISH');
-    return { ...created, renderingVerified: false };
-  }
-
-  public async createA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<{ accepted: true; bizId: string }> {
-    if (surface.type === 'direct' && surface.id !== user.userId) throw new Error('A2UI_DIRECT_SURFACE_MISMATCH');
-    const target = surface.type === 'group' ? ['--conversation-id', surface.id] : ['--open-dingtalk-id', user.userId];
-    const created = await this.runCommand(user, ['chat', 'message', 'send-a2ui-card', ...target,
-      '--content', JSON.stringify(messages), '--yes']) as any;
-    const bizId = created?.bizId ?? created?.biz_id ?? created?.result?.bizId ?? created?.card?.bizId;
-    if (created?.accepted === false || created?.success === false || created?.complete === false || typeof bizId !== 'string' || !bizId) {
-      throw new Error('A2UI_DELIVERY_OUTCOME_UNKNOWN');
-    }
-    return { accepted: true, bizId };
-  }
-
-  public async updateA2ui(user: UserIdentity, bizId: string, messages: string[], flowStatus: 'INPUTTING' | 'FINISH'): Promise<void> {
-    const updated = await this.runCommand(user, ['chat', 'message', 'update-a2ui-card', '--biz-id', bizId,
-      '--content', JSON.stringify(messages), '--flow-status', flowStatus, '--yes']) as any;
-    if (!updated || updated.accepted === false || updated.success === false || updated.complete === false) throw new Error('A2UI_FINALIZE_OUTCOME_UNKNOWN');
   }
 
   private async run(args: string[], timeout = 60_000, cwd?: string): Promise<{ stdout: string; stderr: string }> {

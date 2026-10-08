@@ -5,7 +5,6 @@
 ## 已实现能力
 
 - 钉钉私聊与群聊消息接入；群聊未 @ 机器人时忽略。
-- DWS v1.0.63 A2UI JSON 展示：常用分组复用 JSON 骨架，Agent 可自由构建展示布局，宿主校验后按当前用户身份发到原会话。任务流式卡和高危确认卡的后续迁移见 [A2UI 迁移说明](docs/a2ui-migration.md)。
 - 文本、图片、语音、视频、普通文件、富文本和引用消息解析。
 - 钉钉会话按 `corpId + userId + 场景` 映射到独立 Codex Thread。
 - 默认 Codex App Server 使用 stdio JSON-RPC；可切换到独立文件容器，通过内部 WebSocket 运行每任务 App Server，支持 PDF、Word、Excel、PPT 的按需文件工作流。详见 [文件工作流部署与验证](docs/file-worker.md)。

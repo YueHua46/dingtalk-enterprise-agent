@@ -5,7 +5,6 @@ import { resolve } from 'node:path';
 import type { Config } from './config.js';
 import type { Attachment, CodexTurnResult, UserIdentity } from './types.js';
 import { dwsDynamicTools } from './dws-tool.js';
-import { a2uiDynamicTools } from './a2ui-tool.js';
 import { memoryDynamicTools } from './memory-tool.js';
 import { knowledgeDynamicTools } from './knowledge-tool.js';
 import { listingDynamicTools } from './listing-tool.js';
@@ -22,7 +21,7 @@ import { nativeReadOnlyMcpTools } from './mcp-tool-list.js';
 
 const agentTools = [{ ...memoryDynamicTools[0], tools: [...memoryDynamicTools[0]!.tools, ...workflowDynamicTools[0]!.tools] }];
 const execFileAsync = promisify(execFile);
-export const enterpriseTools = [...a2uiDynamicTools, ...listingDynamicTools, ...knowledgeDynamicTools, ...dwsDynamicTools, ...agentTools, ...guideDynamicTools, ...analysisDynamicTools, ...nativeWebDynamicTools, ...amazonDynamicTools, ...imageDynamicTools, ...crossBorderOpsDynamicTools, ...ziniaoDynamicTools, ...mcpReadDynamicTools, {
+export const enterpriseTools = [...listingDynamicTools, ...knowledgeDynamicTools, ...dwsDynamicTools, ...agentTools, ...guideDynamicTools, ...analysisDynamicTools, ...nativeWebDynamicTools, ...amazonDynamicTools, ...imageDynamicTools, ...crossBorderOpsDynamicTools, ...ziniaoDynamicTools, ...mcpReadDynamicTools, {
   type: 'namespace', name: 'artifact', description: '登记文件任务的最终成果。',
   tools: [
     { type: 'function', name: 'submit', description: '登记 output 目录中的最终文件，宿主验证后发送到发起任务的原会话。每个文件调用一次。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' } }, required: ['path'], additionalProperties: false } },
@@ -46,7 +45,7 @@ export const enterpriseInstructions = [
   '6. 交付：调用 agent.workflow 的 complete 提交最终答复（直接输出最终答复也会被同样核验）。宿主会核验答复是否被证据支持；未通过时会一次性列出全部问题，逐条修正后重新提交，只改有问题的部分。',
   '',
   '## 答复标准',
-  '- Thinking 进度由宿主管理，不要自行发送进度卡。当前安装版本尚未接通机器人 A2UI 投递，a2ui 展示若返回 A2UI_ROBOT_TRANSPORT_UNAVAILABLE，就直接用文字交付，不要通过个人身份发送卡片。公开执行摘要可以包含实际使用的工具，不输出内部思维链。需要分组查询结果、对比、步骤说明或可折叠内容时，自然使用 a2ui.show_sections 的固定 JSON 骨架或 a2ui.present 自由构建布局；简单问答用文字。组件不熟悉时先 a2ui.explain。卡片必须依据本任务证据，不输出内部思维链或凭证；最终结论仍提交 agent.workflow complete 核验。卡片由宿主发送到原会话，勿用消息工具再次发送同样内容。当前 A2UI 开放展示布局，不生成业务按钮或表单；澄清用 agent.workflow clarify，高危操作调用业务工具，由宿主发送确认卡。协议校验或能力不可用时改为文字说明，状态未知时不要重复投递；accepted 只说明服务端受理，不证明客户端渲染。',
+  '- A2UI 重构暂时停用。任务进度与结果卡由宿主使用现有机器人模板发送，不要通过个人 DWS 创建 A2UI 卡片来代替 Agent 回复。',
   '- 回答用户实际问的问题，篇幅与问题相称：只问一个数值就直接给数值、范围和口径；要求分析或报告时再展开结构。',
   '- 区分数据事实、计算结果、推断和待验证假设。用户要求分析原因、给建议或运用经验判断时，基于证据的推断和建议正是交付物：每一条原因都标明可信度（已证实 / 高可信推断 / 待验证），写清依据和验证方法；数据只显示同期变化时，用“可能”“推测”表述因果，不要写成“导致”“抑制了”等已证实的因果。数据中没有的对象属性（主图、评价内容、竞品、促销活动等）只能作为待核查方向。',
   '- 说明会影响结论的口径与缺口：时间范围、数据截至日、覆盖范围、币种和单位。不同币种或单位没有可靠换算时不直接比较或排名。授权范围不等于数据覆盖，没有业务记录不等于零。',

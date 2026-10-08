@@ -22,7 +22,6 @@ import { TaskOrchestrator } from './task-orchestrator.js';
 import { RedisTaskQueue } from './task-queue.js';
 import { RetentionService } from './retention.js';
 import { DingTalkNativeCardBroker } from './dingtalk-card.js';
-import { A2uiTaskCards, type TaskCardView } from './a2ui-task-card.js';
 import { ZiniaoBroker } from './ziniao-broker.js';
 import { ZiniaoRemoteBroker } from './ziniao-remote-broker.js';
 import * as md from './markdown.js';
@@ -50,15 +49,27 @@ const knowledgeSync = knowledgeStore ? new KnowledgeSync(config, knowledgeStore,
 const knowledgeTool = knowledgeStore && knowledgeSync ? new KnowledgeTool(config, knowledgeStore, knowledgeSync, knowledgeModel) : undefined;
 if (pool) registerKnowledgeDatabaseMetrics(pool);
 const nativeCards = new DingTalkNativeCardBroker(config);
-const taskCards = new A2uiTaskCards(dws, repository);
 let stream: DingTalkStreamAdapter | undefined;
 const sender = {
-  ...(config.DINGTALK_A2UI_TASK_CARDS === 'true' ? {
+  ...(nativeCards.enabled() ? {
     async beginTaskCard(task: TaskRecord): Promise<string> {
-      return taskCards.create(task);
+      return nativeCards.create(task.request.surface);
     },
-    async updateTaskProcess(task: TaskRecord, view: TaskCardView): Promise<void> {
-      await taskCards.update(task, view);
+    async updateTaskCard(bizId: string, content: string, flowStatus: 1 | 2 | 3 | 4 | 5, mode?: 'static' | 'stream'): Promise<void> {
+      if (mode === 'static') await nativeCards.updateStatic(bizId, content, flowStatus);
+      else await nativeCards.update(bizId, content, flowStatus);
+    },
+    ...(config.DINGTALK_CARD_ACTIVITY_VARIABLE ? {
+      async updateTaskActivity(bizId: string, activity: string, flowStatus: 1 | 2 | 3 | 4 | 5): Promise<void> {
+        await nativeCards.updateActivity(bizId, activity, flowStatus);
+      }
+    } : {})
+  } : config.DINGTALK_STREAMING_CARDS === 'true' ? {
+    async beginTaskCard(task: TaskRecord): Promise<string> {
+      return dws.createStreamingCard(task.request.surface);
+    },
+    async updateTaskCard(bizId: string, content: string, flowStatus: 1 | 2 | 3 | 4 | 5): Promise<void> {
+      await dws.updateStreamingCard(bizId, content, flowStatus);
     }
   } : {}),
   async send(surface: ConversationSurface, markdown: string, title?: string): Promise<void> {
