@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
+import { createReadStream } from 'node:fs';
 import { fileTypeFromBuffer } from 'file-type';
 import { OfficeParser } from 'officeparser';
 import type { Config } from './config.js';
@@ -120,6 +121,31 @@ export class MediaPipeline {
     const result = await scanClamAv(this.config.CLAMAV_HOST, this.config.CLAMAV_PORT, buffer);
     if (!result.endsWith('OK')) throw new Error('附件安全扫描未通过');
   }
+  public async scanFile(path:string):Promise<void>{
+    if(!this.config.CLAMAV_HOST)return;
+    const result=await scanClamAvFile(this.config.CLAMAV_HOST,this.config.CLAMAV_PORT,path);
+    if(!result.endsWith('OK'))throw new Error('KNOWLEDGE_SECURITY_SCAN_FAILED');
+  }
+}
+
+export function scanClamAvFile(host:string,port:number,path:string):Promise<string>{
+  return new Promise((resolve,reject)=>{
+    const socket=new Socket();let response='';
+    const input=createReadStream(path,{highWaterMark:64*1024});
+    const timer=setTimeout(()=>socket.destroy(new Error('KNOWLEDGE_SECURITY_SCAN_TIMEOUT')),240_000);
+    const cleanup=()=>{clearTimeout(timer);input.destroy();};
+    const write=(bytes:Buffer)=>new Promise<void>((done,fail)=>{
+      socket.write(bytes,(error)=>error?fail(error):done());
+    });
+    socket.on('data',chunk=>{response+=String(chunk);});
+    socket.on('error',error=>{cleanup();reject(error);});
+    socket.on('end',()=>{cleanup();resolve(response.replace(/\0/g,'').trim());});
+    socket.connect(port,host,()=>{void(async()=>{
+      await write(Buffer.from('zINSTREAM\0'));
+      for await(const chunk of input){const bytes=chunk as Buffer,header=Buffer.alloc(4);header.writeUInt32BE(bytes.length);await write(header);await write(bytes);}
+      await write(Buffer.alloc(4));
+    })().catch(error=>socket.destroy(error));});
+  });
 }
 
 export function scanClamAv(host: string, port: number, buffer: Buffer): Promise<string> {

@@ -1,0 +1,33 @@
+{
+  "version": "listing-validation-camera-v1",
+  "updatedOn": "2026-09-30",
+  "source": { "title": "内部摄像头事实受控表达策略", "reference": "docs/listing-module-7.md", "retrievedOn": "2026-09-30" },
+  "verification": { "status": "pending", "note": "内部保守表达词表，非 Amazon 官方要求；未覆盖所有参数、语言和表达方式。" },
+  "separators": [" ", ",", ";", ".", ":", "and"],
+  "duplicateFields": ["bullets"],
+  "literalAttributes": ["brand", "model"],
+  "quantityLabels": {
+    "weight": ["Weight"], "length": ["Length"], "width": ["Width"], "height": ["Height"],
+    "battery_life": ["Battery life"], "charging_time": ["Charging time"], "frequency": ["Frequency"]
+  },
+  "keywordExpressions": [
+    { "phrase": "2k camera", "facts": [{ "attribute": "resolution", "value": "2K" }, { "attribute": "product_type", "value": "室内摄像头" }] },
+    { "phrase": "2k camera", "facts": [{ "attribute": "resolution", "value": "2K" }, { "attribute": "product_type", "value": "室外摄像头" }] },
+    { "phrase": "4k camera", "facts": [{ "attribute": "resolution", "value": "4K" }, { "attribute": "product_type", "value": "室内摄像头" }] }
+  ],
+  "expressions": [
+    { "attribute": "product_type", "value": "室内摄像头", "english": ["Indoor Camera", "Indoor Security Camera"] },
+    { "attribute": "product_type", "value": "室外摄像头", "english": ["Outdoor Camera", "Outdoor Security Camera"] },
+    { "attribute": "resolution", "value": "2K", "english": ["2K", "2K resolution"] },
+    { "attribute": "resolution", "value": "4K", "english": ["4K", "4K resolution"] },
+    { "attribute": "connectivity", "value": "2.4 GHz Wi-Fi，不支持 5 GHz", "english": ["2.4 GHz Wi-Fi; 5 GHz is not supported", "2.4 GHz Wi-Fi, not compatible with 5 GHz"] },
+    { "attribute": "power", "value": "USB 有线供电", "english": ["USB wired power", "Powered by a USB cable"] },
+    { "attribute": "night_vision", "value": "支持红外夜视，未声明彩色夜视", "english": ["Infrared night vision; color night vision is not specified", "Supports infrared night vision; color night vision is not specified"] },
+    { "attribute": "storage", "value": "支持 microSD 卡，卡需另购", "english": ["Supports microSD storage; card sold separately", "Supports microSD cards; card sold separately"] },
+    { "attribute": "storage", "value": "microSD 卡需另购", "english": ["microSD card sold separately"] },
+    { "attribute": "subscription", "value": "云存储需付费订阅", "english": ["Cloud storage requires a paid subscription"] },
+    { "attribute": "subscription", "value": "云存储需付费", "english": ["Cloud storage requires payment"] },
+    { "attribute": "installation", "value": "需连接电源，适用于室内", "english": ["Indoor installation requires a power connection", "Indoor use requires a power connection"] },
+    { "attribute": "package", "value": "摄像头、电源线、说明书，不含存储卡", "english": ["Includes camera, power cable and manual; storage card not included", "Includes camera, power cable, and manual. Storage card not included"] }
+  ]
+}

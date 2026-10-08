@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "version": "us-en-2026-09-30.1",
+  "marketplace": "US",
+  "language": "en",
+  "updatedOn": "2026-09-30",
+  "rules": [
+    {
+      "id": "title-length", "origin": "platform", "field": "title", "severity": "blocking",
+      "description": "标题通用候选上限；官方公告说明适用于多数类目，摄像头具体产品类型待核实。",
+      "effectiveOn": "2025-01-21",
+      "source": { "title": "Amazon 标题更新公告", "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059", "publishedOn": null, "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "已查阅公告；未核实 2026 年具体摄像头类目当前要求。" },
+      "check": { "kind": "length", "unit": "unicode_code_points", "limit": 200, "comparison": "at_most", "includeSpaces": true }
+    },
+    {
+      "id": "title-characters", "origin": "platform", "field": "title", "severity": "blocking",
+      "description": "候选特殊字符限制，品牌名称例外需由本品品牌事实支持。",
+      "effectiveOn": "2025-01-21",
+      "source": { "title": "Amazon 标题更新公告", "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059", "publishedOn": null, "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "已查阅通用公告；具体类目适用性待核实。" },
+      "check": { "kind": "forbidden_characters", "characters": ["!", "$", "?", "_", "{", "}", "^", "¬", "¦"], "exception": "brand_name" }
+    },
+    {
+      "id": "title-repeated-words", "origin": "platform", "field": "title", "severity": "blocking",
+      "description": "候选标题重复词限制；例外词表是实现用候选表，不是官方完整词表。",
+      "effectiveOn": "2025-01-21",
+      "source": { "title": "Amazon 标题更新公告", "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059", "publishedOn": null, "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "冠词、介词、连词例外的分词与词表需进一步核实。" },
+      "check": { "kind": "word_repetition", "maxOccurrences": 2, "exceptions": ["a", "an", "the", "and", "or", "for", "with", "of", "in", "on", "at", "to", "by", "from", "but", "as"], "tokenization": "english_words" }
+    },
+    {
+      "id": "search-terms-length", "origin": "platform", "field": "searchTerms", "severity": "blocking",
+      "description": "搜索词按 UTF-8 字节计数的候选限制，不按字符计数。",
+      "effectiveOn": null,
+      "source": { "title": "Amazon Seller University Listing 优化培训", "reference": "https://m.media-amazon.com/images/G/28/AS/AGS/SU/CN_GS_Listing_Optimization_1.1_General_Guidance_EN.pdf", "publishedOn": null, "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "历史官方培训材料；当前具体产品类型、字段及字节计数细节待核实。" },
+      "check": { "kind": "length", "unit": "utf8_bytes", "limit": 250, "comparison": "less_than", "includeSpaces": true }
+    },
+    {
+      "id": "bullet-refund-phrases", "origin": "platform", "field": "bullets", "severity": "blocking",
+      "description": "退款保证类表达候选检查；词表仅为公告举例的内部展开，非官方完整禁词表。",
+      "effectiveOn": "2024-08-15",
+      "source": { "title": "Amazon 五点要求更新公告", "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/65f8e647-977d-49ac-9036-2049b96720b2", "publishedOn": null, "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "公告提及退款保证限制，精确表达范围待核实。" },
+      "check": { "kind": "forbidden_phrases", "phrases": ["money-back guarantee", "money back guarantee", "full refund guarantee"], "matching": "case_insensitive_phrase" }
+    },
+    {
+      "id": "bullet-special-content", "origin": "platform", "field": "bullets", "severity": "advisory",
+      "description": "五点特殊字符和表情要求，完整范围尚未确认。",
+      "effectiveOn": "2024-08-15",
+      "source": { "title": "Amazon 五点要求更新公告", "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/65f8e647-977d-49ac-9036-2049b96720b2", "publishedOn": null, "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "不能凭公告推断全部特殊字符列表。" },
+      "check": { "kind": "manual_check", "guidance": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。" }
+    },
+    {
+      "id": "bullet-count", "origin": "editorial", "field": "bullets", "severity": "blocking",
+      "description": "本能力首版交付五点，这是内部输出约定，不代表所有类目要求。",
+      "effectiveOn": "2026-09-30",
+      "source": { "title": "Listing 项目交付约定", "reference": "docs/listing-module-3.md", "publishedOn": "2026-09-30", "retrievedOn": "2026-09-30" },
+      "verification": { "status": "verified", "note": "按已接受的首版五点交付范围。", "verifiedBy": "项目交付约定", "verifiedOn": "2026-09-30" },
+      "check": { "kind": "item_count", "count": 5 }
+    },
+    {
+      "id": "bullet-length-budget", "origin": "editorial", "field": "bullets", "severity": "advisory",
+      "description": "单条五点草稿长度预算，不作为已核实的平台上限。",
+      "effectiveOn": "2026-09-30",
+      "source": { "title": "内部文案长度候选策略", "reference": "docs/listing-module-3.md", "publishedOn": "2026-09-30", "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "参考已有技能的草稿预算，具体类目平台上限另行核实。" },
+      "check": { "kind": "length", "unit": "unicode_code_points", "limit": 500, "comparison": "at_most", "includeSpaces": true }
+    },
+    {
+      "id": "description-length-budget", "origin": "editorial", "field": "description", "severity": "advisory",
+      "description": "描述草稿长度预算，不作为已核实的平台上限。",
+      "effectiveOn": "2026-09-30",
+      "source": { "title": "内部文案长度候选策略", "reference": "docs/listing-module-3.md", "publishedOn": "2026-09-30", "retrievedOn": "2026-09-30" },
+      "verification": { "status": "pending", "note": "参考已有技能的草稿预算，当前产品类型要求待核实。" },
+      "check": { "kind": "length", "unit": "unicode_code_points", "limit": 2000, "comparison": "at_most", "includeSpaces": true }
+    }
+  ],
+  "productTypes": []
+}

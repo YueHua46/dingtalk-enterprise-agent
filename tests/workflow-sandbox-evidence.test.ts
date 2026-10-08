@@ -17,6 +17,54 @@ const request: AgentRequest = {
 const call = (namespace: string, tool: string, args: unknown) => ({ method: 'item/tool/call', params: { namespace, tool, arguments: args } });
 
 describe('sandbox evidence', () => {
+  it('delivers verified web results as partial when the subsequent model request is rate limited', async () => {
+    const repo = new InMemoryRepository();
+    let orchestrator: TaskOrchestrator;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-web-limited'),
+      interrupt: vi.fn(async () => undefined),
+      turn: vi.fn(async (_thread, _prompt, _events, _tools, _attachments, taskId) => {
+        const command = { commands: { search_query: [{ q: 'NASA news' }] } };
+        await orchestrator.observeWebSearch(taskId, command);
+        await orchestrator.observeWebSearch(taskId, command, { output: 'Search query: NASA news\nNASA reported an update.\n\nWeb search queries: NASA news\n\nSources:\n[1] [NASA](https://nasa.gov/news)', results: [{ type: 'text_result', title: 'NASA', url: 'https://nasa.gov/news' }] });
+        throw new Error('429 Too Many Requests');
+      })
+    };
+    orchestrator = new TaskOrchestrator(config, repo, codex as any, {} as any, { async send() {} });
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'pass', issues: [], reason: 'supported' });
+    const task = await orchestrator.accept({ ...request, text: '查 NASA 新闻' });
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(codex.turn).toHaveBeenCalledOnce();
+    expect((await repo.getWorkflow(task!.id))?.completion?.status).toBe('partial');
+    expect((await repo.findTask(task!.id))?.resultSummary).toContain('NASA reported an update');
+    expect((await repo.findTask(task!.id))?.resultSummary).not.toContain('Web search queries');
+    await orchestrator.stop();
+  });
+  it('records native web results in the active workflow and gives them to the verifier', async () => {
+    const repo = new InMemoryRepository();
+    let orchestrator: TaskOrchestrator;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-web'),
+      interrupt: vi.fn(async () => undefined),
+      turn: vi.fn(async (_thread, _prompt, _events, _tools, _attachments, taskId) => {
+        const command = { commands: { search_query: [{ q: 'NASA news' }] } };
+        await orchestrator.observeWebSearch(taskId, command);
+        const id = await orchestrator.observeWebSearch(taskId, command, { output: 'NASA reported news. Source: https://nasa.gov/news', results: [{ type: 'text_result', url: 'https://nasa.gov/news' }] });
+        expect(id).toBeTruthy();
+        expect(await orchestrator.observeWebSearch('another-task', command)).toBeUndefined();
+        return { text: 'NASA 新闻，来源：https://nasa.gov/news', threadId: 'thread-web' };
+      })
+    };
+    orchestrator = new TaskOrchestrator(config, repo, codex as any, {} as any, { async send() {} });
+    const review = vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'pass', issues: [], reason: 'ok' });
+    const task = await orchestrator.accept({ ...request, text: '查 NASA 新闻' });
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    const input = review.mock.calls[0]![0];
+    expect(input.evidence).toContainEqual(expect.objectContaining({ capabilityId: 'internet.search', status: 'success' }));
+    expect(Object.values(input.excerpts).join('\n')).toContain('NASA reported news');
+    expect(await orchestrator.observeWebSearch(task!.id, {})).toBeUndefined();
+    await orchestrator.stop();
+  });
   it('saves full results as readable files with an index and passes computations to the verifier', async () => {
     const files = new Map<string, string>();
     let toolText = '';

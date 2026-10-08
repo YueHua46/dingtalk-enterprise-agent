@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DwsBroker, buildDeviceAuthorizationArgs, isConfirmationGateError } from '../src/dws-broker.js';
+import { DwsBroker, buildDeviceAuthorizationArgs, buildDwsEnvironment, isConfirmationGateError } from '../src/dws-broker.js';
 
 describe('DwsBroker device authorization', () => {
+  it('isolates DWS routing and preserves existing proxy exclusions', () => {
+    const inherited={HTTPS_PROXY:'http://127.0.0.1:7897',NO_PROXY:'localhost',no_proxy:'127.0.0.1'};
+    const env=buildDwsEnvironment({DWS_CONFIG_DIR:'./data/dws',DWS_NO_PROXY:'mcp.dingtalk.com,localhost'},inherited);
+    expect(env.NO_PROXY).toBe('localhost,127.0.0.1,mcp.dingtalk.com');
+    expect(env.no_proxy).toBe(env.NO_PROXY);
+    expect(env.HTTPS_PROXY).toBe(inherited.HTTPS_PROXY);
+    expect(inherited).toEqual({HTTPS_PROXY:'http://127.0.0.1:7897',NO_PROXY:'localhost',no_proxy:'127.0.0.1'});
+  });
   it('creates and updates a streaming card with the explicitly configured profile', async () => {
     const broker = new DwsBroker({ DWS_BIN: 'dws', DWS_BOT_PROFILE: 'corp-1:user-1' } as any);
     const run = vi.spyOn(broker as any, 'run')
@@ -109,6 +117,35 @@ describe('DwsBroker device authorization', () => {
 
     await expect(broker.runCommand({ corpId: 'corp-1', userId: 'user-1' }, ['chat', '+messages-set-pin', '--message-id', 'm1']))
       .rejects.toSatisfy((error: unknown) => isConfirmationGateError(error));
+  });
+
+  it('retains export job and missing-object classification without raw URLs or service output',async()=>{
+    const broker=new DwsBroker({DWS_BIN:'dws'} as any);
+    vi.spyOn(broker as any,'status').mockResolvedValue({corpId:'corp-1',userId:'user-1',profileKey:'corp-1:user-1'});
+    vi.spyOn(broker as any,'run').mockRejectedValue({stdout:'',stderr:JSON.stringify({error:{code:1,category:'api',message:'export download failed',reason:'doc_export_download_failed',retryable:false,details:{jobId:'pdf_fixture123'},cause:'<Code>NoSuchKey</Code> secret signed URL'}})});
+    const error=await broker.runCommand({corpId:'corp-1',userId:'user-1'},['doc','+export']).catch(e=>e);
+    expect(error.dwsJobId).toBe('pdf_fixture123');expect(error.dwsCauseCode).toBe('NoSuchKey');expect(error.dwsRetryable).toBe(false);
+    expect(JSON.stringify(error)).not.toContain('secret');
+  });
+
+  it('retains normalized shortcut error type and exit code on non-zero exit',async()=>{
+    const broker=new DwsBroker({DWS_BIN:'dws'} as any);
+    vi.spyOn(broker as any,'status').mockResolvedValue({corpId:'corp-1',userId:'user-1',profileKey:'corp-1:user-1'});
+    vi.spyOn(broker as any,'run').mockRejectedValue({stdout:JSON.stringify({ok:false,outcome:'failure',error:{type:'api',exit_code:1,message:'TLS handshake timeout'}}),stderr:''});
+    const error=await broker.runCommand({corpId:'corp-1',userId:'user-1'},['drive','+download']).catch(e=>e);
+    expect(error.dwsCategory).toBe('api');expect(error.dwsCode).toBe('1');
+    expect(error.dwsReason).toBeUndefined();expect(error.dwsRetryable).toBe(false);
+  });
+
+  it('handles shortcut failures on successful process exit and prefers explicit diagnostic fields',async()=>{
+    const broker=new DwsBroker({DWS_BIN:'dws'} as any);
+    vi.spyOn(broker as any,'status').mockResolvedValue({corpId:'corp-1',userId:'user-1',profileKey:'corp-1:user-1'});
+    const run=vi.spyOn(broker as any,'run').mockResolvedValueOnce({stdout:JSON.stringify({ok:false,error:{type:'internal',exit_code:5,message:'local download failed'}}),stderr:''})
+      .mockResolvedValueOnce({stdout:JSON.stringify({ok:false,error:{category:'api',code:1,type:'internal',exit_code:5,message:'server rejected',retryable:false}}),stderr:''});
+    const first=await broker.runCommand({corpId:'corp-1',userId:'user-1'},['drive','+download']).catch(e=>e);
+    expect(first.dwsCategory).toBe('internal');expect(first.dwsCode).toBe('5');
+    const second=await broker.runCommand({corpId:'corp-1',userId:'user-1'},['drive','+download']).catch(e=>e);
+    expect(second.dwsCategory).toBe('api');expect(second.dwsCode).toBe('1');expect(run).toHaveBeenCalledTimes(2);
   });
 
   it('keeps ordinary CLI failures outside the confirmation-gate marker', async () => {

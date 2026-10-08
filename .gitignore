@@ -18,3 +18,6 @@ __pycache__/
 outputs/
 work/
 tmp-card-index.js
+output/
+tmp/
+.workbuddy/memory/

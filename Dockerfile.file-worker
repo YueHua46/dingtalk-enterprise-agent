@@ -27,6 +27,7 @@ COPY --from=build /app/dist ./dist
 COPY file-skills /opt/file-skills
 # Read-only copy of the business skills so their analysis scripts can run in a task sandbox.
 COPY skills /opt/agent-skills
+COPY config /app/config
 RUN mkdir -p /work/tasks && chmod 0711 /work/tasks
 ENV PATH=/opt/venv/bin:$PATH FILE_WORKER_ROOT=/work/tasks FILE_SKILLS_DIR=/opt/file-skills
 EXPOSE 8081

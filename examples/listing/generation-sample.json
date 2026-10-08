@@ -1,0 +1,172 @@
+{
+  "kind": "fixed_mock_fictional_product",
+  "testedAt": null,
+  "result": {
+    "status": "draft_unvalidated",
+    "draft": {
+      "title": {
+        "text": "ExampleBrand C1 2K Indoor Security Camera",
+        "claims": [
+          {
+            "text": "ExampleBrand C1 2K Indoor Security Camera",
+            "start": 0,
+            "end": 41,
+            "factIds": [
+              "fact-0ec4170e6bb7e670093b0555",
+              "fact-e1ac064a3bc77d30a0fa1439",
+              "fact-0751aff184a622e034a93fe8",
+              "fact-5f39560677a8b43567ca890e"
+            ]
+          }
+        ]
+      },
+      "bullets": [
+        {
+          "text": "2K resolution",
+          "claims": [
+            {
+              "text": "2K resolution",
+              "start": 0,
+              "end": 13,
+              "factIds": [
+                "fact-0751aff184a622e034a93fe8"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "USB wired power",
+          "claims": [
+            {
+              "text": "USB wired power",
+              "start": 0,
+              "end": 15,
+              "factIds": [
+                "fact-110e993eecde9bbd10b3883c"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Infrared night vision; color night vision is not specified",
+          "claims": [
+            {
+              "text": "Infrared night vision; color night vision is not specified",
+              "start": 0,
+              "end": 58,
+              "factIds": [
+                "fact-ceda3f68a7b71b2762126994"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Supports microSD storage; card sold separately",
+          "claims": [
+            {
+              "text": "Supports microSD storage; card sold separately",
+              "start": 0,
+              "end": 46,
+              "factIds": [
+                "fact-7af0602d349486520967798d"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Cloud storage requires a paid subscription",
+          "claims": [
+            {
+              "text": "Cloud storage requires a paid subscription",
+              "start": 0,
+              "end": 42,
+              "factIds": [
+                "fact-dc2d1a6a4de44f5a15f74bc9"
+              ]
+            }
+          ]
+        }
+      ],
+      "description": {
+        "text": "Indoor installation requires a power connection. Includes camera, power cable and manual; storage card not included.",
+        "claims": [
+          {
+            "text": "Indoor installation requires a power connection. Includes camera, power cable and manual; storage card not included.",
+            "start": 0,
+            "end": 116,
+            "factIds": [
+              "fact-e7502d5fc0b08f8e134f6a17",
+              "fact-3888b9a6dbc75b2efd7b22ac"
+            ]
+          }
+        ]
+      },
+      "searchTerms": {
+        "text": "indoor security camera 2k camera",
+        "keywordRefs": [
+          "indoor security camera",
+          "2k camera"
+        ],
+        "factIds": [
+          "fact-5f39560677a8b43567ca890e",
+          "fact-0751aff184a622e034a93fe8"
+        ]
+      },
+      "changes": [
+        {
+          "field": "description",
+          "reasonZh": "明确供电条件和包装不包含存储卡。",
+          "factIds": [
+            "fact-e7502d5fc0b08f8e134f6a17",
+            "fact-3888b9a6dbc75b2efd7b22ac"
+          ]
+        }
+      ],
+      "verificationItems": [
+        {
+          "messageZh": "具体摄像头产品类型规则仍待核实；本稿未执行纯代码校验。",
+          "factIds": []
+        }
+      ]
+    },
+    "metadata": {
+      "requestId": "fictional-generation-sample",
+      "owner": {
+        "corpId": "sample",
+        "userId": "sample"
+      },
+      "surface": {
+        "type": "direct",
+        "id": "sample"
+      },
+      "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+      "planVersion": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939",
+      "ruleVersion": "us-en-2026-09-30.1",
+      "ruleSha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+      "policyVersion": "listing-generation-v1.1",
+      "policySha256": "bde54804dc8165c696b180cbaf311be8d6f2f53de0902310aca451932edd3956",
+      "promptVersion": "listing-us-en-grounded-v1",
+      "promptSha256": "428185c5a20e72019a72d60b3997861c10fbf4282ee3b1c702937537f7d3c97a",
+      "inputSha256": "fa7af3e8453524138ee03a439f2c0e628cc53a6da6a9e9849a6dd737626c1a17",
+      "model": "fixed-mock-v1",
+      "responseId": null
+    },
+    "version": "cd13840c87e706592231240c5d47f0a9b9d217ef28f870a49fb2c13230e86d3c",
+    "sourceTrust": "model_output_untrusted",
+    "validation": "not_run",
+    "notices": [
+      "文案尚未通过纯代码校验；出处引用不等于声明语义已核实。",
+      "未确定具体产品类型，仅加载通用规则；类目要求待核实。",
+      "存在待核实规则；检查这些规则不代表已证明最新平台合规。",
+      "部分要求不能用当前代码自动判定，需在交付中明确列出。",
+      "调研有缺口；以下规划仅使用已取得证据。",
+      "没有有效评论样本，不生成评论关注点或差评原因。"
+    ]
+  },
+  "limitations": [
+    "虚构产品，不能用于发布",
+    "模块 7 校验尚未接入",
+    "未验证钉钉会话和文件投递",
+    "本次未调用竞品工具"
+  ]
+}

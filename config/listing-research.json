@@ -1,0 +1,12 @@
+{
+  "version": "listing-research-v1",
+  "maxCompetitors": 5,
+  "minimumAutoCandidates": 3,
+  "maxDetailCandidates": 12,
+  "maxQueries": 5,
+  "maxSearchResults": 40,
+  "searchPages": 1,
+  "reviewPages": 1,
+  "maxReviewsPerProduct": 30,
+  "maxEvidenceCharacters": 200000
+}

@@ -12,6 +12,8 @@ coverage/
 .env.*
 data/
 outputs/
+output/
+tmp/
 work/
 assets/
 docs/

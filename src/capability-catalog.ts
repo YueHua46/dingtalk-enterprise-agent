@@ -20,6 +20,9 @@ export interface CapabilityDescriptor {
 }
 
 const fixed: CapabilityDescriptor[] = [
+  ...['prepare','research','generate','inspect','revise','export'].map((name): CapabilityDescriptor => ({id:`listing.${name}`,purpose:'美国站英文 Listing 生成、修订和报告交付',risk:name === 'export' ? 'write' : 'read',identity:'dingtalk_user',scope:'当前用户及原会话 Listing 版本',source:'listing',freshness:'static',supports:['有出处的 Listing 参考稿及检查结果'],skills:['amazon-listing-studio']})),
+  ...['search','read','lookup_product','status'].map((name): CapabilityDescriptor => ({ id:`knowledge.${name}`,purpose:'检索并核验当前员工可读的企业知识',risk:'read',identity:'dingtalk_user',scope:'当前 corpId + userId 的知识证据',source:'knowledge',freshness:'live',supports:['SOP、FAQ、标准参数和带位置的文档证据'],skills:['dingtalk-wiki','dingtalk-doc'] })),
+  { id:'knowledge.*',purpose:'当前员工知识检索',risk:'read',identity:'dingtalk_user',scope:'当前员工可读的企业知识',source:'knowledge',freshness:'live',supports:['知识事实'],skills:['dingtalk-wiki'] },
   { id: 'artifact.input', purpose: '读取发起任务提供的附件或已按当前用户权限导入的钉盘文件', risk: 'read', identity: 'dingtalk_user', scope: '当前任务工作区', source: 'artifact', freshness: 'static', supports: ['用户提供文件中的事实'], skills: ['documents', 'pdf', 'spreadsheets', 'presentations'] },
   { id: 'artifact.read', purpose: '登记从任务输入文件提取或 OCR 得到的原文证据', risk: 'read', identity: 'dingtalk_user', scope: '当前任务工作区', source: 'artifact', freshness: 'static', supports: ['文件正文、表格或页面事实'], skills: ['documents', 'pdf', 'spreadsheets', 'presentations'] },
   { id: 'artifact.submit', purpose: '登记并向原会话投递文件成果', risk: 'write', identity: 'dingtalk_user', scope: '当前任务工作区及原会话', source: 'artifact', freshness: 'static', supports: ['文件交付回执'], skills: ['documents', 'pdf', 'spreadsheets', 'presentations'] },

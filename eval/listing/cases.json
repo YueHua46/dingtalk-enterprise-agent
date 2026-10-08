@@ -1,0 +1,8 @@
+[
+  {"id":"grounded_pending_rules","mutation":"none","expected":"needs_verification"},
+  {"id":"invented_resolution","mutation":"numeric","expected":"blocked"},
+  {"id":"missing_source_reference","mutation":"reference","expected":"blocked"},
+  {"id":"unsupported_benefit","mutation":"benefit","expected":"needs_verification"},
+  {"id":"model_tool_injection","mutation":"tool","expected":"generation_failed"},
+  {"id":"malformed_model_json","mutation":"json","expected":"generation_failed"}
+]

@@ -1,0 +1,9 @@
+{
+  "version": "listing-generation-v1.4",
+  "promptVersion": "listing-us-en-grounded-v4",
+  "timeoutMs": 240000,
+  "reasoningEffort": "low",
+  "maxInputBytes": 180000,
+  "maxResponseBytes": 160000,
+  "maxOutputTokens": 10000
+}

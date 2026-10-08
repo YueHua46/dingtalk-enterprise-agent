@@ -7,6 +7,8 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child
 import { promisify } from 'node:util';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { issueModelTaskToken } from './file-worker-auth.js';
+import { listingExportSchema, readListingExportBody } from './listing-export.js';
+import { knowledgeWorkerError } from './knowledge-worker-errors.js';
 
 interface WorkerSettings {
   secret: string;
@@ -16,6 +18,7 @@ interface WorkerSettings {
   codexBin: string;
   port: number;
   maxBytes: number;
+  knowledgeMaxBytes:number;
 }
 
 interface TaskPaths {
@@ -35,8 +38,10 @@ const settings: WorkerSettings = {
   modelProxyUrl: required('WORKER_MODEL_PROXY_URL'),
   codexBin: process.env.CODEX_BIN ?? 'codex',
   port: Number(process.env.FILE_WORKER_PORT ?? 8081),
-  maxBytes: Number(process.env.MEDIA_MAX_BYTES ?? 50 * 1024 * 1024)
+  maxBytes: Number(process.env.MEDIA_MAX_BYTES ?? 50 * 1024 * 1024),
+  knowledgeMaxBytes:Number(process.env.KNOWLEDGE_MAX_SOURCE_BYTES??256*1024*1024)
 };
+if(!Number.isInteger(settings.knowledgeMaxBytes)||settings.knowledgeMaxBytes<=0||settings.knowledgeMaxBytes>256*1024*1024)throw new Error('KNOWLEDGE_SOURCE_LIMIT_INVALID');
 
 const active = new Map<string, ChildProcessWithoutNullStreams>();
 const owners = join(settings.root, '.owners');
@@ -60,11 +65,11 @@ const server = createServer(async (request, response) => {
       const task = await ensureTask(taskId);
       return json(response, 200, { cwd: task.workspace, inputDir: task.input, outputDir: task.output });
     }
-    if (request.method === 'PUT' && segments[2] === 'inputs' && /^[a-f0-9]{64}$/.test(segments[3] ?? '') && segments.length === 4) {
+    if (request.method === 'PUT' && ['inputs','knowledge-inputs'].includes(segments[2]??'') && /^[a-f0-9]{64}$/.test(segments[3] ?? '') && segments.length === 4) {
       const task = await ensureTask(taskId);
       const name = safeName(url.searchParams.get('name') ?? 'attachment');
       const path = join(task.input, `${segments[3]}-${name}`);
-      const { size, sha256 } = await saveInput(request, path, task.uid);
+      const { size, sha256 } = await saveInput(request, path, task.uid,segments[2]==='knowledge-inputs'?settings.knowledgeMaxBytes:settings.maxBytes);
       return json(response, 200, { path, size, sha256 });
     }
     if (request.method === 'POST' && segments[2] === 'outputs' && segments[3] === 'inspect') {
@@ -95,6 +100,42 @@ const server = createServer(async (request, response) => {
       finally { await handle.close().catch(() => undefined); }
       return json(response, 200, { name: basename(file.path), size: file.size, sha256: digest.digest('hex'), pageCount: verification.pageCount });
     }
+    if (request.method === 'POST' && segments[2] === 'knowledge-parse' && segments.length === 3) {
+      const task = await loadTask(taskId);
+      const body = JSON.parse(await readBody(request, 16000)) as { name?: unknown; images?: unknown; manifest?:unknown };
+      if (body.images !== undefined && typeof body.images !== 'boolean') throw new Error('KNOWLEDGE_IMAGE_OPTION_INVALID');
+      if(body.manifest!==undefined&&typeof body.manifest!=='boolean')throw new Error('KNOWLEDGE_IMAGE_OPTION_INVALID');
+      const file = await checkedInput(task, body.name,settings.knowledgeMaxBytes);
+      const manifestDirectory=join(task.tmp,'knowledge-images');
+      const parserSnapshot=join(task.tmp,'knowledge-parse.py');
+      if(body.manifest===true){
+        await ensureOwnedDirectory(manifestDirectory,task.uid);
+        await writeFile(parserSnapshot,await readFile(join(settings.skillsDir,'knowledge_parse.py')),{mode:0o600,flag:'wx'});
+        if(process.getuid?.()===0)await chown(parserSnapshot,task.uid,task.uid);
+      }
+      try {
+        const { stdout } = await execFileAsync('/opt/venv/bin/python', [body.manifest===true?parserSnapshot:join(settings.skillsDir, 'knowledge_parse.py'), file.path,
+          ...(body.manifest===true?['manifest',manifestDirectory]:[body.images === false ? 'false' : 'true'])], {
+          uid: task.uid, gid: task.uid, cwd: task.tmp, timeout: 180_000, maxBuffer: 32 * 1024 * 1024,
+          env: { PATH: process.env.PATH, HOME: task.home, TMPDIR: task.tmp, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }
+        });
+        return json(response, 200, JSON.parse(stdout));
+      } catch(error) {
+        throw new Error(knowledgeWorkerError(error));
+      }
+    }
+    if(request.method==='POST'&&segments[2]==='knowledge-images'&&segments.length===3){
+      const task=await loadTask(taskId);
+      const body=JSON.parse(await readBody(request,4096)) as {cursor?:unknown;count?:unknown};
+      if(!Number.isInteger(body.cursor)||Number(body.cursor)<0||!Number.isInteger(body.count)||Number(body.count)<1||Number(body.count)>4)throw new Error('KNOWLEDGE_IMAGE_BATCH_INVALID');
+      try{
+        const {stdout}=await execFileAsync('/opt/venv/bin/python',[join(task.tmp,'knowledge-parse.py'),join(task.tmp,'knowledge-images'),'batch',String(body.cursor),String(body.count)],{
+          uid:task.uid,gid:task.uid,cwd:task.tmp,timeout:180_000,maxBuffer:32*1024*1024,
+          env:{PATH:process.env.PATH,HOME:task.home,TMPDIR:task.tmp,PYTHONIOENCODING:'utf-8',PYTHONDONTWRITEBYTECODE:'1'}
+        });
+        return json(response,200,JSON.parse(stdout));
+      }catch(error){throw new Error(knowledgeWorkerError(error));}
+    }
     if (request.method === 'PUT' && segments[2] === 'evidence' && /^[A-Za-z0-9._-]{1,120}\.json$/.test(segments[3] ?? '') && !segments[3]!.startsWith('.') && segments.length === 4) {
       const task = await loadTask(taskId);
       const body = await readBody(request, 4 * 1024 * 1024);
@@ -104,6 +145,25 @@ const server = createServer(async (request, response) => {
       await writeFile(path, body, { mode: 0o600 });
       if (process.getuid?.() === 0) await chown(path, task.uid, task.uid);
       return json(response, 200, { path: `evidence/${segments[3]}` });
+    }
+    if (request.method === 'POST' && segments[2] === 'listing-export' && segments.length === 3) {
+      const task = await loadTask(taskId);
+      const payload = listingExportSchema.parse(JSON.parse(await readListingExportBody(request)));
+      // The host task controls delivery identity and conversation, not this rendering payload.
+      const source = join(task.tmp, `listing-${randomUUID()}.json`);
+      await writeFile(source, JSON.stringify(payload), { mode: 0o600, flag: 'wx' });
+      if (process.getuid?.() === 0) await chown(source, task.uid, task.uid);
+      try {
+        const { stdout } = await execFileAsync('/opt/venv/bin/python', [join(settings.skillsDir, 'listing_export.py'), source, task.output], {
+          uid: task.uid, gid: task.uid, cwd: task.tmp, timeout: 90_000, maxBuffer: 64 * 1024,
+          env: { PATH: process.env.PATH, HOME: task.home, TMPDIR: task.tmp, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }
+        });
+        const files = JSON.parse(stdout) as { docx: string; xlsx: string };
+        for (const ext of ['docx', 'xlsx'] as const) {
+          if (dirname(files[ext]) !== task.output || !new RegExp(`^listing-[a-f0-9]{64}\\.${ext}$`).test(basename(files[ext]))) throw new Error('LISTING_EXPORT_OUTPUT_INVALID');
+        }
+        return json(response, 200, { docx: basename(files.docx), xlsx: basename(files.xlsx) });
+      } finally { await rm(source, { force: true }); }
     }
     if (request.method === 'POST' && segments[2] === 'python' && segments.length === 3) {
       const task = await loadTask(taskId);
@@ -272,25 +332,26 @@ function paths(root: string, uid: number): TaskPaths {
   return { root, uid, input: join(root, 'input'), output: join(root, 'output'), tmp: join(root, 'tmp'), home: join(root, 'home'), workspace: join(root, 'workspace') };
 }
 
-async function saveInput(request: IncomingMessage, path: string, uid: number): Promise<{ size: number; sha256: string }> {
+async function saveInput(request: IncomingMessage, path: string, uid: number,maxBytes=settings.maxBytes): Promise<{ size: number; sha256: string }> {
   try {
     if ((await lstat(path)).isSymbolicLink()) throw new Error('INPUT_SYMLINK');
     const existingHandle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let existing: Buffer;
+    let existingSize:number;const existingDigest=createHash('sha256');
     try {
-      if ((await existingHandle.stat()).size > settings.maxBytes) throw new Error('FILE_TOO_LARGE');
-      existing = await existingHandle.readFile();
+      existingSize=(await existingHandle.stat()).size;
+      if (existingSize > maxBytes) throw new Error('FILE_TOO_LARGE');
+      for await(const chunk of existingHandle.createReadStream())existingDigest.update(chunk as Buffer);
     } finally { await existingHandle.close(); }
-    const oldHash = createHash('sha256').update(existing).digest('hex');
+    const oldHash = existingDigest.digest('hex');
     const incoming = createHash('sha256');
     let incomingSize = 0;
     for await (const chunk of request) {
       incomingSize += (chunk as Buffer).length;
-      if (incomingSize > settings.maxBytes) throw new Error('FILE_TOO_LARGE');
+      if (incomingSize > maxBytes) throw new Error('FILE_TOO_LARGE');
       incoming.update(chunk as Buffer);
     }
-    if (incomingSize !== existing.length || incoming.digest('hex') !== oldHash) throw new Error('INPUT_CONFLICT');
-    return { size: existing.length, sha256: oldHash };
+    if (incomingSize !== existingSize || incoming.digest('hex') !== oldHash) throw new Error('INPUT_CONFLICT');
+    return { size: existingSize, sha256: oldHash };
   } catch (error) {
     if (!(error instanceof Error) || !/ENOENT/.test(error.message)) throw error;
   }
@@ -302,7 +363,7 @@ async function saveInput(request: IncomingMessage, path: string, uid: number): P
     for await (const chunk of request) {
       const buffer = chunk as Buffer;
       size += buffer.length;
-      if (size > settings.maxBytes) throw new Error('FILE_TOO_LARGE');
+      if (size > maxBytes) throw new Error('FILE_TOO_LARGE');
       digest.update(buffer);
       let written = 0;
       while (written < buffer.length) written += (await output.write(buffer, written, buffer.length - written)).bytesWritten;
@@ -330,7 +391,7 @@ async function checkedOutput(task: TaskPaths, value: unknown): Promise<{ path: s
   return { path, size: metadata.size };
 }
 
-async function checkedInput(task: TaskPaths, value: unknown): Promise<{ path: string; size: number }> {
+async function checkedInput(task: TaskPaths, value: unknown,maxBytes=settings.maxBytes): Promise<{ path: string; size: number }> {
   if (typeof value !== 'string' || !value || value.includes('..') || value.includes('\\') || value.includes('/') || value.startsWith('/')) throw new Error('INPUT_PATH_INVALID');
   const root = await realpath(task.input);
   const candidates = (await readdir(root)).filter((name) => name === value || name.endsWith(`-${value}`));
@@ -338,7 +399,7 @@ async function checkedInput(task: TaskPaths, value: unknown): Promise<{ path: st
   const path = await realpath(join(root, candidates[0]!));
   if (!path.startsWith(root + sep)) throw new Error('INPUT_OUTSIDE_TASK');
   const metadata = await stat(path);
-  if (!metadata.isFile() || metadata.size > settings.maxBytes) throw new Error('INPUT_INVALID');
+  if (!metadata.isFile() || metadata.size > maxBytes) throw new Error('INPUT_INVALID');
   return { path, size: metadata.size };
 }
 

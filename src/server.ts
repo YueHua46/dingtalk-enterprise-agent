@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import helmet from '@fastify/helmet';
 import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
+import { knowledgeMetrics } from './knowledge-metrics.js';
 import { timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { Config } from './config.js';
@@ -57,7 +58,7 @@ export async function createServer(
   });
   app.get('/metrics', async (_request, reply) => {
     reply.header('content-type', registry.contentType);
-    return registry.metrics();
+    return (await registry.metrics()) + '\n' + (await knowledgeMetrics.metrics());
   });
 
   // Server-to-server only. The web UI must obtain candidates through its own
@@ -87,12 +88,25 @@ export async function createServer(
       const workerTaskId = config.FILE_WORKER_SECRET && typeof request.headers.authorization === 'string'
         ? verifyModelTaskToken(config.FILE_WORKER_SECRET, request.headers.authorization) : undefined;
       if (!workerTaskId) return reply.code(403).send({ error: 'worker_only' });
+      await orchestrator.observeWebSearch?.(workerTaskId, request.body);
       try {
         reply.header('cache-control', 'no-store');
-        return await standaloneSearch.execute(request.body);
+        // A caller-selected session ID must not mix references across tasks.
+        const result = await standaloneSearch.execute({ ...request.body, id: workerTaskId });
+        const evidenceId = await orchestrator.observeWebSearch?.(workerTaskId, request.body, result);
+        if (evidenceId) result.output += `\n本次公开网页查询证据 ID：${evidenceId}；可用于 agent.workflow complete 的 factEvidence。`;
+        return result;
       } catch (error) {
         request.log.warn({ code: error instanceof Error ? error.message : 'WEB_SEARCH_FAILED' }, 'standalone web search failed');
-        return reply.code(502).send({ error: error instanceof Error ? error.message : 'WEB_SEARCH_FAILED' });
+        // Deliver a tool failure to Codex instead of a transport error, which
+        // the client retries automatically and leaves the task spinning.
+        const result = {
+          encrypted_output: null,
+          output: `Web search failed: ${error instanceof Error ? error.message : 'WEB_SEARCH_FAILED'}. No verified search results are available. Do not retry this failed search in this turn; explain the failure to the user and do not invent current news or sources.`,
+          results: []
+        };
+        await orchestrator.observeWebSearch?.(workerTaskId, request.body, result);
+        return result;
       }
     });
     app.post<{ Body: Record<string, unknown> }>('/internal/model/v1/responses', { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {

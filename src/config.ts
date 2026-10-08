@@ -23,6 +23,17 @@ const schema = z.object({
   MODEL_TOOL_COMPAT_PROXY: z.enum(['true', 'false']).default('false'),
   MODEL_API_KEY: z.string().min(1).optional(),
   MODEL_NAME: z.string().default('gpt-5.6-sol'),
+  KNOWLEDGE_ENABLED: z.enum(['true', 'false']).default('false'),
+  KNOWLEDGE_TEST_USERS: z.string().default(''),
+  KNOWLEDGE_DIR: z.string().default('./data/knowledge'),
+  KNOWLEDGE_SYNC_INTERVAL_MS: z.coerce.number().int().min(60_000).default(900_000),
+  KNOWLEDGE_VISION_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(50),
+  KNOWLEDGE_MAX_SOURCE_BYTES:z.coerce.number().int().positive().max(256*1024*1024).default(256*1024*1024),
+  EMBEDDING_BASE_URL: z.preprocess((v) => v === '' ? undefined : v, z.string().url().optional()),
+  EMBEDDING_API_KEY: z.preprocess((v) => v === '' ? undefined : v, z.string().min(1).optional()),
+  EMBEDDING_MODEL: z.string().default('qwen3.7-text-embedding'),
+  RERANK_MODEL: z.preprocess((v) => v === '' ? undefined : v, z.string().min(1).optional()),
+  EMBEDDING_DIMENSIONS: z.coerce.number().refine((v) => v === 1024, 'knowledge schema requires 1024 dimensions').default(1024),
   // Native image generation/editing channel. Kept separate from the text
   // Responses relay because Gemini's native generateContent protocol is not
   // the same wire contract as the Agent model.
@@ -47,6 +58,8 @@ const schema = z.object({
   FILE_WORKER_SKILLS_DIR: z.string().default('/opt/file-skills'),
   DWS_BIN: z.string().default('dws'),
   DWS_CONFIG_DIR: z.string().default('./data/dws'),
+  // Exact hosts whose native DWS connections should bypass inherited proxies.
+  DWS_NO_PROXY: z.string().default('').refine(value => !value.trim() || value.split(',').every(host => /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(host.trim())), 'requires comma-separated hostnames'),
   ZINIAO_BIN: z.string().default('ziniao-cli'),
   ZINIAO_USERS_DIR: z.string().default('./data/ziniao/users'),
   ZINIAO_REMOTE_HOST: z.string().optional(),

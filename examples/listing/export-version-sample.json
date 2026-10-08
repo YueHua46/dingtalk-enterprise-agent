@@ -1,0 +1,3702 @@
+{
+  "version": {
+    "parentId": "6fd1de3829bff60e8d80e53dc791265562f752acdf84122c986eb255159bf3bf",
+    "ordinal": 3,
+    "operationId": "title",
+    "createdAt": "2026-09-30T12:00:00.000Z",
+    "kind": "model",
+    "instruction": "只修改标题用词，保留全部产品事实。",
+    "scope": {
+      "owner": {
+        "corpId": "sample",
+        "userId": "sample"
+      },
+      "surface": {
+        "type": "direct",
+        "id": "sample"
+      },
+      "requestId": "fictional-generation-sample"
+    },
+    "context": {
+      "prepared": {
+        "input": {
+          "mode": "create",
+          "marketplace": "US",
+          "language": "en",
+          "objective": "Draft accurately with clear storage and subscription limitations.",
+          "materials": [
+            {
+              "id": "sample",
+              "kind": "conversation",
+              "reference": "sample",
+              "content": "以下为虚构测试资料，不对应真实在售商品，不可直接用于发布。\n品牌：ExampleBrand\n型号：C1\n产品类型：室内摄像头\n分辨率：2K\n连接方式：2.4 GHz Wi-Fi，不支持 5 GHz\n供电方式：USB 有线供电\n夜视：支持红外夜视，未声明彩色夜视\n存储方式：支持 microSD 卡，卡需另购\n订阅费用：云存储需付费订阅\n安装条件：需连接电源，适用于室内\n包装内容：摄像头、电源线、说明书，不含存储卡\n重量：350 g"
+            }
+          ],
+          "statements": [],
+          "keywords": [
+            "indoor security camera",
+            "2k camera"
+          ],
+          "competitors": {
+            "strategy": "auto",
+            "asins": []
+          }
+        },
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "requestId": "fictional-generation-sample",
+        "originalRequest": "以下为虚构测试资料，不对应真实在售商品，不可直接用于发布。\n品牌：ExampleBrand\n型号：C1\n产品类型：室内摄像头\n分辨率：2K\n连接方式：2.4 GHz Wi-Fi，不支持 5 GHz\n供电方式：USB 有线供电\n夜视：支持红外夜视，未声明彩色夜视\n存储方式：支持 microSD 卡，卡需另购\n订阅费用：云存储需付费订阅\n安装条件：需连接电源，适用于室内\n包装内容：摄像头、电源线、说明书，不含存储卡\n重量：350 g\n",
+        "status": "ready",
+        "issues": []
+      },
+      "book": {
+        "version": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "requestId": "fictional-generation-sample",
+        "facts": [
+          {
+            "id": "fact-0ec4170e6bb7e670093b0555",
+            "attribute": "brand",
+            "rawValue": "ExampleBrand",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "品牌：ExampleBrand",
+              "start": 30,
+              "end": 45
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-e1ac064a3bc77d30a0fa1439",
+            "attribute": "model",
+            "rawValue": "C1",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "型号：C1",
+              "start": 46,
+              "end": 51
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-5f39560677a8b43567ca890e",
+            "attribute": "product_type",
+            "rawValue": "室内摄像头",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "产品类型：室内摄像头",
+              "start": 52,
+              "end": 62
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-0751aff184a622e034a93fe8",
+            "attribute": "resolution",
+            "rawValue": "2K",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "分辨率：2K",
+              "start": 63,
+              "end": 69
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-267f935313a09254f1db363c",
+            "attribute": "connectivity",
+            "rawValue": "2.4 GHz Wi-Fi，不支持 5 GHz",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "连接方式：2.4 GHz Wi-Fi，不支持 5 GHz",
+              "start": 70,
+              "end": 98
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-110e993eecde9bbd10b3883c",
+            "attribute": "power",
+            "rawValue": "USB 有线供电",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "供电方式：USB 有线供电",
+              "start": 99,
+              "end": 112
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-ceda3f68a7b71b2762126994",
+            "attribute": "night_vision",
+            "rawValue": "支持红外夜视，未声明彩色夜视",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "夜视：支持红外夜视，未声明彩色夜视",
+              "start": 113,
+              "end": 130
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-7af0602d349486520967798d",
+            "attribute": "storage",
+            "rawValue": "支持 microSD 卡，卡需另购",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "存储方式：支持 microSD 卡，卡需另购",
+              "start": 131,
+              "end": 153
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-dc2d1a6a4de44f5a15f74bc9",
+            "attribute": "subscription",
+            "rawValue": "云存储需付费订阅",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "订阅费用：云存储需付费订阅",
+              "start": 154,
+              "end": 167
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-e7502d5fc0b08f8e134f6a17",
+            "attribute": "installation",
+            "rawValue": "需连接电源，适用于室内",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "安装条件：需连接电源，适用于室内",
+              "start": 168,
+              "end": 184
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-3888b9a6dbc75b2efd7b22ac",
+            "attribute": "package",
+            "rawValue": "摄像头、电源线、说明书，不含存储卡",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "包装内容：摄像头、电源线、说明书，不含存储卡",
+              "start": 185,
+              "end": 207
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-ca2a0813679c885f15282550",
+            "attribute": "weight",
+            "rawValue": "350 g",
+            "quantity": {
+              "dimension": "mass",
+              "unit": "g",
+              "values": [
+                "350"
+              ],
+              "relation": "exact",
+              "condition": ""
+            },
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "重量：350 g",
+              "start": 208,
+              "end": 216
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          }
+        ],
+        "issues": [],
+        "unresolvedInputIssues": [],
+        "unknownAttributes": [
+          "compatibility",
+          "protection",
+          "battery_life",
+          "charging_time",
+          "length",
+          "width",
+          "height",
+          "frequency",
+          "operating_temperature"
+        ],
+        "status": "ready"
+      },
+      "plan": {
+        "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+        "policyVersion": "camera-planning-v1",
+        "requestId": "fictional-generation-sample",
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "status": "ready_limited",
+        "keywords": [
+          {
+            "keyword": "indoor security camera",
+            "origins": [
+              "user"
+            ],
+            "citations": [],
+            "factIds": [
+              "fact-5f39560677a8b43567ca890e"
+            ],
+            "status": "eligible",
+            "placement": "title",
+            "searchVolume": null,
+            "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+          },
+          {
+            "keyword": "2k camera",
+            "origins": [
+              "user"
+            ],
+            "citations": [],
+            "factIds": [
+              "fact-5f39560677a8b43567ca890e",
+              "fact-0751aff184a622e034a93fe8"
+            ],
+            "status": "eligible",
+            "placement": "title",
+            "searchVolume": null,
+            "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+          }
+        ],
+        "insights": [],
+        "sellingPoints": [
+          {
+            "id": "point-3607613d6f9ac13cdc7cef68",
+            "attribute": "brand",
+            "facts": [
+              {
+                "id": "fact-0ec4170e6bb7e670093b0555",
+                "originalValue": "ExampleBrand",
+                "excerpt": "品牌：ExampleBrand",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-56e68e0d39c7c5b46ce66f04",
+            "attribute": "model",
+            "facts": [
+              {
+                "id": "fact-e1ac064a3bc77d30a0fa1439",
+                "originalValue": "C1",
+                "excerpt": "型号：C1",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-41e55a7cfcc2678453ebbc74",
+            "attribute": "product_type",
+            "facts": [
+              {
+                "id": "fact-5f39560677a8b43567ca890e",
+                "originalValue": "室内摄像头",
+                "excerpt": "产品类型：室内摄像头",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-eff0f03f3af3d86c31698067",
+            "attribute": "resolution",
+            "facts": [
+              {
+                "id": "fact-0751aff184a622e034a93fe8",
+                "originalValue": "2K",
+                "excerpt": "分辨率：2K",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-e8ae5740bc71b7533fff1c7d",
+            "attribute": "connectivity",
+            "facts": [
+              {
+                "id": "fact-267f935313a09254f1db363c",
+                "originalValue": "2.4 GHz Wi-Fi，不支持 5 GHz",
+                "excerpt": "连接方式：2.4 GHz Wi-Fi，不支持 5 GHz",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-af3bd5f6d4077e60c7405b08",
+            "attribute": "power",
+            "facts": [
+              {
+                "id": "fact-110e993eecde9bbd10b3883c",
+                "originalValue": "USB 有线供电",
+                "excerpt": "供电方式：USB 有线供电",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-76d9bf751347042baa4b9bf9",
+            "attribute": "night_vision",
+            "facts": [
+              {
+                "id": "fact-ceda3f68a7b71b2762126994",
+                "originalValue": "支持红外夜视，未声明彩色夜视",
+                "excerpt": "夜视：支持红外夜视，未声明彩色夜视",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-bed6e9e71990a15706ee7599",
+            "attribute": "storage",
+            "facts": [
+              {
+                "id": "fact-7af0602d349486520967798d",
+                "originalValue": "支持 microSD 卡，卡需另购",
+                "excerpt": "存储方式：支持 microSD 卡，卡需另购",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-d09916fcb27b28a994d81840",
+            "attribute": "subscription",
+            "facts": [
+              {
+                "id": "fact-dc2d1a6a4de44f5a15f74bc9",
+                "originalValue": "云存储需付费订阅",
+                "excerpt": "订阅费用：云存储需付费订阅",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-a71a34d98e5c503b6966c58e",
+            "attribute": "installation",
+            "facts": [
+              {
+                "id": "fact-e7502d5fc0b08f8e134f6a17",
+                "originalValue": "需连接电源，适用于室内",
+                "excerpt": "安装条件：需连接电源，适用于室内",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-512bd07e62a9a77dae43a407",
+            "attribute": "package",
+            "facts": [
+              {
+                "id": "fact-3888b9a6dbc75b2efd7b22ac",
+                "originalValue": "摄像头、电源线、说明书，不含存储卡",
+                "excerpt": "包装内容：摄像头、电源线、说明书，不含存储卡",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-8f84f9a00525b7444925255a",
+            "attribute": "weight",
+            "facts": [
+              {
+                "id": "fact-ca2a0813679c885f15282550",
+                "originalValue": "350 g",
+                "excerpt": "重量：350 g",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          }
+        ],
+        "excludedFactIds": [],
+        "notices": [
+          {
+            "code": "research_partial",
+            "message": "调研有缺口；以下规划仅使用已取得证据。"
+          },
+          {
+            "code": "no_review_samples",
+            "message": "没有有效评论样本，不生成评论关注点或差评原因。"
+          }
+        ],
+        "version": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939"
+      },
+      "rules": {
+        "version": "us-en-2026-09-30.1",
+        "sha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+        "marketplace": "US",
+        "language": "en",
+        "coverage": "general_only",
+        "rules": [
+          {
+            "id": "title-length",
+            "origin": "platform",
+            "field": "title",
+            "severity": "blocking",
+            "description": "标题通用候选上限；官方公告说明适用于多数类目，摄像头具体产品类型待核实。",
+            "effectiveOn": "2025-01-21",
+            "source": {
+              "title": "Amazon 标题更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "已查阅公告；未核实 2026 年具体摄像头类目当前要求。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "unicode_code_points",
+              "limit": 200,
+              "comparison": "at_most",
+              "includeSpaces": true
+            }
+          },
+          {
+            "id": "title-characters",
+            "origin": "platform",
+            "field": "title",
+            "severity": "blocking",
+            "description": "候选特殊字符限制，品牌名称例外需由本品品牌事实支持。",
+            "effectiveOn": "2025-01-21",
+            "source": {
+              "title": "Amazon 标题更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "已查阅通用公告；具体类目适用性待核实。"
+            },
+            "check": {
+              "kind": "forbidden_characters",
+              "characters": [
+                "!",
+                "$",
+                "?",
+                "_",
+                "{",
+                "}",
+                "^",
+                "¬",
+                "¦"
+              ],
+              "exception": "brand_name"
+            }
+          },
+          {
+            "id": "title-repeated-words",
+            "origin": "platform",
+            "field": "title",
+            "severity": "blocking",
+            "description": "候选标题重复词限制；例外词表是实现用候选表，不是官方完整词表。",
+            "effectiveOn": "2025-01-21",
+            "source": {
+              "title": "Amazon 标题更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "冠词、介词、连词例外的分词与词表需进一步核实。"
+            },
+            "check": {
+              "kind": "word_repetition",
+              "maxOccurrences": 2,
+              "exceptions": [
+                "a",
+                "an",
+                "the",
+                "and",
+                "or",
+                "for",
+                "with",
+                "of",
+                "in",
+                "on",
+                "at",
+                "to",
+                "by",
+                "from",
+                "but",
+                "as"
+              ],
+              "tokenization": "english_words"
+            }
+          },
+          {
+            "id": "search-terms-length",
+            "origin": "platform",
+            "field": "searchTerms",
+            "severity": "blocking",
+            "description": "搜索词按 UTF-8 字节计数的候选限制，不按字符计数。",
+            "effectiveOn": null,
+            "source": {
+              "title": "Amazon Seller University Listing 优化培训",
+              "reference": "https://m.media-amazon.com/images/G/28/AS/AGS/SU/CN_GS_Listing_Optimization_1.1_General_Guidance_EN.pdf",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "历史官方培训材料；当前具体产品类型、字段及字节计数细节待核实。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "utf8_bytes",
+              "limit": 250,
+              "comparison": "less_than",
+              "includeSpaces": true
+            }
+          },
+          {
+            "id": "bullet-refund-phrases",
+            "origin": "platform",
+            "field": "bullets",
+            "severity": "blocking",
+            "description": "退款保证类表达候选检查；词表仅为公告举例的内部展开，非官方完整禁词表。",
+            "effectiveOn": "2024-08-15",
+            "source": {
+              "title": "Amazon 五点要求更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/65f8e647-977d-49ac-9036-2049b96720b2",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "公告提及退款保证限制，精确表达范围待核实。"
+            },
+            "check": {
+              "kind": "forbidden_phrases",
+              "phrases": [
+                "money-back guarantee",
+                "money back guarantee",
+                "full refund guarantee"
+              ],
+              "matching": "case_insensitive_phrase"
+            }
+          },
+          {
+            "id": "bullet-special-content",
+            "origin": "platform",
+            "field": "bullets",
+            "severity": "advisory",
+            "description": "五点特殊字符和表情要求，完整范围尚未确认。",
+            "effectiveOn": "2024-08-15",
+            "source": {
+              "title": "Amazon 五点要求更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/65f8e647-977d-49ac-9036-2049b96720b2",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "不能凭公告推断全部特殊字符列表。"
+            },
+            "check": {
+              "kind": "manual_check",
+              "guidance": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。"
+            }
+          },
+          {
+            "id": "bullet-count",
+            "origin": "editorial",
+            "field": "bullets",
+            "severity": "blocking",
+            "description": "本能力首版交付五点，这是内部输出约定，不代表所有类目要求。",
+            "effectiveOn": "2026-09-30",
+            "source": {
+              "title": "Listing 项目交付约定",
+              "reference": "docs/listing-module-3.md",
+              "publishedOn": "2026-09-30",
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "verified",
+              "note": "按已接受的首版五点交付范围。",
+              "verifiedBy": "项目交付约定",
+              "verifiedOn": "2026-09-30"
+            },
+            "check": {
+              "kind": "item_count",
+              "count": 5
+            }
+          },
+          {
+            "id": "bullet-length-budget",
+            "origin": "editorial",
+            "field": "bullets",
+            "severity": "advisory",
+            "description": "单条五点草稿长度预算，不作为已核实的平台上限。",
+            "effectiveOn": "2026-09-30",
+            "source": {
+              "title": "内部文案长度候选策略",
+              "reference": "docs/listing-module-3.md",
+              "publishedOn": "2026-09-30",
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "参考已有技能的草稿预算，具体类目平台上限另行核实。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "unicode_code_points",
+              "limit": 500,
+              "comparison": "at_most",
+              "includeSpaces": true
+            }
+          },
+          {
+            "id": "description-length-budget",
+            "origin": "editorial",
+            "field": "description",
+            "severity": "advisory",
+            "description": "描述草稿长度预算，不作为已核实的平台上限。",
+            "effectiveOn": "2026-09-30",
+            "source": {
+              "title": "内部文案长度候选策略",
+              "reference": "docs/listing-module-3.md",
+              "publishedOn": "2026-09-30",
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "参考已有技能的草稿预算，当前产品类型要求待核实。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "unicode_code_points",
+              "limit": 2000,
+              "comparison": "at_most",
+              "includeSpaces": true
+            }
+          }
+        ],
+        "notices": [
+          {
+            "code": "product_type_missing",
+            "message": "未确定具体产品类型，仅加载通用规则；类目要求待核实。",
+            "ruleIds": []
+          },
+          {
+            "code": "rules_pending",
+            "message": "存在待核实规则；检查这些规则不代表已证明最新平台合规。",
+            "ruleIds": [
+              "title-length",
+              "title-characters",
+              "title-repeated-words",
+              "search-terms-length",
+              "bullet-refund-phrases",
+              "bullet-special-content",
+              "bullet-length-budget",
+              "description-length-budget"
+            ]
+          },
+          {
+            "code": "manual_checks_required",
+            "message": "部分要求不能用当前代码自动判定，需在交付中明确列出。",
+            "ruleIds": [
+              "bullet-special-content"
+            ]
+          }
+        ]
+      },
+      "validationPolicy": {
+        "version": "listing-validation-camera-v1",
+        "updatedOn": "2026-09-30",
+        "source": {
+          "title": "内部摄像头事实受控表达策略",
+          "reference": "docs/listing-module-7.md",
+          "retrievedOn": "2026-09-30"
+        },
+        "verification": {
+          "status": "pending",
+          "note": "内部保守表达词表，非 Amazon 官方要求；未覆盖所有参数、语言和表达方式。"
+        },
+        "separators": [
+          " ",
+          ",",
+          ";",
+          ".",
+          ":",
+          "and"
+        ],
+        "duplicateFields": [
+          "bullets"
+        ],
+        "literalAttributes": [
+          "brand",
+          "model"
+        ],
+        "quantityLabels": {
+          "weight": [
+            "Weight"
+          ],
+          "length": [
+            "Length"
+          ],
+          "width": [
+            "Width"
+          ],
+          "height": [
+            "Height"
+          ],
+          "battery_life": [
+            "Battery life"
+          ],
+          "charging_time": [
+            "Charging time"
+          ],
+          "frequency": [
+            "Frequency"
+          ]
+        },
+        "keywordExpressions": [
+          {
+            "phrase": "2k camera",
+            "facts": [
+              {
+                "attribute": "resolution",
+                "value": "2K"
+              },
+              {
+                "attribute": "product_type",
+                "value": "室内摄像头"
+              }
+            ]
+          },
+          {
+            "phrase": "2k camera",
+            "facts": [
+              {
+                "attribute": "resolution",
+                "value": "2K"
+              },
+              {
+                "attribute": "product_type",
+                "value": "室外摄像头"
+              }
+            ]
+          },
+          {
+            "phrase": "4k camera",
+            "facts": [
+              {
+                "attribute": "resolution",
+                "value": "4K"
+              },
+              {
+                "attribute": "product_type",
+                "value": "室内摄像头"
+              }
+            ]
+          }
+        ],
+        "expressions": [
+          {
+            "attribute": "product_type",
+            "value": "室内摄像头",
+            "english": [
+              "Indoor Camera",
+              "Indoor Security Camera"
+            ]
+          },
+          {
+            "attribute": "product_type",
+            "value": "室外摄像头",
+            "english": [
+              "Outdoor Camera",
+              "Outdoor Security Camera"
+            ]
+          },
+          {
+            "attribute": "resolution",
+            "value": "2K",
+            "english": [
+              "2K",
+              "2K resolution"
+            ]
+          },
+          {
+            "attribute": "resolution",
+            "value": "4K",
+            "english": [
+              "4K",
+              "4K resolution"
+            ]
+          },
+          {
+            "attribute": "connectivity",
+            "value": "2.4 GHz Wi-Fi，不支持 5 GHz",
+            "english": [
+              "2.4 GHz Wi-Fi; 5 GHz is not supported",
+              "2.4 GHz Wi-Fi, not compatible with 5 GHz"
+            ]
+          },
+          {
+            "attribute": "power",
+            "value": "USB 有线供电",
+            "english": [
+              "USB wired power",
+              "Powered by a USB cable"
+            ]
+          },
+          {
+            "attribute": "night_vision",
+            "value": "支持红外夜视，未声明彩色夜视",
+            "english": [
+              "Infrared night vision; color night vision is not specified",
+              "Supports infrared night vision; color night vision is not specified"
+            ]
+          },
+          {
+            "attribute": "storage",
+            "value": "支持 microSD 卡，卡需另购",
+            "english": [
+              "Supports microSD storage; card sold separately",
+              "Supports microSD cards; card sold separately"
+            ]
+          },
+          {
+            "attribute": "storage",
+            "value": "microSD 卡需另购",
+            "english": [
+              "microSD card sold separately"
+            ]
+          },
+          {
+            "attribute": "subscription",
+            "value": "云存储需付费订阅",
+            "english": [
+              "Cloud storage requires a paid subscription"
+            ]
+          },
+          {
+            "attribute": "subscription",
+            "value": "云存储需付费",
+            "english": [
+              "Cloud storage requires payment"
+            ]
+          },
+          {
+            "attribute": "installation",
+            "value": "需连接电源，适用于室内",
+            "english": [
+              "Indoor installation requires a power connection",
+              "Indoor use requires a power connection"
+            ]
+          },
+          {
+            "attribute": "package",
+            "value": "摄像头、电源线、说明书，不含存储卡",
+            "english": [
+              "Includes camera, power cable and manual; storage card not included",
+              "Includes camera, power cable, and manual. Storage card not included"
+            ]
+          }
+        ]
+      }
+    },
+    "draft": {
+      "title": {
+        "text": "ExampleBrand C1 2K Indoor Security Camera",
+        "claims": [
+          {
+            "text": "ExampleBrand C1 2K Indoor Security Camera",
+            "start": 0,
+            "end": 41,
+            "factIds": [
+              "fact-0ec4170e6bb7e670093b0555",
+              "fact-e1ac064a3bc77d30a0fa1439",
+              "fact-0751aff184a622e034a93fe8",
+              "fact-5f39560677a8b43567ca890e"
+            ]
+          }
+        ]
+      },
+      "bullets": [
+        {
+          "text": "2K resolution.",
+          "claims": [
+            {
+              "text": "2K resolution.",
+              "start": 0,
+              "end": 14,
+              "factIds": [
+                "fact-0751aff184a622e034a93fe8"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "2.4 GHz Wi-Fi; 5 GHz is not supported.",
+          "claims": [
+            {
+              "text": "2.4 GHz Wi-Fi; 5 GHz is not supported.",
+              "start": 0,
+              "end": 38,
+              "factIds": [
+                "fact-267f935313a09254f1db363c"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "USB wired power. Indoor use requires a power connection.",
+          "claims": [
+            {
+              "text": "USB wired power. Indoor use requires a power connection.",
+              "start": 0,
+              "end": 56,
+              "factIds": [
+                "fact-110e993eecde9bbd10b3883c",
+                "fact-e7502d5fc0b08f8e134f6a17"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Supports microSD cards; card sold separately. Cloud storage requires a paid subscription.",
+          "claims": [
+            {
+              "text": "Supports microSD cards; card sold separately. Cloud storage requires a paid subscription.",
+              "start": 0,
+              "end": 89,
+              "factIds": [
+                "fact-7af0602d349486520967798d",
+                "fact-dc2d1a6a4de44f5a15f74bc9"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Infrared night vision; color night vision is not specified",
+          "claims": [
+            {
+              "text": "Infrared night vision; color night vision is not specified",
+              "start": 0,
+              "end": 58,
+              "factIds": [
+                "fact-ceda3f68a7b71b2762126994"
+              ]
+            }
+          ]
+        }
+      ],
+      "description": {
+        "text": "Includes camera, power cable, and manual. Storage card not included. Weight: 350 g.",
+        "claims": [
+          {
+            "text": "Includes camera, power cable, and manual. Storage card not included.",
+            "start": 0,
+            "end": 68,
+            "factIds": [
+              "fact-3888b9a6dbc75b2efd7b22ac"
+            ]
+          },
+          {
+            "text": "Weight: 350 g.",
+            "start": 69,
+            "end": 83,
+            "factIds": [
+              "fact-ca2a0813679c885f15282550"
+            ]
+          }
+        ]
+      },
+      "searchTerms": {
+        "text": "",
+        "keywordRefs": [],
+        "factIds": []
+      },
+      "changes": [
+        {
+          "field": "title",
+          "reasonZh": "新建简洁标题，仅使用品牌、型号、分辨率和室内摄像头类型，未增加安防效果等未提供的承诺。",
+          "factIds": [
+            "fact-0ec4170e6bb7e670093b0555",
+            "fact-e1ac064a3bc77d30a0fa1439",
+            "fact-5f39560677a8b43567ca890e",
+            "fact-0751aff184a622e034a93fe8"
+          ]
+        },
+        {
+          "field": "bullets",
+          "reasonZh": "按内部约定提供五点，明确不支持5 GHz、需有线供电、存储卡另购和云存储付费订阅；仅表述红外夜视，不推断彩色夜视能力。",
+          "factIds": [
+            "fact-0751aff184a622e034a93fe8",
+            "fact-267f935313a09254f1db363c",
+            "fact-110e993eecde9bbd10b3883c",
+            "fact-e7502d5fc0b08f8e134f6a17",
+            "fact-7af0602d349486520967798d",
+            "fact-dc2d1a6a4de44f5a15f74bc9",
+            "fact-ceda3f68a7b71b2762126994"
+          ]
+        },
+        {
+          "field": "description",
+          "reasonZh": "补充包装内容和350 g重量，并再次明确不含存储卡；未将电源线扩展为包含电源适配器。",
+          "factIds": [
+            "fact-3888b9a6dbc75b2efd7b22ac",
+            "fact-ca2a0813679c885f15282550"
+          ]
+        },
+        {
+          "field": "searchTerms",
+          "reasonZh": "所提供关键词均标注为标题用途，未明确可用于后台搜索词，因此搜索词留空。",
+          "factIds": []
+        },
+        {
+          "field": "bullets",
+          "reasonZh": "补回资料中未声明彩色夜视的限定说明。",
+          "factIds": []
+        },
+        {
+          "field": "title",
+          "reasonZh": "新建简洁标题，仅使用品牌、型号、分辨率和室内摄像头类型，未增加安防效果等未提供的承诺。",
+          "factIds": [
+            "fact-0ec4170e6bb7e670093b0555",
+            "fact-e1ac064a3bc77d30a0fa1439",
+            "fact-5f39560677a8b43567ca890e",
+            "fact-0751aff184a622e034a93fe8"
+          ]
+        }
+      ],
+      "verificationItems": [
+        {
+          "messageZh": "具体摄像头产品类型尚未确定；标题长度、特殊字符、重复词、搜索词字节限制及文案长度预算的当前类目适用性仍待核实，不能据此认定平台合规。",
+          "factIds": []
+        },
+        {
+          "messageZh": "五点人工检查仍待完成：当前使用句点、逗号、分号及Wi-Fi中的连字符，无表情或退款保证声明；特殊字符和保证类表达的完整限制范围仍需运营核实。",
+          "factIds": []
+        },
+        {
+          "messageZh": "资料仅声明红外夜视，未声明彩色夜视；草稿未添加彩色夜视能力，也未将未声明解释为明确不支持。",
+          "factIds": [
+            "fact-ceda3f68a7b71b2762126994"
+          ]
+        },
+        {
+          "messageZh": "资料未提供microSD容量范围、云订阅价格或套餐条件；草稿仅保留存储卡另购和云存储需付费订阅，未推断其他功能是否免费。",
+          "factIds": [
+            "fact-7af0602d349486520967798d",
+            "fact-dc2d1a6a4de44f5a15f74bc9"
+          ]
+        }
+      ]
+    },
+    "validation": {
+      "validatorVersion": "listing-validator-v1",
+      "policyVersion": "listing-validation-camera-v1",
+      "policySha256": "e9caa0661dd9bc4358295c0d51d74575c9b3fbe59ea7db02c978be58d7f24321",
+      "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+      "planVersion": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939",
+      "ruleVersion": "us-en-2026-09-30.1",
+      "ruleSha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+      "draftSha256": "f95020402a349efffb208182127234d87373a5168d80411bdcb068a29e481832",
+      "status": "needs_verification",
+      "codeChecksPassed": true,
+      "platformCompliance": "not_established",
+      "fields": [
+        {
+          "field": "title",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.0",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.1",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.2",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.3",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.4",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "description",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "searchTerms",
+          "status": "needs_verification",
+          "copyable": false
+        }
+      ],
+      "ruleChecks": [
+        {
+          "ruleId": "title-length",
+          "field": "title",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform",
+          "measured": 41
+        },
+        {
+          "ruleId": "title-characters",
+          "field": "title",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "title-repeated-words",
+          "field": "title",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform",
+          "measured": 1
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.0",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.0",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.0",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 14
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.1",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.1",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.1",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 38
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.2",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.2",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.2",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 56
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.3",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.3",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.3",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 89
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.4",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.4",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.4",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 58
+        },
+        {
+          "ruleId": "description-length-budget",
+          "field": "description",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 83
+        },
+        {
+          "ruleId": "search-terms-length",
+          "field": "searchTerms",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform",
+          "measured": 0
+        },
+        {
+          "ruleId": "bullet-count",
+          "field": "bullets",
+          "outcome": "satisfied",
+          "verification": "verified",
+          "origin": "editorial",
+          "measured": 5
+        }
+      ],
+      "claimChecks": [
+        {
+          "field": "title",
+          "start": 0,
+          "end": 41,
+          "factIds": [
+            "fact-0ec4170e6bb7e670093b0555",
+            "fact-e1ac064a3bc77d30a0fa1439",
+            "fact-0751aff184a622e034a93fe8",
+            "fact-5f39560677a8b43567ca890e"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.0",
+          "start": 0,
+          "end": 14,
+          "factIds": [
+            "fact-0751aff184a622e034a93fe8"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.1",
+          "start": 0,
+          "end": 38,
+          "factIds": [
+            "fact-267f935313a09254f1db363c"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.2",
+          "start": 0,
+          "end": 56,
+          "factIds": [
+            "fact-110e993eecde9bbd10b3883c",
+            "fact-e7502d5fc0b08f8e134f6a17"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.3",
+          "start": 0,
+          "end": 89,
+          "factIds": [
+            "fact-7af0602d349486520967798d",
+            "fact-dc2d1a6a4de44f5a15f74bc9"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.4",
+          "start": 0,
+          "end": 58,
+          "factIds": [
+            "fact-ceda3f68a7b71b2762126994"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "description",
+          "start": 0,
+          "end": 68,
+          "factIds": [
+            "fact-3888b9a6dbc75b2efd7b22ac"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "description",
+          "start": 69,
+          "end": 83,
+          "factIds": [
+            "fact-ca2a0813679c885f15282550"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        }
+      ],
+      "issues": [
+        {
+          "code": "expression_policy_pending",
+          "severity": "verification",
+          "field": "task",
+          "message": "内部保守表达词表，非 Amazon 官方要求；未覆盖所有参数、语言和表达方式。",
+          "factIds": []
+        },
+        {
+          "code": "rules_not_fully_verified",
+          "severity": "verification",
+          "field": "task",
+          "message": "配置规则或具体产品类型尚未完整核实，不能宣称平台合规。",
+          "factIds": []
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "title",
+          "message": "已查阅公告；未核实 2026 年具体摄像头类目当前要求。",
+          "factIds": [],
+          "ruleId": "title-length"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "title",
+          "message": "已查阅通用公告；具体类目适用性待核实。",
+          "factIds": [],
+          "ruleId": "title-characters"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "title",
+          "message": "冠词、介词、连词例外的分词与词表需进一步核实。",
+          "factIds": [],
+          "ruleId": "title-repeated-words"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.0",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.0",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.0",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.1",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.1",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.1",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.2",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.2",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.2",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.3",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.3",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.3",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.4",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.4",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.4",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "description",
+          "message": "参考已有技能的草稿预算，当前产品类型要求待核实。",
+          "factIds": [],
+          "ruleId": "description-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "searchTerms",
+          "message": "历史官方培训材料；当前具体产品类型、字段及字节计数细节待核实。",
+          "factIds": [],
+          "ruleId": "search-terms-length"
+        },
+        {
+          "code": "draft_verification_items",
+          "severity": "verification",
+          "field": "task",
+          "message": "草稿包含需要额外补资料或判断的事项，不能宣称全部问题已解决。",
+          "factIds": []
+        }
+      ],
+      "metrics": {
+        "factualClaimCount": 8,
+        "citedClaimCount": 8,
+        "citationCoverage": 1,
+        "controlledClaimCount": 8,
+        "controlledCoverage": 1,
+        "unannotatedSpanCount": 0
+      },
+      "version": "4170a5257a30813d65c40dcb0a39ad82c0e2c370409c2e0ab04ab5cb916509ae"
+    },
+    "generationReceipt": {
+      "status": "draft_unvalidated",
+      "draft": {
+        "title": {
+          "text": "ExampleBrand C1 2K Indoor Security Camera",
+          "claims": [
+            {
+              "text": "ExampleBrand C1 2K Indoor Security Camera",
+              "start": 0,
+              "end": 41,
+              "factIds": [
+                "fact-0ec4170e6bb7e670093b0555",
+                "fact-e1ac064a3bc77d30a0fa1439",
+                "fact-0751aff184a622e034a93fe8",
+                "fact-5f39560677a8b43567ca890e"
+              ]
+            }
+          ]
+        },
+        "bullets": [
+          {
+            "text": "2K resolution.",
+            "claims": [
+              {
+                "text": "2K resolution.",
+                "start": 0,
+                "end": 14,
+                "factIds": [
+                  "fact-0751aff184a622e034a93fe8"
+                ]
+              }
+            ]
+          },
+          {
+            "text": "2.4 GHz Wi-Fi; 5 GHz is not supported.",
+            "claims": [
+              {
+                "text": "2.4 GHz Wi-Fi; 5 GHz is not supported.",
+                "start": 0,
+                "end": 38,
+                "factIds": [
+                  "fact-267f935313a09254f1db363c"
+                ]
+              }
+            ]
+          },
+          {
+            "text": "USB wired power. Indoor use requires a power connection.",
+            "claims": [
+              {
+                "text": "USB wired power. Indoor use requires a power connection.",
+                "start": 0,
+                "end": 56,
+                "factIds": [
+                  "fact-110e993eecde9bbd10b3883c",
+                  "fact-e7502d5fc0b08f8e134f6a17"
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Supports microSD cards; card sold separately. Cloud storage requires a paid subscription.",
+            "claims": [
+              {
+                "text": "Supports microSD cards; card sold separately. Cloud storage requires a paid subscription.",
+                "start": 0,
+                "end": 89,
+                "factIds": [
+                  "fact-7af0602d349486520967798d",
+                  "fact-dc2d1a6a4de44f5a15f74bc9"
+                ]
+              }
+            ]
+          },
+          {
+            "text": "Infrared night vision; color night vision is not specified",
+            "claims": [
+              {
+                "text": "Infrared night vision; color night vision is not specified",
+                "start": 0,
+                "end": 58,
+                "factIds": [
+                  "fact-ceda3f68a7b71b2762126994"
+                ]
+              }
+            ]
+          }
+        ],
+        "description": {
+          "text": "Includes camera, power cable, and manual. Storage card not included. Weight: 350 g.",
+          "claims": [
+            {
+              "text": "Includes camera, power cable, and manual. Storage card not included.",
+              "start": 0,
+              "end": 68,
+              "factIds": [
+                "fact-3888b9a6dbc75b2efd7b22ac"
+              ]
+            },
+            {
+              "text": "Weight: 350 g.",
+              "start": 69,
+              "end": 83,
+              "factIds": [
+                "fact-ca2a0813679c885f15282550"
+              ]
+            }
+          ]
+        },
+        "searchTerms": {
+          "text": "",
+          "keywordRefs": [],
+          "factIds": []
+        },
+        "changes": [
+          {
+            "field": "title",
+            "reasonZh": "新建简洁标题，仅使用品牌、型号、分辨率和室内摄像头类型，未增加安防效果等未提供的承诺。",
+            "factIds": [
+              "fact-0ec4170e6bb7e670093b0555",
+              "fact-e1ac064a3bc77d30a0fa1439",
+              "fact-5f39560677a8b43567ca890e",
+              "fact-0751aff184a622e034a93fe8"
+            ]
+          },
+          {
+            "field": "bullets",
+            "reasonZh": "按内部约定提供五点，明确不支持5 GHz、需有线供电、存储卡另购和云存储付费订阅；仅表述红外夜视，不推断彩色夜视能力。",
+            "factIds": [
+              "fact-0751aff184a622e034a93fe8",
+              "fact-267f935313a09254f1db363c",
+              "fact-110e993eecde9bbd10b3883c",
+              "fact-e7502d5fc0b08f8e134f6a17",
+              "fact-7af0602d349486520967798d",
+              "fact-dc2d1a6a4de44f5a15f74bc9",
+              "fact-ceda3f68a7b71b2762126994"
+            ]
+          },
+          {
+            "field": "description",
+            "reasonZh": "补充包装内容和350 g重量，并再次明确不含存储卡；未将电源线扩展为包含电源适配器。",
+            "factIds": [
+              "fact-3888b9a6dbc75b2efd7b22ac",
+              "fact-ca2a0813679c885f15282550"
+            ]
+          },
+          {
+            "field": "searchTerms",
+            "reasonZh": "所提供关键词均标注为标题用途，未明确可用于后台搜索词，因此搜索词留空。",
+            "factIds": []
+          },
+          {
+            "field": "bullets",
+            "reasonZh": "补回资料中未声明彩色夜视的限定说明。",
+            "factIds": []
+          }
+        ],
+        "verificationItems": [
+          {
+            "messageZh": "具体摄像头产品类型尚未确定；标题长度、特殊字符、重复词、搜索词字节限制及文案长度预算的当前类目适用性仍待核实，不能据此认定平台合规。",
+            "factIds": []
+          },
+          {
+            "messageZh": "五点人工检查仍待完成：当前使用句点、逗号、分号及Wi-Fi中的连字符，无表情或退款保证声明；特殊字符和保证类表达的完整限制范围仍需运营核实。",
+            "factIds": []
+          },
+          {
+            "messageZh": "资料仅声明红外夜视，未声明彩色夜视；草稿未添加彩色夜视能力，也未将未声明解释为明确不支持。",
+            "factIds": [
+              "fact-ceda3f68a7b71b2762126994"
+            ]
+          },
+          {
+            "messageZh": "资料未提供microSD容量范围、云订阅价格或套餐条件；草稿仅保留存储卡另购和云存储需付费订阅，未推断其他功能是否免费。",
+            "factIds": [
+              "fact-7af0602d349486520967798d",
+              "fact-dc2d1a6a4de44f5a15f74bc9"
+            ]
+          }
+        ]
+      },
+      "metadata": {
+        "requestId": "fictional-generation-sample",
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+        "planVersion": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939",
+        "ruleVersion": "us-en-2026-09-30.1",
+        "ruleSha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+        "policyVersion": "listing-generation-v1.2",
+        "policySha256": "2a8414c35d57e3c244eb1afe9aec1c52bb29709331277ff410f70199531cc6e6",
+        "promptVersion": "listing-us-en-grounded-v2",
+        "promptSha256": "47cae36f4b7279269b235cf3c07bb2c84f0af5e823355e8c6ddb7fba852b13ff",
+        "inputSha256": "c59474d7d78454e90477eb6649a25f35eb31126a95449a713a8ed21d07500145",
+        "model": "fixed-revision-mock",
+        "responseId": null
+      },
+      "version": "11590ef1234a82478bb5f018c8ef81fd85b66848e071eaaf755b160f9ef0cda1",
+      "sourceTrust": "model_output_untrusted",
+      "validation": "not_run",
+      "notices": [
+        "文案尚未通过纯代码校验；出处引用不等于声明语义已核实。",
+        "未确定具体产品类型，仅加载通用规则；类目要求待核实。",
+        "存在待核实规则；检查这些规则不代表已证明最新平台合规。",
+        "部分要求不能用当前代码自动判定，需在交付中明确列出。",
+        "调研有缺口；以下规划仅使用已取得证据。",
+        "没有有效评论样本，不生成评论关注点或差评原因。"
+      ]
+    },
+    "difference": {
+      "fields": [
+        {
+          "field": "title",
+          "before": "ExampleBrand C1 2K Indoor Camera",
+          "after": "ExampleBrand C1 2K Indoor Security Camera",
+          "citationsChanged": true,
+          "edit": {
+            "prefixCodePoints": 26,
+            "removed": "",
+            "added": "Security ",
+            "suffixCodePoints": 6
+          }
+        }
+      ],
+      "notesChanged": true,
+      "context": {
+        "factsChanged": false,
+        "planChanged": false,
+        "rulesChanged": false,
+        "validationPolicyChanged": false
+      },
+      "checks": {
+        "beforeStatus": "needs_verification",
+        "afterStatus": "needs_verification",
+        "addedIssues": [],
+        "resolvedIssues": []
+      }
+    },
+    "id": "c0293003886a1eeddd2bfd92698313c0b24f5ff45a6d5ed8d4b308d3ee356652"
+  },
+  "previous": {
+    "parentId": "51fca6aa2526228c2bd42a9bd0eeb425e255f2b8f06951e8c82d457440d1c071",
+    "ordinal": 2,
+    "operationId": "fix-night",
+    "createdAt": "2026-09-30T12:00:00.000Z",
+    "kind": "manual",
+    "instruction": "补回资料中未声明彩色夜视的限定说明。",
+    "scope": {
+      "owner": {
+        "corpId": "sample",
+        "userId": "sample"
+      },
+      "surface": {
+        "type": "direct",
+        "id": "sample"
+      },
+      "requestId": "fictional-generation-sample"
+    },
+    "context": {
+      "prepared": {
+        "input": {
+          "mode": "create",
+          "marketplace": "US",
+          "language": "en",
+          "objective": "Draft accurately with clear storage and subscription limitations.",
+          "materials": [
+            {
+              "id": "sample",
+              "kind": "conversation",
+              "reference": "sample",
+              "content": "以下为虚构测试资料，不对应真实在售商品，不可直接用于发布。\n品牌：ExampleBrand\n型号：C1\n产品类型：室内摄像头\n分辨率：2K\n连接方式：2.4 GHz Wi-Fi，不支持 5 GHz\n供电方式：USB 有线供电\n夜视：支持红外夜视，未声明彩色夜视\n存储方式：支持 microSD 卡，卡需另购\n订阅费用：云存储需付费订阅\n安装条件：需连接电源，适用于室内\n包装内容：摄像头、电源线、说明书，不含存储卡\n重量：350 g"
+            }
+          ],
+          "statements": [],
+          "keywords": [
+            "indoor security camera",
+            "2k camera"
+          ],
+          "competitors": {
+            "strategy": "auto",
+            "asins": []
+          }
+        },
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "requestId": "fictional-generation-sample",
+        "originalRequest": "以下为虚构测试资料，不对应真实在售商品，不可直接用于发布。\n品牌：ExampleBrand\n型号：C1\n产品类型：室内摄像头\n分辨率：2K\n连接方式：2.4 GHz Wi-Fi，不支持 5 GHz\n供电方式：USB 有线供电\n夜视：支持红外夜视，未声明彩色夜视\n存储方式：支持 microSD 卡，卡需另购\n订阅费用：云存储需付费订阅\n安装条件：需连接电源，适用于室内\n包装内容：摄像头、电源线、说明书，不含存储卡\n重量：350 g\n",
+        "status": "ready",
+        "issues": []
+      },
+      "book": {
+        "version": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "requestId": "fictional-generation-sample",
+        "facts": [
+          {
+            "id": "fact-0ec4170e6bb7e670093b0555",
+            "attribute": "brand",
+            "rawValue": "ExampleBrand",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "品牌：ExampleBrand",
+              "start": 30,
+              "end": 45
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-e1ac064a3bc77d30a0fa1439",
+            "attribute": "model",
+            "rawValue": "C1",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "型号：C1",
+              "start": 46,
+              "end": 51
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-5f39560677a8b43567ca890e",
+            "attribute": "product_type",
+            "rawValue": "室内摄像头",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "产品类型：室内摄像头",
+              "start": 52,
+              "end": 62
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-0751aff184a622e034a93fe8",
+            "attribute": "resolution",
+            "rawValue": "2K",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "分辨率：2K",
+              "start": 63,
+              "end": 69
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-267f935313a09254f1db363c",
+            "attribute": "connectivity",
+            "rawValue": "2.4 GHz Wi-Fi，不支持 5 GHz",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "连接方式：2.4 GHz Wi-Fi，不支持 5 GHz",
+              "start": 70,
+              "end": 98
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-110e993eecde9bbd10b3883c",
+            "attribute": "power",
+            "rawValue": "USB 有线供电",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "供电方式：USB 有线供电",
+              "start": 99,
+              "end": 112
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-ceda3f68a7b71b2762126994",
+            "attribute": "night_vision",
+            "rawValue": "支持红外夜视，未声明彩色夜视",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "夜视：支持红外夜视，未声明彩色夜视",
+              "start": 113,
+              "end": 130
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-7af0602d349486520967798d",
+            "attribute": "storage",
+            "rawValue": "支持 microSD 卡，卡需另购",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "存储方式：支持 microSD 卡，卡需另购",
+              "start": 131,
+              "end": 153
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-dc2d1a6a4de44f5a15f74bc9",
+            "attribute": "subscription",
+            "rawValue": "云存储需付费订阅",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "订阅费用：云存储需付费订阅",
+              "start": 154,
+              "end": 167
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-e7502d5fc0b08f8e134f6a17",
+            "attribute": "installation",
+            "rawValue": "需连接电源，适用于室内",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "安装条件：需连接电源，适用于室内",
+              "start": 168,
+              "end": 184
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-3888b9a6dbc75b2efd7b22ac",
+            "attribute": "package",
+            "rawValue": "摄像头、电源线、说明书，不含存储卡",
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "包装内容：摄像头、电源线、说明书，不含存储卡",
+              "start": 185,
+              "end": 207
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          },
+          {
+            "id": "fact-ca2a0813679c885f15282550",
+            "attribute": "weight",
+            "rawValue": "350 g",
+            "quantity": {
+              "dimension": "mass",
+              "unit": "g",
+              "values": [
+                "350"
+              ],
+              "relation": "exact",
+              "condition": ""
+            },
+            "provenance": {
+              "sourceId": "sample",
+              "sourceKind": "conversation",
+              "reference": "sample",
+              "sourceSha256": "8e5590b31aa368c8f645b667b26cd371f80a03547532c7c0fa92f231d486b560",
+              "excerpt": "重量：350 g",
+              "start": 208,
+              "end": 216
+            },
+            "trust": "user_provided",
+            "status": "usable"
+          }
+        ],
+        "issues": [],
+        "unresolvedInputIssues": [],
+        "unknownAttributes": [
+          "compatibility",
+          "protection",
+          "battery_life",
+          "charging_time",
+          "length",
+          "width",
+          "height",
+          "frequency",
+          "operating_temperature"
+        ],
+        "status": "ready"
+      },
+      "plan": {
+        "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+        "policyVersion": "camera-planning-v1",
+        "requestId": "fictional-generation-sample",
+        "owner": {
+          "corpId": "sample",
+          "userId": "sample"
+        },
+        "surface": {
+          "type": "direct",
+          "id": "sample"
+        },
+        "status": "ready_limited",
+        "keywords": [
+          {
+            "keyword": "indoor security camera",
+            "origins": [
+              "user"
+            ],
+            "citations": [],
+            "factIds": [
+              "fact-5f39560677a8b43567ca890e"
+            ],
+            "status": "eligible",
+            "placement": "title",
+            "searchVolume": null,
+            "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+          },
+          {
+            "keyword": "2k camera",
+            "origins": [
+              "user"
+            ],
+            "citations": [],
+            "factIds": [
+              "fact-5f39560677a8b43567ca890e",
+              "fact-0751aff184a622e034a93fe8"
+            ],
+            "status": "eligible",
+            "placement": "title",
+            "searchVolume": null,
+            "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+          }
+        ],
+        "insights": [],
+        "sellingPoints": [
+          {
+            "id": "point-3607613d6f9ac13cdc7cef68",
+            "attribute": "brand",
+            "facts": [
+              {
+                "id": "fact-0ec4170e6bb7e670093b0555",
+                "originalValue": "ExampleBrand",
+                "excerpt": "品牌：ExampleBrand",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-56e68e0d39c7c5b46ce66f04",
+            "attribute": "model",
+            "facts": [
+              {
+                "id": "fact-e1ac064a3bc77d30a0fa1439",
+                "originalValue": "C1",
+                "excerpt": "型号：C1",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-41e55a7cfcc2678453ebbc74",
+            "attribute": "product_type",
+            "facts": [
+              {
+                "id": "fact-5f39560677a8b43567ca890e",
+                "originalValue": "室内摄像头",
+                "excerpt": "产品类型：室内摄像头",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-eff0f03f3af3d86c31698067",
+            "attribute": "resolution",
+            "facts": [
+              {
+                "id": "fact-0751aff184a622e034a93fe8",
+                "originalValue": "2K",
+                "excerpt": "分辨率：2K",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-e8ae5740bc71b7533fff1c7d",
+            "attribute": "connectivity",
+            "facts": [
+              {
+                "id": "fact-267f935313a09254f1db363c",
+                "originalValue": "2.4 GHz Wi-Fi，不支持 5 GHz",
+                "excerpt": "连接方式：2.4 GHz Wi-Fi，不支持 5 GHz",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-af3bd5f6d4077e60c7405b08",
+            "attribute": "power",
+            "facts": [
+              {
+                "id": "fact-110e993eecde9bbd10b3883c",
+                "originalValue": "USB 有线供电",
+                "excerpt": "供电方式：USB 有线供电",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-76d9bf751347042baa4b9bf9",
+            "attribute": "night_vision",
+            "facts": [
+              {
+                "id": "fact-ceda3f68a7b71b2762126994",
+                "originalValue": "支持红外夜视，未声明彩色夜视",
+                "excerpt": "夜视：支持红外夜视，未声明彩色夜视",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-bed6e9e71990a15706ee7599",
+            "attribute": "storage",
+            "facts": [
+              {
+                "id": "fact-7af0602d349486520967798d",
+                "originalValue": "支持 microSD 卡，卡需另购",
+                "excerpt": "存储方式：支持 microSD 卡，卡需另购",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-d09916fcb27b28a994d81840",
+            "attribute": "subscription",
+            "facts": [
+              {
+                "id": "fact-dc2d1a6a4de44f5a15f74bc9",
+                "originalValue": "云存储需付费订阅",
+                "excerpt": "订阅费用：云存储需付费订阅",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-a71a34d98e5c503b6966c58e",
+            "attribute": "installation",
+            "facts": [
+              {
+                "id": "fact-e7502d5fc0b08f8e134f6a17",
+                "originalValue": "需连接电源，适用于室内",
+                "excerpt": "安装条件：需连接电源，适用于室内",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-512bd07e62a9a77dae43a407",
+            "attribute": "package",
+            "facts": [
+              {
+                "id": "fact-3888b9a6dbc75b2efd7b22ac",
+                "originalValue": "摄像头、电源线、说明书，不含存储卡",
+                "excerpt": "包装内容：摄像头、电源线、说明书，不含存储卡",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          },
+          {
+            "id": "point-8f84f9a00525b7444925255a",
+            "attribute": "weight",
+            "facts": [
+              {
+                "id": "fact-ca2a0813679c885f15282550",
+                "originalValue": "350 g",
+                "excerpt": "重量：350 g",
+                "sourceId": "sample",
+                "trust": "user_provided"
+              }
+            ],
+            "status": "grounded",
+            "emphasis": "product_information",
+            "relatedTopicIds": [],
+            "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+          }
+        ],
+        "excludedFactIds": [],
+        "notices": [
+          {
+            "code": "research_partial",
+            "message": "调研有缺口；以下规划仅使用已取得证据。"
+          },
+          {
+            "code": "no_review_samples",
+            "message": "没有有效评论样本，不生成评论关注点或差评原因。"
+          }
+        ],
+        "version": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939"
+      },
+      "rules": {
+        "version": "us-en-2026-09-30.1",
+        "sha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+        "marketplace": "US",
+        "language": "en",
+        "coverage": "general_only",
+        "rules": [
+          {
+            "id": "title-length",
+            "origin": "platform",
+            "field": "title",
+            "severity": "blocking",
+            "description": "标题通用候选上限；官方公告说明适用于多数类目，摄像头具体产品类型待核实。",
+            "effectiveOn": "2025-01-21",
+            "source": {
+              "title": "Amazon 标题更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "已查阅公告；未核实 2026 年具体摄像头类目当前要求。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "unicode_code_points",
+              "limit": 200,
+              "comparison": "at_most",
+              "includeSpaces": true
+            }
+          },
+          {
+            "id": "title-characters",
+            "origin": "platform",
+            "field": "title",
+            "severity": "blocking",
+            "description": "候选特殊字符限制，品牌名称例外需由本品品牌事实支持。",
+            "effectiveOn": "2025-01-21",
+            "source": {
+              "title": "Amazon 标题更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "已查阅通用公告；具体类目适用性待核实。"
+            },
+            "check": {
+              "kind": "forbidden_characters",
+              "characters": [
+                "!",
+                "$",
+                "?",
+                "_",
+                "{",
+                "}",
+                "^",
+                "¬",
+                "¦"
+              ],
+              "exception": "brand_name"
+            }
+          },
+          {
+            "id": "title-repeated-words",
+            "origin": "platform",
+            "field": "title",
+            "severity": "blocking",
+            "description": "候选标题重复词限制；例外词表是实现用候选表，不是官方完整词表。",
+            "effectiveOn": "2025-01-21",
+            "source": {
+              "title": "Amazon 标题更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/b2b15728-0d43-453e-974f-59eb63f73059",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "冠词、介词、连词例外的分词与词表需进一步核实。"
+            },
+            "check": {
+              "kind": "word_repetition",
+              "maxOccurrences": 2,
+              "exceptions": [
+                "a",
+                "an",
+                "the",
+                "and",
+                "or",
+                "for",
+                "with",
+                "of",
+                "in",
+                "on",
+                "at",
+                "to",
+                "by",
+                "from",
+                "but",
+                "as"
+              ],
+              "tokenization": "english_words"
+            }
+          },
+          {
+            "id": "search-terms-length",
+            "origin": "platform",
+            "field": "searchTerms",
+            "severity": "blocking",
+            "description": "搜索词按 UTF-8 字节计数的候选限制，不按字符计数。",
+            "effectiveOn": null,
+            "source": {
+              "title": "Amazon Seller University Listing 优化培训",
+              "reference": "https://m.media-amazon.com/images/G/28/AS/AGS/SU/CN_GS_Listing_Optimization_1.1_General_Guidance_EN.pdf",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "历史官方培训材料；当前具体产品类型、字段及字节计数细节待核实。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "utf8_bytes",
+              "limit": 250,
+              "comparison": "less_than",
+              "includeSpaces": true
+            }
+          },
+          {
+            "id": "bullet-refund-phrases",
+            "origin": "platform",
+            "field": "bullets",
+            "severity": "blocking",
+            "description": "退款保证类表达候选检查；词表仅为公告举例的内部展开，非官方完整禁词表。",
+            "effectiveOn": "2024-08-15",
+            "source": {
+              "title": "Amazon 五点要求更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/65f8e647-977d-49ac-9036-2049b96720b2",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "公告提及退款保证限制，精确表达范围待核实。"
+            },
+            "check": {
+              "kind": "forbidden_phrases",
+              "phrases": [
+                "money-back guarantee",
+                "money back guarantee",
+                "full refund guarantee"
+              ],
+              "matching": "case_insensitive_phrase"
+            }
+          },
+          {
+            "id": "bullet-special-content",
+            "origin": "platform",
+            "field": "bullets",
+            "severity": "advisory",
+            "description": "五点特殊字符和表情要求，完整范围尚未确认。",
+            "effectiveOn": "2024-08-15",
+            "source": {
+              "title": "Amazon 五点要求更新公告",
+              "reference": "https://sellercentral.amazon.com/seller-forums/discussions/t/65f8e647-977d-49ac-9036-2049b96720b2",
+              "publishedOn": null,
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "不能凭公告推断全部特殊字符列表。"
+            },
+            "check": {
+              "kind": "manual_check",
+              "guidance": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。"
+            }
+          },
+          {
+            "id": "bullet-count",
+            "origin": "editorial",
+            "field": "bullets",
+            "severity": "blocking",
+            "description": "本能力首版交付五点，这是内部输出约定，不代表所有类目要求。",
+            "effectiveOn": "2026-09-30",
+            "source": {
+              "title": "Listing 项目交付约定",
+              "reference": "docs/listing-module-3.md",
+              "publishedOn": "2026-09-30",
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "verified",
+              "note": "按已接受的首版五点交付范围。",
+              "verifiedBy": "项目交付约定",
+              "verifiedOn": "2026-09-30"
+            },
+            "check": {
+              "kind": "item_count",
+              "count": 5
+            }
+          },
+          {
+            "id": "bullet-length-budget",
+            "origin": "editorial",
+            "field": "bullets",
+            "severity": "advisory",
+            "description": "单条五点草稿长度预算，不作为已核实的平台上限。",
+            "effectiveOn": "2026-09-30",
+            "source": {
+              "title": "内部文案长度候选策略",
+              "reference": "docs/listing-module-3.md",
+              "publishedOn": "2026-09-30",
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "参考已有技能的草稿预算，具体类目平台上限另行核实。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "unicode_code_points",
+              "limit": 500,
+              "comparison": "at_most",
+              "includeSpaces": true
+            }
+          },
+          {
+            "id": "description-length-budget",
+            "origin": "editorial",
+            "field": "description",
+            "severity": "advisory",
+            "description": "描述草稿长度预算，不作为已核实的平台上限。",
+            "effectiveOn": "2026-09-30",
+            "source": {
+              "title": "内部文案长度候选策略",
+              "reference": "docs/listing-module-3.md",
+              "publishedOn": "2026-09-30",
+              "retrievedOn": "2026-09-30"
+            },
+            "verification": {
+              "status": "pending",
+              "note": "参考已有技能的草稿预算，当前产品类型要求待核实。"
+            },
+            "check": {
+              "kind": "length",
+              "unit": "unicode_code_points",
+              "limit": 2000,
+              "comparison": "at_most",
+              "includeSpaces": true
+            }
+          }
+        ],
+        "notices": [
+          {
+            "code": "product_type_missing",
+            "message": "未确定具体产品类型，仅加载通用规则；类目要求待核实。",
+            "ruleIds": []
+          },
+          {
+            "code": "rules_pending",
+            "message": "存在待核实规则；检查这些规则不代表已证明最新平台合规。",
+            "ruleIds": [
+              "title-length",
+              "title-characters",
+              "title-repeated-words",
+              "search-terms-length",
+              "bullet-refund-phrases",
+              "bullet-special-content",
+              "bullet-length-budget",
+              "description-length-budget"
+            ]
+          },
+          {
+            "code": "manual_checks_required",
+            "message": "部分要求不能用当前代码自动判定，需在交付中明确列出。",
+            "ruleIds": [
+              "bullet-special-content"
+            ]
+          }
+        ]
+      },
+      "validationPolicy": {
+        "version": "listing-validation-camera-v1",
+        "updatedOn": "2026-09-30",
+        "source": {
+          "title": "内部摄像头事实受控表达策略",
+          "reference": "docs/listing-module-7.md",
+          "retrievedOn": "2026-09-30"
+        },
+        "verification": {
+          "status": "pending",
+          "note": "内部保守表达词表，非 Amazon 官方要求；未覆盖所有参数、语言和表达方式。"
+        },
+        "separators": [
+          " ",
+          ",",
+          ";",
+          ".",
+          ":",
+          "and"
+        ],
+        "duplicateFields": [
+          "bullets"
+        ],
+        "literalAttributes": [
+          "brand",
+          "model"
+        ],
+        "quantityLabels": {
+          "weight": [
+            "Weight"
+          ],
+          "length": [
+            "Length"
+          ],
+          "width": [
+            "Width"
+          ],
+          "height": [
+            "Height"
+          ],
+          "battery_life": [
+            "Battery life"
+          ],
+          "charging_time": [
+            "Charging time"
+          ],
+          "frequency": [
+            "Frequency"
+          ]
+        },
+        "keywordExpressions": [
+          {
+            "phrase": "2k camera",
+            "facts": [
+              {
+                "attribute": "resolution",
+                "value": "2K"
+              },
+              {
+                "attribute": "product_type",
+                "value": "室内摄像头"
+              }
+            ]
+          },
+          {
+            "phrase": "2k camera",
+            "facts": [
+              {
+                "attribute": "resolution",
+                "value": "2K"
+              },
+              {
+                "attribute": "product_type",
+                "value": "室外摄像头"
+              }
+            ]
+          },
+          {
+            "phrase": "4k camera",
+            "facts": [
+              {
+                "attribute": "resolution",
+                "value": "4K"
+              },
+              {
+                "attribute": "product_type",
+                "value": "室内摄像头"
+              }
+            ]
+          }
+        ],
+        "expressions": [
+          {
+            "attribute": "product_type",
+            "value": "室内摄像头",
+            "english": [
+              "Indoor Camera",
+              "Indoor Security Camera"
+            ]
+          },
+          {
+            "attribute": "product_type",
+            "value": "室外摄像头",
+            "english": [
+              "Outdoor Camera",
+              "Outdoor Security Camera"
+            ]
+          },
+          {
+            "attribute": "resolution",
+            "value": "2K",
+            "english": [
+              "2K",
+              "2K resolution"
+            ]
+          },
+          {
+            "attribute": "resolution",
+            "value": "4K",
+            "english": [
+              "4K",
+              "4K resolution"
+            ]
+          },
+          {
+            "attribute": "connectivity",
+            "value": "2.4 GHz Wi-Fi，不支持 5 GHz",
+            "english": [
+              "2.4 GHz Wi-Fi; 5 GHz is not supported",
+              "2.4 GHz Wi-Fi, not compatible with 5 GHz"
+            ]
+          },
+          {
+            "attribute": "power",
+            "value": "USB 有线供电",
+            "english": [
+              "USB wired power",
+              "Powered by a USB cable"
+            ]
+          },
+          {
+            "attribute": "night_vision",
+            "value": "支持红外夜视，未声明彩色夜视",
+            "english": [
+              "Infrared night vision; color night vision is not specified",
+              "Supports infrared night vision; color night vision is not specified"
+            ]
+          },
+          {
+            "attribute": "storage",
+            "value": "支持 microSD 卡，卡需另购",
+            "english": [
+              "Supports microSD storage; card sold separately",
+              "Supports microSD cards; card sold separately"
+            ]
+          },
+          {
+            "attribute": "storage",
+            "value": "microSD 卡需另购",
+            "english": [
+              "microSD card sold separately"
+            ]
+          },
+          {
+            "attribute": "subscription",
+            "value": "云存储需付费订阅",
+            "english": [
+              "Cloud storage requires a paid subscription"
+            ]
+          },
+          {
+            "attribute": "subscription",
+            "value": "云存储需付费",
+            "english": [
+              "Cloud storage requires payment"
+            ]
+          },
+          {
+            "attribute": "installation",
+            "value": "需连接电源，适用于室内",
+            "english": [
+              "Indoor installation requires a power connection",
+              "Indoor use requires a power connection"
+            ]
+          },
+          {
+            "attribute": "package",
+            "value": "摄像头、电源线、说明书，不含存储卡",
+            "english": [
+              "Includes camera, power cable and manual; storage card not included",
+              "Includes camera, power cable, and manual. Storage card not included"
+            ]
+          }
+        ]
+      }
+    },
+    "draft": {
+      "title": {
+        "text": "ExampleBrand C1 2K Indoor Camera",
+        "claims": [
+          {
+            "text": "ExampleBrand C1 2K Indoor Camera",
+            "start": 0,
+            "end": 32,
+            "factIds": [
+              "fact-0ec4170e6bb7e670093b0555",
+              "fact-e1ac064a3bc77d30a0fa1439",
+              "fact-0751aff184a622e034a93fe8",
+              "fact-5f39560677a8b43567ca890e"
+            ]
+          }
+        ]
+      },
+      "bullets": [
+        {
+          "text": "2K resolution.",
+          "claims": [
+            {
+              "text": "2K resolution.",
+              "start": 0,
+              "end": 14,
+              "factIds": [
+                "fact-0751aff184a622e034a93fe8"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "2.4 GHz Wi-Fi; 5 GHz is not supported.",
+          "claims": [
+            {
+              "text": "2.4 GHz Wi-Fi; 5 GHz is not supported.",
+              "start": 0,
+              "end": 38,
+              "factIds": [
+                "fact-267f935313a09254f1db363c"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "USB wired power. Indoor use requires a power connection.",
+          "claims": [
+            {
+              "text": "USB wired power. Indoor use requires a power connection.",
+              "start": 0,
+              "end": 56,
+              "factIds": [
+                "fact-110e993eecde9bbd10b3883c",
+                "fact-e7502d5fc0b08f8e134f6a17"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Supports microSD cards; card sold separately. Cloud storage requires a paid subscription.",
+          "claims": [
+            {
+              "text": "Supports microSD cards; card sold separately. Cloud storage requires a paid subscription.",
+              "start": 0,
+              "end": 89,
+              "factIds": [
+                "fact-7af0602d349486520967798d",
+                "fact-dc2d1a6a4de44f5a15f74bc9"
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Infrared night vision; color night vision is not specified",
+          "claims": [
+            {
+              "text": "Infrared night vision; color night vision is not specified",
+              "start": 0,
+              "end": 58,
+              "factIds": [
+                "fact-ceda3f68a7b71b2762126994"
+              ]
+            }
+          ]
+        }
+      ],
+      "description": {
+        "text": "Includes camera, power cable, and manual. Storage card not included. Weight: 350 g.",
+        "claims": [
+          {
+            "text": "Includes camera, power cable, and manual. Storage card not included.",
+            "start": 0,
+            "end": 68,
+            "factIds": [
+              "fact-3888b9a6dbc75b2efd7b22ac"
+            ]
+          },
+          {
+            "text": "Weight: 350 g.",
+            "start": 69,
+            "end": 83,
+            "factIds": [
+              "fact-ca2a0813679c885f15282550"
+            ]
+          }
+        ]
+      },
+      "searchTerms": {
+        "text": "",
+        "keywordRefs": [],
+        "factIds": []
+      },
+      "changes": [
+        {
+          "field": "title",
+          "reasonZh": "新建简洁标题，仅使用品牌、型号、分辨率和室内摄像头类型，未增加安防效果等未提供的承诺。",
+          "factIds": [
+            "fact-0ec4170e6bb7e670093b0555",
+            "fact-e1ac064a3bc77d30a0fa1439",
+            "fact-5f39560677a8b43567ca890e",
+            "fact-0751aff184a622e034a93fe8"
+          ]
+        },
+        {
+          "field": "bullets",
+          "reasonZh": "按内部约定提供五点，明确不支持5 GHz、需有线供电、存储卡另购和云存储付费订阅；仅表述红外夜视，不推断彩色夜视能力。",
+          "factIds": [
+            "fact-0751aff184a622e034a93fe8",
+            "fact-267f935313a09254f1db363c",
+            "fact-110e993eecde9bbd10b3883c",
+            "fact-e7502d5fc0b08f8e134f6a17",
+            "fact-7af0602d349486520967798d",
+            "fact-dc2d1a6a4de44f5a15f74bc9",
+            "fact-ceda3f68a7b71b2762126994"
+          ]
+        },
+        {
+          "field": "description",
+          "reasonZh": "补充包装内容和350 g重量，并再次明确不含存储卡；未将电源线扩展为包含电源适配器。",
+          "factIds": [
+            "fact-3888b9a6dbc75b2efd7b22ac",
+            "fact-ca2a0813679c885f15282550"
+          ]
+        },
+        {
+          "field": "searchTerms",
+          "reasonZh": "所提供关键词均标注为标题用途，未明确可用于后台搜索词，因此搜索词留空。",
+          "factIds": []
+        },
+        {
+          "field": "bullets",
+          "reasonZh": "补回资料中未声明彩色夜视的限定说明。",
+          "factIds": []
+        }
+      ],
+      "verificationItems": [
+        {
+          "messageZh": "具体摄像头产品类型尚未确定；标题长度、特殊字符、重复词、搜索词字节限制及文案长度预算的当前类目适用性仍待核实，不能据此认定平台合规。",
+          "factIds": []
+        },
+        {
+          "messageZh": "五点人工检查仍待完成：当前使用句点、逗号、分号及Wi-Fi中的连字符，无表情或退款保证声明；特殊字符和保证类表达的完整限制范围仍需运营核实。",
+          "factIds": []
+        },
+        {
+          "messageZh": "资料仅声明红外夜视，未声明彩色夜视；草稿未添加彩色夜视能力，也未将未声明解释为明确不支持。",
+          "factIds": [
+            "fact-ceda3f68a7b71b2762126994"
+          ]
+        },
+        {
+          "messageZh": "资料未提供microSD容量范围、云订阅价格或套餐条件；草稿仅保留存储卡另购和云存储需付费订阅，未推断其他功能是否免费。",
+          "factIds": [
+            "fact-7af0602d349486520967798d",
+            "fact-dc2d1a6a4de44f5a15f74bc9"
+          ]
+        }
+      ]
+    },
+    "validation": {
+      "validatorVersion": "listing-validator-v1",
+      "policyVersion": "listing-validation-camera-v1",
+      "policySha256": "e9caa0661dd9bc4358295c0d51d74575c9b3fbe59ea7db02c978be58d7f24321",
+      "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+      "planVersion": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939",
+      "ruleVersion": "us-en-2026-09-30.1",
+      "ruleSha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+      "draftSha256": "968a259f1c3a14223f9da6a55d63f3b7fe3e6096d4b17a4e71726266c42e38ff",
+      "status": "needs_verification",
+      "codeChecksPassed": true,
+      "platformCompliance": "not_established",
+      "fields": [
+        {
+          "field": "title",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.0",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.1",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.2",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.3",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "bullets.4",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "description",
+          "status": "needs_verification",
+          "copyable": false
+        },
+        {
+          "field": "searchTerms",
+          "status": "needs_verification",
+          "copyable": false
+        }
+      ],
+      "ruleChecks": [
+        {
+          "ruleId": "title-length",
+          "field": "title",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform",
+          "measured": 32
+        },
+        {
+          "ruleId": "title-characters",
+          "field": "title",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "title-repeated-words",
+          "field": "title",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform",
+          "measured": 1
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.0",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.0",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.0",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 14
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.1",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.1",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.1",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 38
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.2",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.2",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.2",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 56
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.3",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.3",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.3",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 89
+        },
+        {
+          "ruleId": "bullet-refund-phrases",
+          "field": "bullets.4",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-special-content",
+          "field": "bullets.4",
+          "outcome": "manual",
+          "verification": "pending",
+          "origin": "platform"
+        },
+        {
+          "ruleId": "bullet-length-budget",
+          "field": "bullets.4",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 58
+        },
+        {
+          "ruleId": "description-length-budget",
+          "field": "description",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "editorial",
+          "measured": 83
+        },
+        {
+          "ruleId": "search-terms-length",
+          "field": "searchTerms",
+          "outcome": "satisfied",
+          "verification": "pending",
+          "origin": "platform",
+          "measured": 0
+        },
+        {
+          "ruleId": "bullet-count",
+          "field": "bullets",
+          "outcome": "satisfied",
+          "verification": "verified",
+          "origin": "editorial",
+          "measured": 5
+        }
+      ],
+      "claimChecks": [
+        {
+          "field": "title",
+          "start": 0,
+          "end": 32,
+          "factIds": [
+            "fact-0ec4170e6bb7e670093b0555",
+            "fact-e1ac064a3bc77d30a0fa1439",
+            "fact-0751aff184a622e034a93fe8",
+            "fact-5f39560677a8b43567ca890e"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.0",
+          "start": 0,
+          "end": 14,
+          "factIds": [
+            "fact-0751aff184a622e034a93fe8"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.1",
+          "start": 0,
+          "end": 38,
+          "factIds": [
+            "fact-267f935313a09254f1db363c"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.2",
+          "start": 0,
+          "end": 56,
+          "factIds": [
+            "fact-110e993eecde9bbd10b3883c",
+            "fact-e7502d5fc0b08f8e134f6a17"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.3",
+          "start": 0,
+          "end": 89,
+          "factIds": [
+            "fact-7af0602d349486520967798d",
+            "fact-dc2d1a6a4de44f5a15f74bc9"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "bullets.4",
+          "start": 0,
+          "end": 58,
+          "factIds": [
+            "fact-ceda3f68a7b71b2762126994"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "description",
+          "start": 0,
+          "end": 68,
+          "factIds": [
+            "fact-3888b9a6dbc75b2efd7b22ac"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        },
+        {
+          "field": "description",
+          "start": 69,
+          "end": 83,
+          "factIds": [
+            "fact-ca2a0813679c885f15282550"
+          ],
+          "citationValid": true,
+          "support": "controlled"
+        }
+      ],
+      "issues": [
+        {
+          "code": "expression_policy_pending",
+          "severity": "verification",
+          "field": "task",
+          "message": "内部保守表达词表，非 Amazon 官方要求；未覆盖所有参数、语言和表达方式。",
+          "factIds": []
+        },
+        {
+          "code": "rules_not_fully_verified",
+          "severity": "verification",
+          "field": "task",
+          "message": "配置规则或具体产品类型尚未完整核实，不能宣称平台合规。",
+          "factIds": []
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "title",
+          "message": "已查阅公告；未核实 2026 年具体摄像头类目当前要求。",
+          "factIds": [],
+          "ruleId": "title-length"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "title",
+          "message": "已查阅通用公告；具体类目适用性待核实。",
+          "factIds": [],
+          "ruleId": "title-characters"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "title",
+          "message": "冠词、介词、连词例外的分词与词表需进一步核实。",
+          "factIds": [],
+          "ruleId": "title-repeated-words"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.0",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.0",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.0",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.1",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.1",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.1",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.2",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.2",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.2",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.3",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.3",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.3",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.4",
+          "message": "公告提及退款保证限制，精确表达范围待核实。",
+          "factIds": [],
+          "ruleId": "bullet-refund-phrases"
+        },
+        {
+          "code": "manual_rule",
+          "severity": "verification",
+          "field": "bullets.4",
+          "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+          "factIds": [],
+          "ruleId": "bullet-special-content"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "bullets.4",
+          "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+          "factIds": [],
+          "ruleId": "bullet-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "description",
+          "message": "参考已有技能的草稿预算，当前产品类型要求待核实。",
+          "factIds": [],
+          "ruleId": "description-length-budget"
+        },
+        {
+          "code": "rule_pending",
+          "severity": "verification",
+          "field": "searchTerms",
+          "message": "历史官方培训材料；当前具体产品类型、字段及字节计数细节待核实。",
+          "factIds": [],
+          "ruleId": "search-terms-length"
+        },
+        {
+          "code": "draft_verification_items",
+          "severity": "verification",
+          "field": "task",
+          "message": "草稿包含需要额外补资料或判断的事项，不能宣称全部问题已解决。",
+          "factIds": []
+        }
+      ],
+      "metrics": {
+        "factualClaimCount": 8,
+        "citedClaimCount": 8,
+        "citationCoverage": 1,
+        "controlledClaimCount": 8,
+        "controlledCoverage": 1,
+        "unannotatedSpanCount": 0
+      },
+      "version": "b72f6dfe46c5fcbe2cf08c74357f1d464025fdb337d44b40b73e4ac4f923d521"
+    },
+    "generationReceipt": null,
+    "difference": {
+      "fields": [
+        {
+          "field": "bullets.4",
+          "before": "Infrared night vision.",
+          "after": "Infrared night vision; color night vision is not specified",
+          "citationsChanged": true,
+          "edit": {
+            "prefixCodePoints": 21,
+            "removed": ".",
+            "added": "; color night vision is not specified",
+            "suffixCodePoints": 0
+          }
+        }
+      ],
+      "notesChanged": true,
+      "context": {
+        "factsChanged": false,
+        "planChanged": false,
+        "rulesChanged": false,
+        "validationPolicyChanged": false
+      },
+      "checks": {
+        "beforeStatus": "needs_verification",
+        "afterStatus": "needs_verification",
+        "addedIssues": [],
+        "resolvedIssues": [
+          {
+            "code": "unsupported_expression",
+            "severity": "verification",
+            "field": "bullets.4",
+            "message": "表达未匹配本品对应属性的完整受控事实表达，含数字时也不能凭数字相同判定支持。",
+            "factIds": [
+              "fact-ceda3f68a7b71b2762126994"
+            ]
+          }
+        ]
+      }
+    },
+    "id": "6fd1de3829bff60e8d80e53dc791265562f752acdf84122c986eb255159bf3bf"
+  }
+}

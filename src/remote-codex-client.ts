@@ -54,6 +54,7 @@ export class RemoteCodexClient implements CodexClientLike {
     try {
       await rpc.request('thread/resume', {
         threadId, cwd: `/work/tasks/${taskId}`, sandbox: 'danger-full-access', approvalPolicy: 'never',
+        model: this.config.MODEL_NAME,
         developerInstructions: workerInstructions(), dynamicTools: workerTools, config: { web_search: 'live' }
       });
       this.fresh.set(taskId, { threadId, rpc });
@@ -81,6 +82,7 @@ export class RemoteCodexClient implements CodexClientLike {
     try {
       if (!initial || initial.threadId !== threadId) await rpc.request('thread/resume', {
         threadId, cwd: `/work/tasks/${taskId}`, sandbox: 'danger-full-access', approvalPolicy: 'never',
+        model: this.config.MODEL_NAME,
         developerInstructions: workerInstructions(), dynamicTools: workerTools, config: { web_search: 'live' }
       });
       const manifest = prepared.map((item) => `${item.name} | ${item.contentType ?? 'unknown'} | ${item.size ?? 0} bytes | SHA-256 ${item.sha256 ?? 'unknown'} | ${item.localPath ?? item.extractedText ?? '附件缺少可用下载凭证，无法读取'}`).join('\n');
@@ -98,6 +100,12 @@ export class RemoteCodexClient implements CodexClientLike {
       this.active.delete(threadId);
       rpc.close();
     }
+  }
+  public async renderListing(taskId: string, payload: import('./listing-export.js').ListingExport, signal?: AbortSignal): Promise<{ docx: string; xlsx: string }> {
+    const response = await fetch(this.url(`/tasks/${taskId}/listing-export`), { method: 'POST', headers: { ...this.headers(), 'content-type': 'application/json' },
+      body: JSON.stringify(payload), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(100_000)]) : AbortSignal.timeout(100_000) });
+    if (!response.ok) throw new Error('LISTING_EXPORT_RENDER_FAILED');
+    return await response.json() as { docx: string; xlsx: string };
   }
   public async inspectOutput(taskId: string, path: string): Promise<Output> {
     return this.api(`/tasks/${taskId}/outputs/inspect`, { method: 'POST', body: JSON.stringify({ path }), headers: { 'content-type': 'application/json' } }) as Promise<Output>;

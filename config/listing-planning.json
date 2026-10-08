@@ -1,0 +1,28 @@
+{
+  "version": "camera-planning-v1",
+  "maxTitleKeywords": 2,
+  "maxBulletKeywords": 5,
+  "negativeMarkers": ["不", "未", "无", "not", "no", "without"],
+  "keywords": [
+    { "phrase": "indoor security camera", "priority": 1, "guards": [{ "attribute": "product_type", "terms": ["室内摄像头", "indoor security camera", "indoor camera"] }] },
+    { "phrase": "security camera", "priority": 2, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "security camera"] }] },
+    { "phrase": "outdoor security camera", "priority": 3, "guards": [{ "attribute": "product_type", "terms": ["室外摄像头", "户外摄像头", "outdoor camera", "outdoor security camera"] }] },
+    { "phrase": "wifi camera", "priority": 4, "guards": [{ "attribute": "connectivity", "terms": ["wi-fi", "wifi"] }] },
+    { "phrase": "night vision camera", "priority": 5, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "camera"] }, { "attribute": "night_vision", "terms": ["支持红外夜视", "infrared night vision", "supports night vision"] }] },
+    { "phrase": "2k camera", "priority": 6, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "camera"] }, { "attribute": "resolution", "terms": ["2k"] }] },
+    { "phrase": "4k camera", "priority": 7, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "camera"] }, { "attribute": "resolution", "terms": ["4k"] }] },
+    { "phrase": "poe camera", "priority": 8, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "camera"] }, { "attribute": "power", "terms": ["poe"] }] },
+    { "phrase": "battery camera", "priority": 9, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "camera"] }, { "attribute": "power", "terms": ["电池供电", "battery powered"] }] },
+    { "phrase": "color night vision", "priority": 10, "guards": [{ "attribute": "night_vision", "terms": ["支持彩色夜视", "supports color night vision"] }] },
+    { "phrase": "waterproof camera", "priority": 11, "guards": [{ "attribute": "product_type", "terms": ["摄像头", "camera"] }, { "attribute": "protection", "terms": ["防水", "waterproof"] }] }
+  ],
+  "topics": [
+    { "id": "installation", "label": "安装与设置", "terms": ["setup", "installation", "install", "安装", "设置"], "attributes": ["installation", "package"] },
+    { "id": "connection", "label": "网络连接", "terms": ["wifi", "wi-fi", "connection", "网络", "连接"], "attributes": ["connectivity", "compatibility"] },
+    { "id": "night", "label": "夜视表现", "terms": ["night vision", "夜视"], "attributes": ["night_vision"] },
+    { "id": "storage", "label": "存储与配件", "terms": ["sd card", "microsd", "storage", "存储", "存储卡"], "attributes": ["storage", "package"] },
+    { "id": "subscription", "label": "订阅与费用", "terms": ["subscription", "monthly fee", "订阅", "月费"], "attributes": ["subscription"] },
+    { "id": "power", "label": "供电与续航", "terms": ["battery", "power cable", "电池", "续航", "供电"], "attributes": ["power", "battery_life"] },
+    { "id": "resolution", "label": "画面清晰度", "terms": ["resolution", "image quality", "分辨率", "画质"], "attributes": ["resolution"] }
+  ]
+}

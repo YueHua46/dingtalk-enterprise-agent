@@ -49,7 +49,7 @@ try {
   const hasSource = /https?:\/\//i.test(text);
   console.log(JSON.stringify({ hasSource, webToolCalls, grounded, eventTypes, answerPreview: text.slice(0, 1000) }));
   assert.ok(webToolCalls > 0, 'Model did not choose web.search');
-  assert.ok(grounded, 'Gemini did not return native grounding');
+  assert.ok(grounded, 'Provider did not return verified native search sources');
   assert.ok(hasSource, 'No source URL in final answer');
 } finally {
   await client.stop();

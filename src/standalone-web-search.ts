@@ -6,7 +6,7 @@ type SearchCommand = { q?: unknown; domains?: unknown; recency?: unknown };
 type PageCommand = { ref_id?: unknown; pattern?: unknown; id?: unknown };
 type Session = { refs: Map<string, string>; links: Map<string, string>; updatedAt: number; nextRef: number };
 
-/** Implements Codex's alpha/search wire contract using Gemini's native Google Search grounding. */
+/** Implements Codex's alpha/search wire contract using verified native search results. */
 export class StandaloneWebSearch {
   private readonly sessions = new Map<string, Session>();
 
@@ -23,8 +23,21 @@ export class StandaloneWebSearch {
     const output: string[] = [];
     const results: Array<Record<string, unknown>> = [];
 
-    const queries = this.array<SearchCommand>(input.search_query, 4);
-    for (const item of queries) {
+    const batch = async <T>(name: string, items: T[], action: (item: T) => Promise<void>) => {
+      // Bound concurrency while preserving successful siblings in mixed batches.
+      for (let offset = 0; offset < items.length; offset += 3) {
+        const outcomes = await Promise.allSettled(items.slice(offset, offset + 3).map(action));
+        outcomes.forEach((outcome, index) => {
+          if (outcome.status === 'rejected') {
+            const error = outcome.reason instanceof Error ? outcome.reason.message : 'WEB_SEARCH_FAILED';
+            output.push(`${name}[${offset + index}] failed: ${error}. Use the successful results; do not repeat this failed operation in this turn.`);
+            results.push({ type: 'error', operation: name, message: error });
+          }
+        });
+      }
+    };
+    const queries = this.array<SearchCommand>(input.search_query, 8);
+    await batch('search_query', queries, async (item) => {
       if (typeof item.q !== 'string' || !item.q.trim() || item.q.length > 500) throw new Error('WEB_SEARCH_INVALID_QUERY');
       const domains = Array.isArray(item.domains) ? item.domains.filter((value): value is string => typeof value === 'string').slice(0, 5) : [];
       const recency = typeof item.recency === 'number' && item.recency > 0 ? ` Recent ${Math.min(item.recency, 365)} days.` : '';
@@ -37,30 +50,32 @@ export class StandaloneWebSearch {
         results.push({ type: 'text_result', ref_id: refId, url: source.url, title: source.title });
         output.push(`${refId}: ${source.title} — ${source.url}`);
       }
-    }
+    });
 
-    for (const item of this.array<PageCommand>(input.open, 4)) {
+    await batch('open', this.array<PageCommand>(input.open, 20), async (item) => {
       const refId = this.ref(item.ref_id);
       const url = this.resolve(session, refId);
       const page = await this.readPublicPage(url);
       const viewRef = `turn1view${session.nextRef++}`;
       session.refs.set(viewRef, page.url);
-      output.push(`Open ${refId} -> ${viewRef} (${page.url})\nTitle: ${page.title}\n${page.text}`);
+      results.push({ type: 'text_result', ref_id: viewRef, url: page.url, title: page.title });
+      output.push(`Open ${refId} -> ${viewRef} (${page.url})\nTitle: ${page.title}\n${page.text.slice(0, 6_000)}`);
       page.links.forEach((link, index) => {
         session.links.set(`${viewRef}:${index}`, link.url);
         output.push(`[${index}] ${link.title}: ${link.url}`);
       });
-    }
+    });
 
-    for (const item of this.array<PageCommand>(input.find, 4)) {
+    await batch('find', this.array<PageCommand>(input.find, 20), async (item) => {
       const refId = this.ref(item.ref_id);
       if (typeof item.pattern !== 'string' || !item.pattern || item.pattern.length > 200) throw new Error('WEB_SEARCH_INVALID_PATTERN');
       const page = await this.readPublicPage(this.resolve(session, refId));
+      results.push({ type: 'text_result', ref_id: refId, url: page.url, title: page.title });
       const at = page.text.toLowerCase().indexOf(item.pattern.toLowerCase());
       output.push(`Find ${JSON.stringify(item.pattern)} in ${page.url}: ${at < 0 ? 'not found' : page.text.slice(Math.max(0, at - 300), at + item.pattern.length + 500)}`);
-    }
+    });
 
-    for (const item of this.array<PageCommand>(input.click, 4)) {
+    await batch('click', this.array<PageCommand>(input.click, 20), async (item) => {
       const refId = this.ref(item.ref_id);
       if (!Number.isInteger(item.id) || Number(item.id) < 0) throw new Error('WEB_SEARCH_INVALID_LINK_ID');
       const url = session.links.get(`${refId}:${item.id}`);
@@ -68,18 +83,19 @@ export class StandaloneWebSearch {
       const page = await this.readPublicPage(url);
       const viewRef = `turn1view${session.nextRef++}`;
       session.refs.set(viewRef, page.url);
-      output.push(`Click [${item.id}] from ${refId} -> ${viewRef} (${page.url})\nTitle: ${page.title}\n${page.text}`);
+      results.push({ type: 'text_result', ref_id: viewRef, url: page.url, title: page.title });
+      output.push(`Click [${item.id}] from ${refId} -> ${viewRef} (${page.url})\nTitle: ${page.title}\n${page.text.slice(0, 6_000)}`);
       page.links.forEach((link, index) => {
         session.links.set(`${viewRef}:${index}`, link.url);
         output.push(`[${index}] ${link.title}: ${link.url}`);
       });
-    }
+    });
 
     const unsupported = ['screenshot', 'finance', 'weather', 'sports', 'time', 'image_query']
       .filter((key) => Array.isArray(input[key]) && (input[key] as unknown[]).length > 0);
-    if (unsupported.length) output.push(`Unsupported web.run commands on this Gemini search backend: ${unsupported.join(', ')}.`);
+    if (unsupported.length) output.push(`Unsupported web.run commands on this search backend: ${unsupported.join(', ')}.`);
     if (!output.length) throw new Error('WEB_SEARCH_NO_SUPPORTED_COMMAND');
-    const limit = input.response_length === 'short' ? 8_000 : input.response_length === 'long' ? 48_000 : 24_000;
+    const limit = input.response_length === 'short' ? 6_000 : input.response_length === 'long' ? 24_000 : 14_000;
     return { encrypted_output: null, output: output.join('\n\n').slice(0, limit), results };
   }
 

@@ -23,6 +23,7 @@ COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
 COPY scripts ./scripts
 COPY skills ./skills
+COPY config ./config
 COPY workspaces ./workspaces
 COPY AGENTS.md ./AGENTS.md
 RUN useradd --create-home --uid 10001 agent \

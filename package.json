@@ -12,6 +12,7 @@
     "start": "node dist/main.js",
     "migrate": "node scripts/migrate.mjs",
     "test": "vitest run",
+    "eval:listing": "npm run build && node scripts/eval-listing.mjs",
     "test:watch": "vitest",
     "test:postgres": "node scripts/postgres-smoke.mjs",
     "test:queue": "node scripts/queue-smoke.mjs",
@@ -27,7 +28,15 @@
     "auth:dws-bot": "node scripts/dws-bot-login.mjs",
     "generate:codex-schema": "codex app-server generate-ts --out schemas/codex",
     "generate:codex-json-schema": "codex app-server generate-json-schema --out schemas/codex",
-    "generate:dws-capabilities": "node scripts/generate-dws-capabilities.mjs"
+    "generate:dws-capabilities": "node scripts/generate-dws-capabilities.mjs",
+    "test:knowledge:live": "npm run build && node --env-file=.env scripts/knowledge-live-smoke.mjs",
+    "test:knowledge:postgres": "npm run build && node scripts/knowledge-postgres-smoke.mjs",
+    "test:knowledge:queue": "npm run build && node scripts/knowledge-queue-smoke.mjs",
+    "knowledge:ingest:all": "npm run build && node --env-file=.env scripts/knowledge-ingest-all.mjs",
+    "test:knowledge:rerank": "npm run build && node --env-file=.env scripts/knowledge-rerank-smoke.mjs",
+    "test:knowledge:pdf": "npm run build && node --env-file=.env scripts/knowledge-pdf-smoke.mjs",
+    "test:knowledge:vision": "npm run build && node --env-file=.env scripts/knowledge-vision-smoke.mjs",
+    "test:knowledge:answer": "npm run build && node --env-file=.env scripts/knowledge-answer-smoke.mjs"
   },
   "dependencies": {
     "@fastify/helmet": "^13.0.2",

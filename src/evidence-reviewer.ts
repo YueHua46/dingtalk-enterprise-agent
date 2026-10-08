@@ -138,6 +138,8 @@ function buildPayload(input: ReviewInput): Record<string, unknown> {
   const missingExcerpts = successful.filter((item) => !input.excerpts[item.id]).map((item) => item.id);
   return {
     request: input.request,
+    currentTime: new Date().toISOString(),
+    conversationTimezone: 'Asia/Shanghai',
     ...(input.quotedText ? { quotedText: input.quotedText } : {}),
     ...(input.clarificationAnswer ? { clarificationAnswer: input.clarificationAnswer } : {}),
     ...(input.contract ? { contract: input.contract } : {}),

@@ -1,0 +1,7 @@
+{
+  "version": "listing-revision-v1",
+  "maxInstructionCharacters": 8000,
+  "maxOperationIdCharacters": 128,
+  "maxPatchBytes": 200000,
+  "maxStoredVersionBytes": 2000000
+}

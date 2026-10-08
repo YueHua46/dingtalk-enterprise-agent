@@ -6,6 +6,7 @@ import type { Config } from './config.js';
 import type { ConversationSurface, DwsIdentity, UserIdentity } from './types.js';
 import { sameIdentity } from './security.js';
 import { generatedDwsCapabilities } from './generated-dws-capabilities.js';
+import { dwsReadGate } from './dws-read-gate.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,13 +31,13 @@ function isConfirmationDiagnostic(category: string, code: string, message: strin
 /** Map a CLI failure (JSON on stdout with ok:false, or a non-zero exit with a
  *  JSON diagnostic on stderr) into an error the orchestrator can branch on.
  */
-function asCliCommandError(outputs: Array<{ text: string }>): Error {
+export function asCliCommandError(outputs: Array<{ text: string }>): Error {
   for (const output of outputs) {
     const parsed = safeJson(output.text);
     const err = parsed?.error;
     if (!err && parsed?.ok !== false) continue;
-    const category = String(err?.category ?? '');
-    const code = String(err?.code ?? '');
+    const category = String(err?.category ?? err?.type ?? '');
+    const code = String(err?.code ?? err?.exit_code ?? '');
     const message = String(err?.message ?? 'DWS command failed');
     if (isConfirmationDiagnostic(category, code, message)) {
       return new Error(DWS_CLI_CONFIRMATION_REQUIRED + '[' + (category || code || 'gate') + ']: ' + message);
@@ -45,10 +46,39 @@ function asCliCommandError(outputs: Array<{ text: string }>): Error {
   for (const output of outputs) {
     const parsed = safeJson(output.text);
     if (parsed?.ok === false || parsed?.error) {
-      return new Error(String(parsed?.error?.message ?? 'DWS command failed'));
+      return Object.assign(new Error(String(parsed?.error?.message ?? 'DWS command failed')), {
+        ...boundedDwsDiagnostic(parsed.error),
+        dwsCode: String(parsed?.error?.code ?? parsed?.error?.exit_code ?? ''),
+        dwsCategory: String(parsed?.error?.category ?? parsed?.error?.type ?? ''),
+        dwsRetryable: parsed?.error?.retryable === true,
+        dwsReason: /^[a-z_]{1,80}$/.test(String(parsed?.error?.reason??''))?String(parsed.error.reason):undefined,
+        dwsJobId: /^[A-Za-z0-9_-]{1,128}$/.test(String(parsed?.error?.details?.jobId??''))?String(parsed.error.details.jobId):undefined,
+        dwsCauseCode: String(parsed?.error?.cause??'').match(/<Code>([A-Za-z][A-Za-z0-9]{0,63})<\/Code>/)?.[1]
+      });
     }
   }
   return new Error('DWS command failed');
+}
+
+// Extract only identifiers, never the original response, parameters or tokens.
+function boundedDwsDiagnostic(error:any):Record<string,unknown>{
+ let business:any;
+ const message=typeof error?.message==='string'?error.message:'';
+ const start=message.indexOf('{');
+ if(start>=0)business=safeJson(message.slice(start));
+ const safe=(v:unknown)=>typeof v==='string'&&/^[A-Za-z0-9_.:-]{1,128}$/.test(v)?v:undefined;
+ return {dwsServerCode:safe(error?.server_error_code??business?.error?.code??business?.code),
+  dwsRequestId:safe(error?.trace_id??business?.requestId??business?.traceId??business?.error?.requestId),
+  dwsOperation:safe(error?.operation),dwsTransportKind:transportKind(String(error?.cause??''))};
+}
+function transportKind(cause:string):string|undefined{
+ if(/TLS handshake timeout/i.test(cause))return 'tls_handshake_timeout';
+ if(/connection.*reset|ECONNRESET/i.test(cause))return 'connection_reset';
+ if(/no such host|ENOTFOUND|EAI_AGAIN/i.test(cause))return 'dns_failure';
+ if(/connection refused|ECONNREFUSED/i.test(cause))return 'connection_refused';
+ if(/i\/o timeout|connect.*timeout/i.test(cause))return 'connect_timeout';
+ if(/Client\.Timeout|context deadline exceeded/i.test(cause))return 'request_timeout';
+ return undefined;
 }
 
 function authInitError(detail: string, output: string): Error {
@@ -212,16 +242,17 @@ export class DwsBroker {
       .filter((value: string | undefined): value is string => Boolean(value));
   }
 
-  public async downloadDriveFile(user: UserIdentity, nodeId: string, directory: string, fileName: string): Promise<unknown> {
+  public async downloadDriveFile(user: UserIdentity, nodeId: string, directory: string, fileName: string, options: {background?:boolean} = {}): Promise<unknown> {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(nodeId)) throw new Error('DRIVE_NODE_ID_INVALID');
     const identity = await this.status(user);
     if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
-    const result = await this.run([
+    let result:{stdout:string;stderr:string};
+    try{result = await dwsReadGate.run(() => this.run([
       '--profile', identity.profileKey, 'drive', '+download', '--node', nodeId,
       '--output', basename(fileName), '--format', 'json'
-    ], 120_000, directory);
+    ], 120_000, directory),options.background);}catch(error){throw readCommandError(error);}
     const parsed = safeJson(result.stdout);
-    if (!parsed || parsed.ok === false || parsed.error) throw new Error(String(parsed?.error?.message ?? 'DRIVE_DOWNLOAD_FAILED'));
+    if (!parsed || parsed.ok === false || parsed.error) throw asCliCommandError([{text:result.stdout},{text:result.stderr}]);
     return parsed.data ?? parsed;
   }
 
@@ -329,7 +360,7 @@ export class DwsBroker {
     const args = buildDeviceAuthorizationArgs(user, await this.profileRegistered(user));
     const invocation = resolveInvocation(this.config.DWS_BIN);
     const child = spawn(invocation.file, [...invocation.prefix, ...args], {
-      env: { ...process.env, DWS_CONFIG_DIR: this.config.DWS_CONFIG_DIR },
+      env: buildDwsEnvironment(this.config),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true
     });
@@ -377,21 +408,16 @@ export class DwsBroker {
     return { prompt, completion };
   }
 
-  public async runCommand(user: UserIdentity, args: string[]): Promise<unknown> {
+  public async runCommand(user: UserIdentity, args: string[], options: { cwd?: string; timeout?: number; background?: boolean } = {}): Promise<unknown> {
     const identity = await this.status(user);
     if (!identity) throw new Error('DWS_OAUTH_REQUIRED');
     let result: { stdout: string; stderr: string };
     try {
-      result = await this.run(['--profile', identity.profileKey, ...args, '--format', 'json']);
+      result = await dwsReadGate.run(() => this.run(['--profile', identity.profileKey, ...args, '--format', 'json'], options.timeout ?? 60_000, options.cwd), options.background);
     } catch (error) {
       // The CLI reports gate/validation failures with a non-zero exit code and
       // a JSON diagnostic on stderr (verified: {"error":{"category":...}}).
-      const stdout = (error as { stdout?: unknown })?.stdout;
-      const stderr = (error as { stderr?: unknown })?.stderr;
-      if (typeof stdout === 'string' || typeof stderr === 'string') {
-        throw asCliCommandError([{ text: String(stdout ?? '') }, { text: String(stderr ?? '') }]);
-      }
-      throw error;
+      throw readCommandError(error);
     }
     const parsed = safeJson(result.stdout);
     if (parsed?.ok === false || parsed?.error) {
@@ -405,7 +431,7 @@ export class DwsBroker {
   private async run(args: string[], timeout = 60_000, cwd?: string): Promise<{ stdout: string; stderr: string }> {
     const invocation = resolveInvocation(this.config.DWS_BIN);
     const result = await execFileAsync(invocation.file, [...invocation.prefix, ...args], {
-      env: { ...process.env, DWS_CONFIG_DIR: this.config.DWS_CONFIG_DIR },
+      env: buildDwsEnvironment(this.config),
       cwd,
       timeout,
       maxBuffer: 2 * 1024 * 1024,
@@ -443,6 +469,25 @@ export class DwsBroker {
     }
     throw new Error('DWS device authorization timed out');
   }
+}
+
+export function buildDwsEnvironment(config: Pick<Config, 'DWS_CONFIG_DIR' | 'DWS_NO_PROXY'>, inherited: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...inherited, DWS_CONFIG_DIR: config.DWS_CONFIG_DIR };
+  if (config.DWS_NO_PROXY?.trim()) {
+    const hosts = [...new Set([inherited.NO_PROXY, inherited.no_proxy, config.DWS_NO_PROXY]
+      .flatMap(value => (value ?? '').split(',')).map(value => value.trim()).filter(Boolean))];
+    env.NO_PROXY = hosts.join(',');
+    env.no_proxy = env.NO_PROXY;
+  }
+  return env;
+}
+
+function readCommandError(error:unknown):unknown {
+ const failure=error as {killed?:boolean;signal?:unknown;code?:unknown;stdout?:unknown;stderr?:unknown};
+ if(failure.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER')return new Error('DWS_OUTPUT_LIMIT');
+ if(failure.killed&&failure.signal)return new Error('DWS_COMMAND_TIMEOUT');
+ if(typeof failure.stdout==='string'||typeof failure.stderr==='string')return asCliCommandError([{text:String(failure.stdout??'')},{text:String(failure.stderr??'')}]);
+ return error;
 }
 
 export function buildDeviceAuthorizationArgs(user: UserIdentity, registeredProfile: boolean): string[] {

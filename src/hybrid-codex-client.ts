@@ -73,4 +73,8 @@ export class HybridCodexClient implements CodexClientLike {
     return this.remote.runPython(taskId, code);
   }
   public usesWorker(taskId: string): boolean { return this.route(taskId) === this.remote; }
+  public async renderListing(taskId: string, payload: import('./listing-export.js').ListingExport, signal?: AbortSignal) {
+    if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
+    return this.remote.renderListing(taskId,payload,signal);
+  }
 }

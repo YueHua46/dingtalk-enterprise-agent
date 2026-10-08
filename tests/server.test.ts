@@ -8,12 +8,25 @@ import { randomUUID } from 'node:crypto';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('HTTP server', () => {
+  it('returns search failures as tool results to prevent HTTP retry loops', async () => {
+    const secret = 'w'.repeat(32);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); }));
+    const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', MODEL_BASE_URL: 'https://model.example/v1', MODEL_API_KEY: 'model-key', MODEL_TOOL_COMPAT_PROXY: 'true', FILE_WORKER_SECRET: secret }), {} as TaskOrchestrator);
+    try {
+      const result = await app.inject({ method: 'POST', url: '/internal/model/v1/alpha/search', headers: { authorization: `Bearer ${issueModelTaskToken(secret, randomUUID())}` }, payload: { id: 'session-failed', commands: { search_query: [{ q: 'news' }] } } });
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toMatchObject({ encrypted_output: null, results: [{ type: 'error' }] });
+      expect(result.json().output).toContain('failed:');
+      expect(result.json().output).toContain('do not repeat');
+    } finally { await app.close(); }
+  });
   it('serves standalone Codex web search only to an authenticated worker task', async () => {
     const secret = 'w'.repeat(32);
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ output: [{ content: [{ text: 'Example Domain\nWeb search queries: example.com\nSources:\n[1] [example.com](https://example.com/)' }] }] }),
       { status: 200, headers: { 'content-type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
-    const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', MODEL_BASE_URL: 'https://model.example/v1', MODEL_API_KEY: 'model-key', MODEL_TOOL_COMPAT_PROXY: 'true', FILE_WORKER_SECRET: secret }), {} as TaskOrchestrator);
+    const observeWebSearch = vi.fn(async (_task, _request, result) => result ? 'evidence-web-1' : undefined);
+    const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', MODEL_BASE_URL: 'https://model.example/v1', MODEL_API_KEY: 'model-key', MODEL_NAME: 'gemini-test', MODEL_TOOL_COMPAT_PROXY: 'true', FILE_WORKER_SECRET: secret }), { observeWebSearch } as unknown as TaskOrchestrator);
     const payload = { id: 'session-1', commands: { search_query: [{ q: 'example.com' }] } };
     const denied = await app.inject({ method: 'POST', url: '/internal/model/v1/alpha/search', payload });
     expect(denied.statusCode).toBe(403);
@@ -21,6 +34,8 @@ describe('HTTP server', () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toMatchObject({ encrypted_output: null, results: [{ ref_id: 'turn0search0', url: 'https://example.com/' }] });
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(observeWebSearch).toHaveBeenCalledTimes(2);
+    expect(allowed.json().output).toContain('evidence-web-1');
     await app.close();
   });
   it('keeps the directory endpoint behind the internal token', async () => {

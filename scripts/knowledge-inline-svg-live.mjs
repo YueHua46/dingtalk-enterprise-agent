@@ -1,0 +1,12 @@
+// Actual source/scan/sandbox/OCR verification only; no model requests or DB version writes.
+import {loadConfig} from '../dist/config.js';import {DwsBroker} from '../dist/dws-broker.js';import {KnowledgeSource,documentImageReferences} from '../dist/knowledge-source.js';import {resourceFromNode,knowledgeErrorCode} from '../dist/knowledge-sync.js';import {join} from 'node:path';import {homedir} from 'node:os';import {writeFile} from 'node:fs/promises';
+const user={corpId:'ding5cc0e9161525554835c2f4657eb6378f',userId:'1769391205643357'};
+const config=loadConfig({...process.env,NODE_ENV:'test',FILE_WORKER_MODE:'off',DWS_CONFIG_DIR:join(homedir(),'.dws'),CLAMAV_HOST:'127.0.0.1',CLAMAV_PORT:'13310',FILE_WORKER_URL:'http://127.0.0.1:18081',KNOWLEDGE_DIR:join(process.cwd(),'data/knowledge-acceptance')});const dws=new DwsBroker(config),source=new KnowledgeSource(config,dws,{recognize:async()=>{throw new Error('DIAGNOSTIC_MODEL_FORBIDDEN');}}),report=[];
+for(const node of ['EpGBa2Lm8ajBR6mMco7xlXB3WgN7R35y','NZQYprEoWobMBvq0i0PRDLnq81waOeDk']){const e={node,startedAt:new Date().toISOString(),parser:'knowledge-v6',modelCalls:0};report.push(e);try{
+ const r=await dws.runCommand(user,['doc','+fetch','--node',node,'--scope','full','--detail','full'],{background:true});if(r.complete!==true)throw new Error('KNOWLEDGE_DOCUMENT_INCOMPLETE');
+ const refs=documentImageReferences(r.content.jsonml);e.references=refs.length;e.images=[];
+ for(const ref of refs){if(!ref.inlineSvg)throw new Error('KNOWLEDGE_INLINE_IMAGE_INVALID');const b=Buffer.from(ref.inlineSvg,'base64');const resource=resourceFromNode({nodeId:node,name:'verified imported source',extension:'adoc',type:'file'},'diagnostic','diagnostic',null);
+ const binary=await source.binary(user,resource,'svg',undefined,true,true,b);if(binary.images.length!==1||!binary.images[0].dataUrl)throw new Error('KNOWLEDGE_IMAGE_RESOURCE_UNVERIFIED');
+ e.images.push({block:ref.block,bytes:b.length,hash:binary.images[0].hash,redactions:binary.images[0].redactions,quality:binary.quality});await writeFile('output/knowledge-diagnostics/'+node+'-svg-redacted.jpg',Buffer.from(binary.images[0].dataUrl.split(',')[1],'base64'),{mode:0o600});
+ }e.status='source_scan_manifest_ocr_passed';
+ }catch(error){e.status='failed';e.code=knowledgeErrorCode(error);e.stage=error.sourceStage;}e.finishedAt=new Date().toISOString();console.log(JSON.stringify(e));await writeFile('output/knowledge-diagnostics/inline-svg-live-v6.json',JSON.stringify(report,null,2));}

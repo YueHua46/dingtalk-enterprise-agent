@@ -1,0 +1,511 @@
+{
+  "kind": "fixed_mock_replay",
+  "generationKind": "fixed_mock_fictional_product",
+  "generationVersion": "cd13840c87e706592231240c5d47f0a9b9d217ef28f870a49fb2c13230e86d3c",
+  "validation": {
+    "validatorVersion": "listing-validator-v1",
+    "policyVersion": "listing-validation-camera-v1",
+    "policySha256": "e9caa0661dd9bc4358295c0d51d74575c9b3fbe59ea7db02c978be58d7f24321",
+    "factVersion": "da9a9d6525c6092becf3b3cdaf58140f84804d0f63a9299218e7d6b2d06a92cc",
+    "planVersion": "b4119b03044860cbb6c5f12e0f3b0f6606e370fa8a65bf0b04c3d14c9bb95939",
+    "ruleVersion": "us-en-2026-09-30.1",
+    "ruleSha256": "9ab8f77451f22b27073dafdbf54d9514c8fed3a207a6c8953c48759ccf5474a2",
+    "draftSha256": "2afe09f1879ea7da127b03c9db4d24ca96960d8dba2b1847b393ab748252184e",
+    "status": "needs_verification",
+    "codeChecksPassed": true,
+    "platformCompliance": "not_established",
+    "fields": [
+      {
+        "field": "title",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "bullets.0",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "bullets.1",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "bullets.2",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "bullets.3",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "bullets.4",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "description",
+        "status": "needs_verification",
+        "copyable": false
+      },
+      {
+        "field": "searchTerms",
+        "status": "needs_verification",
+        "copyable": false
+      }
+    ],
+    "ruleChecks": [
+      {
+        "ruleId": "title-length",
+        "field": "title",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform",
+        "measured": 41
+      },
+      {
+        "ruleId": "title-characters",
+        "field": "title",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "title-repeated-words",
+        "field": "title",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform",
+        "measured": 1
+      },
+      {
+        "ruleId": "bullet-refund-phrases",
+        "field": "bullets.0",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-special-content",
+        "field": "bullets.0",
+        "outcome": "manual",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-length-budget",
+        "field": "bullets.0",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "editorial",
+        "measured": 13
+      },
+      {
+        "ruleId": "bullet-refund-phrases",
+        "field": "bullets.1",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-special-content",
+        "field": "bullets.1",
+        "outcome": "manual",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-length-budget",
+        "field": "bullets.1",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "editorial",
+        "measured": 15
+      },
+      {
+        "ruleId": "bullet-refund-phrases",
+        "field": "bullets.2",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-special-content",
+        "field": "bullets.2",
+        "outcome": "manual",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-length-budget",
+        "field": "bullets.2",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "editorial",
+        "measured": 58
+      },
+      {
+        "ruleId": "bullet-refund-phrases",
+        "field": "bullets.3",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-special-content",
+        "field": "bullets.3",
+        "outcome": "manual",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-length-budget",
+        "field": "bullets.3",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "editorial",
+        "measured": 46
+      },
+      {
+        "ruleId": "bullet-refund-phrases",
+        "field": "bullets.4",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-special-content",
+        "field": "bullets.4",
+        "outcome": "manual",
+        "verification": "pending",
+        "origin": "platform"
+      },
+      {
+        "ruleId": "bullet-length-budget",
+        "field": "bullets.4",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "editorial",
+        "measured": 42
+      },
+      {
+        "ruleId": "description-length-budget",
+        "field": "description",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "editorial",
+        "measured": 116
+      },
+      {
+        "ruleId": "search-terms-length",
+        "field": "searchTerms",
+        "outcome": "satisfied",
+        "verification": "pending",
+        "origin": "platform",
+        "measured": 32
+      },
+      {
+        "ruleId": "bullet-count",
+        "field": "bullets",
+        "outcome": "satisfied",
+        "verification": "verified",
+        "origin": "editorial",
+        "measured": 5
+      }
+    ],
+    "claimChecks": [
+      {
+        "field": "title",
+        "start": 0,
+        "end": 41,
+        "factIds": [
+          "fact-0ec4170e6bb7e670093b0555",
+          "fact-e1ac064a3bc77d30a0fa1439",
+          "fact-0751aff184a622e034a93fe8",
+          "fact-5f39560677a8b43567ca890e"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "bullets.0",
+        "start": 0,
+        "end": 13,
+        "factIds": [
+          "fact-0751aff184a622e034a93fe8"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "bullets.1",
+        "start": 0,
+        "end": 15,
+        "factIds": [
+          "fact-110e993eecde9bbd10b3883c"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "bullets.2",
+        "start": 0,
+        "end": 58,
+        "factIds": [
+          "fact-ceda3f68a7b71b2762126994"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "bullets.3",
+        "start": 0,
+        "end": 46,
+        "factIds": [
+          "fact-7af0602d349486520967798d"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "bullets.4",
+        "start": 0,
+        "end": 42,
+        "factIds": [
+          "fact-dc2d1a6a4de44f5a15f74bc9"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "description",
+        "start": 0,
+        "end": 116,
+        "factIds": [
+          "fact-e7502d5fc0b08f8e134f6a17",
+          "fact-3888b9a6dbc75b2efd7b22ac"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      },
+      {
+        "field": "searchTerms",
+        "start": 0,
+        "end": 32,
+        "factIds": [
+          "fact-5f39560677a8b43567ca890e",
+          "fact-0751aff184a622e034a93fe8"
+        ],
+        "citationValid": true,
+        "support": "controlled"
+      }
+    ],
+    "issues": [
+      {
+        "code": "expression_policy_pending",
+        "severity": "verification",
+        "field": "task",
+        "message": "内部保守表达词表，非 Amazon 官方要求；未覆盖所有参数、语言和表达方式。",
+        "factIds": []
+      },
+      {
+        "code": "rules_not_fully_verified",
+        "severity": "verification",
+        "field": "task",
+        "message": "配置规则或具体产品类型尚未完整核实，不能宣称平台合规。",
+        "factIds": []
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "title",
+        "message": "已查阅公告；未核实 2026 年具体摄像头类目当前要求。",
+        "factIds": [],
+        "ruleId": "title-length"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "title",
+        "message": "已查阅通用公告；具体类目适用性待核实。",
+        "factIds": [],
+        "ruleId": "title-characters"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "title",
+        "message": "冠词、介词、连词例外的分词与词表需进一步核实。",
+        "factIds": [],
+        "ruleId": "title-repeated-words"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.0",
+        "message": "公告提及退款保证限制，精确表达范围待核实。",
+        "factIds": [],
+        "ruleId": "bullet-refund-phrases"
+      },
+      {
+        "code": "manual_rule",
+        "severity": "verification",
+        "field": "bullets.0",
+        "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+        "factIds": [],
+        "ruleId": "bullet-special-content"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.0",
+        "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+        "factIds": [],
+        "ruleId": "bullet-length-budget"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.1",
+        "message": "公告提及退款保证限制，精确表达范围待核实。",
+        "factIds": [],
+        "ruleId": "bullet-refund-phrases"
+      },
+      {
+        "code": "manual_rule",
+        "severity": "verification",
+        "field": "bullets.1",
+        "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+        "factIds": [],
+        "ruleId": "bullet-special-content"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.1",
+        "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+        "factIds": [],
+        "ruleId": "bullet-length-budget"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.2",
+        "message": "公告提及退款保证限制，精确表达范围待核实。",
+        "factIds": [],
+        "ruleId": "bullet-refund-phrases"
+      },
+      {
+        "code": "manual_rule",
+        "severity": "verification",
+        "field": "bullets.2",
+        "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+        "factIds": [],
+        "ruleId": "bullet-special-content"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.2",
+        "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+        "factIds": [],
+        "ruleId": "bullet-length-budget"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.3",
+        "message": "公告提及退款保证限制，精确表达范围待核实。",
+        "factIds": [],
+        "ruleId": "bullet-refund-phrases"
+      },
+      {
+        "code": "manual_rule",
+        "severity": "verification",
+        "field": "bullets.3",
+        "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+        "factIds": [],
+        "ruleId": "bullet-special-content"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.3",
+        "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+        "factIds": [],
+        "ruleId": "bullet-length-budget"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.4",
+        "message": "公告提及退款保证限制，精确表达范围待核实。",
+        "factIds": [],
+        "ruleId": "bullet-refund-phrases"
+      },
+      {
+        "code": "manual_rule",
+        "severity": "verification",
+        "field": "bullets.4",
+        "message": "列出五点中的特殊字符、表情和保证类声明供运营核实，不宣称此项自动通过。",
+        "factIds": [],
+        "ruleId": "bullet-special-content"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "bullets.4",
+        "message": "参考已有技能的草稿预算，具体类目平台上限另行核实。",
+        "factIds": [],
+        "ruleId": "bullet-length-budget"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "description",
+        "message": "参考已有技能的草稿预算，当前产品类型要求待核实。",
+        "factIds": [],
+        "ruleId": "description-length-budget"
+      },
+      {
+        "code": "rule_pending",
+        "severity": "verification",
+        "field": "searchTerms",
+        "message": "历史官方培训材料；当前具体产品类型、字段及字节计数细节待核实。",
+        "factIds": [],
+        "ruleId": "search-terms-length"
+      },
+      {
+        "code": "search_terms_repeated",
+        "severity": "advisory",
+        "field": "searchTerms",
+        "message": "后台搜索词有重复词，建议去重。",
+        "factIds": []
+      },
+      {
+        "code": "draft_verification_items",
+        "severity": "verification",
+        "field": "task",
+        "message": "草稿包含需要额外补资料或判断的事项，不能宣称全部问题已解决。",
+        "factIds": []
+      }
+    ],
+    "metrics": {
+      "factualClaimCount": 8,
+      "citedClaimCount": 8,
+      "citationCoverage": 1,
+      "controlledClaimCount": 8,
+      "controlledCoverage": 1,
+      "unannotatedSpanCount": 0
+    },
+    "version": "ad42852c9c78eae3a35f2cffe09fe109960b303e99160730b605579d379c5e34"
+  },
+  "limitations": [
+    "产品资料为虚构样例",
+    "真实稿仅回放模块 6 记录，没有再次调用模型",
+    "没有验证钉钉端到端投递",
+    "没有新增或核实 Amazon 平台规则"
+  ]
+}

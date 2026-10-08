@@ -1,0 +1,22 @@
+[
+  {
+    "mode": "create",
+    "objective": "突出室内使用场景，生成美国站英文稿",
+    "materials": [{ "id": "product", "kind": "conversation", "reference": "message-create", "content": "ExampleBrand C1 室内摄像头，2K 分辨率，USB 供电。包装包含摄像头、电源线。" }],
+    "keywords": ["indoor security camera"],
+    "competitors": { "strategy": "auto", "asins": [] }
+  },
+  {
+    "mode": "optimize",
+    "asin": "B0TEST0001",
+    "objective": "保守改写现有页面，不新增产品声明",
+    "materials": [],
+    "competitors": { "strategy": "specified", "asins": ["B0TEST0002"] }
+  },
+  {
+    "mode": "optimize",
+    "asin": "B0TEST0001",
+    "materials": [{ "id": "spec", "kind": "attachment", "reference": "current-task-attachment" }],
+    "competitors": { "strategy": "mixed", "asins": ["B0TEST0002", "B0TEST0003"] }
+  }
+]

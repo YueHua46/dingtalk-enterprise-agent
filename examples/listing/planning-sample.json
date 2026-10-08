@@ -1,0 +1,403 @@
+{
+  "kind": "fictional_mock_sample",
+  "plan": {
+    "factVersion": "88272100811b47dd89065bbcd945895eac2dfa20d4c97aea2dbe8bb9e19750b4",
+    "policyVersion": "camera-planning-v1",
+    "requestId": "fictional-planning-sample",
+    "owner": {
+      "corpId": "sample",
+      "userId": "sample"
+    },
+    "surface": {
+      "type": "direct",
+      "id": "sample"
+    },
+    "status": "ready_limited",
+    "keywords": [
+      {
+        "keyword": "indoor security camera",
+        "origins": [
+          "user",
+          "competitor"
+        ],
+        "citations": [
+          {
+            "evidenceId": "research-77f8870634ecb634d77fe39b",
+            "asin": "B0TEST0001",
+            "field": "title",
+            "excerpt": "Indoor security camera"
+          }
+        ],
+        "factIds": [
+          "fact-5f39560677a8b43567ca890e"
+        ],
+        "status": "eligible",
+        "placement": "title",
+        "searchVolume": null,
+        "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+      },
+      {
+        "keyword": "2k camera",
+        "origins": [
+          "user"
+        ],
+        "citations": [],
+        "factIds": [
+          "fact-5f39560677a8b43567ca890e",
+          "fact-0751aff184a622e034a93fe8"
+        ],
+        "status": "eligible",
+        "placement": "title",
+        "searchVolume": null,
+        "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+      },
+      {
+        "keyword": "4k camera",
+        "origins": [
+          "user",
+          "competitor"
+        ],
+        "citations": [
+          {
+            "evidenceId": "research-77f8870634ecb634d77fe39b",
+            "asin": "B0TEST0001",
+            "field": "bullet_1",
+            "excerpt": "4k camera with color night vision"
+          }
+        ],
+        "factIds": [],
+        "status": "needs_verification",
+        "placement": "hold",
+        "searchVolume": null,
+        "reason": "未由受控词表及本品事实同时支持，暂不分配到文案。"
+      },
+      {
+        "keyword": "security camera",
+        "origins": [
+          "competitor"
+        ],
+        "citations": [
+          {
+            "evidenceId": "research-77f8870634ecb634d77fe39b",
+            "asin": "B0TEST0001",
+            "field": "title",
+            "excerpt": "Indoor security camera"
+          }
+        ],
+        "factIds": [
+          "fact-5f39560677a8b43567ca890e"
+        ],
+        "status": "eligible",
+        "placement": "bullets",
+        "searchVolume": null,
+        "reason": "受控词表与本品资料对应；仍需后续文案及平台规则校验。"
+      },
+      {
+        "keyword": "color night vision",
+        "origins": [
+          "competitor"
+        ],
+        "citations": [
+          {
+            "evidenceId": "research-77f8870634ecb634d77fe39b",
+            "asin": "B0TEST0001",
+            "field": "bullet_1",
+            "excerpt": "4k camera with color night vision"
+          }
+        ],
+        "factIds": [],
+        "status": "needs_verification",
+        "placement": "hold",
+        "searchVolume": null,
+        "reason": "未由受控词表及本品事实同时支持，暂不分配到文案。"
+      }
+    ],
+    "insights": [
+      {
+        "topicId": "installation",
+        "label": "安装与设置",
+        "mentionCount": 1,
+        "sampleSize": 1,
+        "population": "sample_only",
+        "interpretation": "topic_mentions_not_sentiment_or_causality",
+        "citations": [
+          {
+            "evidenceId": "research-012976573d87c1ec874a846b",
+            "asin": "B0TEST0001",
+            "field": "review_body",
+            "excerpt": "Setup was easy. Subscription costs extra. SD card sold separately."
+          }
+        ],
+        "factIds": [
+          "fact-e7502d5fc0b08f8e134f6a17",
+          "fact-3888b9a6dbc75b2efd7b22ac"
+        ],
+        "recommendation": "本次样本提及此主题，可在文案中说明对应本品事实，保留费用、条件与限制；不宣称本品解决了竞品问题。"
+      },
+      {
+        "topicId": "storage",
+        "label": "存储与配件",
+        "mentionCount": 1,
+        "sampleSize": 1,
+        "population": "sample_only",
+        "interpretation": "topic_mentions_not_sentiment_or_causality",
+        "citations": [
+          {
+            "evidenceId": "research-012976573d87c1ec874a846b",
+            "asin": "B0TEST0001",
+            "field": "review_body",
+            "excerpt": "Setup was easy. Subscription costs extra. SD card sold separately."
+          }
+        ],
+        "factIds": [
+          "fact-7af0602d349486520967798d",
+          "fact-3888b9a6dbc75b2efd7b22ac"
+        ],
+        "recommendation": "本次样本提及此主题，可在文案中说明对应本品事实，保留费用、条件与限制；不宣称本品解决了竞品问题。"
+      },
+      {
+        "topicId": "subscription",
+        "label": "订阅与费用",
+        "mentionCount": 1,
+        "sampleSize": 1,
+        "population": "sample_only",
+        "interpretation": "topic_mentions_not_sentiment_or_causality",
+        "citations": [
+          {
+            "evidenceId": "research-012976573d87c1ec874a846b",
+            "asin": "B0TEST0001",
+            "field": "review_body",
+            "excerpt": "Setup was easy. Subscription costs extra. SD card sold separately."
+          }
+        ],
+        "factIds": [
+          "fact-dc2d1a6a4de44f5a15f74bc9"
+        ],
+        "recommendation": "本次样本提及此主题，可在文案中说明对应本品事实，保留费用、条件与限制；不宣称本品解决了竞品问题。"
+      }
+    ],
+    "sellingPoints": [
+      {
+        "id": "point-ecafcac6ba3b9fea19e71c03",
+        "attribute": "brand",
+        "facts": [
+          {
+            "id": "fact-0ec4170e6bb7e670093b0555",
+            "originalValue": "ExampleBrand",
+            "excerpt": "品牌：ExampleBrand",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-4e96f86ad1efa3633f062ac7",
+        "attribute": "model",
+        "facts": [
+          {
+            "id": "fact-e1ac064a3bc77d30a0fa1439",
+            "originalValue": "C1",
+            "excerpt": "型号：C1",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-4fbcb46dc9c88983998e30b1",
+        "attribute": "product_type",
+        "facts": [
+          {
+            "id": "fact-5f39560677a8b43567ca890e",
+            "originalValue": "室内摄像头",
+            "excerpt": "产品类型：室内摄像头",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-5ef5259ae9cbe560ea7c32b8",
+        "attribute": "resolution",
+        "facts": [
+          {
+            "id": "fact-0751aff184a622e034a93fe8",
+            "originalValue": "2K",
+            "excerpt": "分辨率：2K",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-a831f7bd80c6b70a72e5d955",
+        "attribute": "connectivity",
+        "facts": [
+          {
+            "id": "fact-267f935313a09254f1db363c",
+            "originalValue": "2.4 GHz Wi-Fi，不支持 5 GHz",
+            "excerpt": "连接方式：2.4 GHz Wi-Fi，不支持 5 GHz",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-47899e86262e0ae3b031c4ed",
+        "attribute": "power",
+        "facts": [
+          {
+            "id": "fact-110e993eecde9bbd10b3883c",
+            "originalValue": "USB 有线供电",
+            "excerpt": "供电方式：USB 有线供电",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-531e45c652d4d5d2ea153f70",
+        "attribute": "night_vision",
+        "facts": [
+          {
+            "id": "fact-ceda3f68a7b71b2762126994",
+            "originalValue": "支持红外夜视，未声明彩色夜视",
+            "excerpt": "夜视：支持红外夜视，未声明彩色夜视",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-274e95504b7ebf27fb941a4d",
+        "attribute": "storage",
+        "facts": [
+          {
+            "id": "fact-7af0602d349486520967798d",
+            "originalValue": "支持 microSD 卡，卡需另购",
+            "excerpt": "存储方式：支持 microSD 卡，卡需另购",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "buyer_question",
+        "relatedTopicIds": [
+          "storage"
+        ],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-8cfbbf229d035710c113cbfa",
+        "attribute": "subscription",
+        "facts": [
+          {
+            "id": "fact-dc2d1a6a4de44f5a15f74bc9",
+            "originalValue": "云存储需付费订阅",
+            "excerpt": "订阅费用：云存储需付费订阅",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "buyer_question",
+        "relatedTopicIds": [
+          "subscription"
+        ],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-d477f2029c30b023e2027809",
+        "attribute": "installation",
+        "facts": [
+          {
+            "id": "fact-e7502d5fc0b08f8e134f6a17",
+            "originalValue": "需连接电源，适用于室内",
+            "excerpt": "安装条件：需连接电源，适用于室内",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "buyer_question",
+        "relatedTopicIds": [
+          "installation"
+        ],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-78184147735d23615946dcd5",
+        "attribute": "package",
+        "facts": [
+          {
+            "id": "fact-3888b9a6dbc75b2efd7b22ac",
+            "originalValue": "摄像头、电源线、说明书，不含存储卡",
+            "excerpt": "包装内容：摄像头、电源线、说明书，不含存储卡",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "buyer_question",
+        "relatedTopicIds": [
+          "installation",
+          "storage"
+        ],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      },
+      {
+        "id": "point-8677e411b3793e29f57f670b",
+        "attribute": "weight",
+        "facts": [
+          {
+            "id": "fact-ca2a0813679c885f15282550",
+            "originalValue": "350 g",
+            "excerpt": "重量：350 g",
+            "sourceId": "sample",
+            "trust": "user_provided"
+          }
+        ],
+        "status": "grounded",
+        "emphasis": "product_information",
+        "relatedTopicIds": [],
+        "instruction": "仅表达所列本品事实，保留否定、限定条件、费用及包装排除项；不要增加竞品功能、性能保证或因果承诺。"
+      }
+    ],
+    "excludedFactIds": [],
+    "notices": [
+      {
+        "code": "keyword_unverified",
+        "message": "部分关键词缺少依据或仅来自页面，保留核实项，不强行埋词。"
+      }
+    ],
+    "version": "ecf77a7eec59435b6111d205623a0561264099f90ab90d7b23a377be632a562c"
+  }
+}

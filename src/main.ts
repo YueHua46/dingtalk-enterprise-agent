@@ -5,6 +5,17 @@ import { CodexClient } from './codex-client.js';
 import { HybridCodexClient } from './hybrid-codex-client.js';
 import { DingTalkStreamAdapter } from './dingtalk-stream.js';
 import { DwsBroker } from './dws-broker.js';
+import { KnowledgeModel } from './knowledge-model.js';
+import { KnowledgeStore } from './knowledge-store.js';
+import { KnowledgeSource } from './knowledge-source.js';
+import { KnowledgeSync } from './knowledge-sync.js';
+import { KnowledgeTool } from './knowledge-tool.js';
+import { ListingTool, PgListingSessionStore, MemoryListingSessionStore } from './listing-tool.js';
+import { PgListingRevisionStore, MemoryListingRevisionStore } from './listing-revision-store.js';
+import { ResponsesStructuredModel } from './structured-model.js';
+import { AmazonTool } from './amazon-tool.js';
+import { McpReadTool } from './mcp-read-tool.js';
+import { registerKnowledgeDatabaseMetrics } from './knowledge-metrics.js';
 import { InMemoryRepository, PgRepository, type Repository } from './persistence.js';
 import { createServer } from './server.js';
 import { TaskOrchestrator } from './task-orchestrator.js';
@@ -31,6 +42,12 @@ if (config.NODE_ENV === 'production') {
 
 const codex = config.FILE_WORKER_MODE === 'off' ? new CodexClient(config) : new HybridCodexClient(config);
 const dws = new DwsBroker(config);
+const knowledgeModel = new KnowledgeModel(config);
+const knowledgeStore = pool ? new KnowledgeStore(pool, config.EMBEDDING_MODEL) : undefined;
+const knowledgeSource = new KnowledgeSource(config, dws, knowledgeModel,knowledgeStore);
+const knowledgeSync = knowledgeStore ? new KnowledgeSync(config, knowledgeStore, dws, knowledgeSource, knowledgeModel) : undefined;
+const knowledgeTool = knowledgeStore && knowledgeSync ? new KnowledgeTool(config, knowledgeStore, knowledgeSync, knowledgeModel) : undefined;
+if (pool) registerKnowledgeDatabaseMetrics(pool);
 const nativeCards = new DingTalkNativeCardBroker(config);
 let stream: DingTalkStreamAdapter | undefined;
 const sender = {
@@ -90,11 +107,14 @@ const sender = {
 };
 const taskQueue = config.NODE_ENV === 'production' ? new RedisTaskQueue(config) : undefined;
 const ziniaoBroker = config.ZINIAO_REMOTE_HOST ? new ZiniaoRemoteBroker(config) : new ZiniaoBroker(config);
-const orchestrator = new TaskOrchestrator(config, repository, codex, dws, sender, undefined, taskQueue, ziniaoBroker);
+const listingTool = await ListingTool.create(pool ? new PgListingSessionStore(pool) : new MemoryListingSessionStore(),
+  pool ? new PgListingRevisionStore(pool) : new MemoryListingRevisionStore(),new ResponsesStructuredModel(config),new AmazonTool(),new McpReadTool(config));
+const orchestrator = new TaskOrchestrator(config, repository, codex, dws, sender, undefined, taskQueue, ziniaoBroker, undefined, knowledgeTool, listingTool);
 const retention = new RetentionService(config, repository);
 const streamAdapter = new DingTalkStreamAdapter(config, async (request: AgentRequest) => {
   if (await orchestrator.handleControl(request)) return;
   await orchestrator.accept(request);
+  await knowledgeSync?.enqueue(request.user).catch(() => undefined);
 });
 streamAdapter.setCardActionHandler(async (event) => {
   await orchestrator.handleApprovalCardClick(event);
@@ -102,6 +122,7 @@ streamAdapter.setCardActionHandler(async (event) => {
 stream = streamAdapter;
 
 await repository.ping();
+if (knowledgeSync && (config.KNOWLEDGE_ENABLED === 'true' || config.KNOWLEDGE_TEST_USERS.trim())) await knowledgeSync.start();
 await codex.start();
 await streamAdapter.start();
 await orchestrator.start();
@@ -127,6 +148,7 @@ console.log('Agent gateway listening on ' + config.HOST + ':' + config.PORT);
 const shutdown = async () => {
   stream?.stop();
   retention.stop();
+  await knowledgeSync?.stop();
   await orchestrator.stop();
   await codex.stop();
   await app.close();

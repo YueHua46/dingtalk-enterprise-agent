@@ -4,6 +4,8 @@ import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-
 import { DwsTool } from './dws-tool.js';
 import { MediaPipeline } from './media.js';
 import { MemoryTool } from './memory-tool.js';
+import type { KnowledgeTool } from './knowledge-tool.js';
+import type { ListingTool } from './listing-tool.js';
 import { GuideTool } from './guide-tool.js';
 import { NativeWebTool } from './native-web-tool.js';
 import { AmazonTool, AMAZON_OPERATIONS } from './amazon-tool.js';
@@ -27,6 +29,8 @@ import * as md from './markdown.js';
 import { isCancellation, isConfirmation, parseTaskControl } from './policy.js';
 import { actionHash, sha256 } from './security.js';
 import { createHash, randomUUID } from 'node:crypto';
+import { deliverListingExport, type ListingExport } from './listing-export.js';
+import { renderListingInWorker } from './listing-export-worker.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import { fileTypeFromBuffer } from 'file-type';
@@ -310,6 +314,11 @@ export class TaskOrchestrator {
   private readonly memoryTool: MemoryTool;
   private readonly guideTool: GuideTool;
   private readonly nativeWebTool: NativeWebTool;
+  private readonly webObservers = new Map<string, (request: unknown, result?: { output: string; results: Array<Record<string, unknown>> }) => Promise<string | undefined>>();
+
+  public async observeWebSearch(taskId: string, request: unknown, result?: { output: string; results: Array<Record<string, unknown>> }): Promise<string | undefined> {
+    return this.webObservers.get(taskId)?.(request, result);
+  }
   private readonly amazonTool: AmazonTool;
   private readonly imageTool: ImageTool;
   private readonly crossBorderOpsAccess: CrossBorderOpsAccessClient;
@@ -336,7 +345,9 @@ export class TaskOrchestrator {
     media?: MediaPipeline,
     private readonly taskQueue?: TaskQueue,
     ziniaoBroker?: ZiniaoBroker,
-    private readonly sleep: (ms: number) => Promise<void> = defaultSleep
+    private readonly sleep: (ms: number) => Promise<void> = defaultSleep,
+    private readonly knowledgeTool?: KnowledgeTool,
+    private readonly listingTool?: ListingTool
   ) {
     this.dwsTool = new DwsTool(dws);
     this.memoryTool = new MemoryTool(repo);
@@ -821,7 +832,9 @@ export class TaskOrchestrator {
       // Each task gets its own execution context. A resumed clarification or
       // recovered task keeps its thread; a new request never inherits old tool
       // outputs or evidence IDs from another task in the same chat.
-      let threadId: string = task.threadId
+      const knowledgeContextValid = !this.knowledgeTool || await this.knowledgeTool.contextValid(task.request.user, task.request.surface.id);
+      if (!knowledgeContextValid) await this.repo.resetSurfaceThread(surfaceId);
+      let threadId: string = task.threadId && knowledgeContextValid
         ? await (this.codex.ensureThread?.(task.threadId, task.request.user, task.id) ?? Promise.resolve(task.threadId))
         : await this.codex.startThread(task.request.user, task.id);
       await this.repo.setSurfaceThread(surfaceId, threadId);
@@ -834,10 +847,10 @@ export class TaskOrchestrator {
       for (const item of attachments) await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
         eventType: 'attachment.prepared', payload: { id: item.id, name: item.name, size: item.size, sha256: item.sha256, available: Boolean(item.localPath) } });
       const memories = await this.repo.listUserMemories(task.request.user);
-      const recentContext = task.request.surface.type === 'direct'
+      const recentContext = !knowledgeContextValid ? [] : task.request.surface.type === 'direct'
         ? await this.repo.listRecentDirectContext(task.request.user, surfaceId, task.id)
         : await this.repo.listRecentPublicGroupContext(task.request.user, surfaceId, task.id);
-      const workflow = new TaskWorkflow(await this.repo.getWorkflow(task.id) ?? { evidence: [], revision: 0 });
+      const workflow = new TaskWorkflow(knowledgeContextValid ? await this.repo.getWorkflow(task.id) ?? { evidence: [], revision: 0 } : { evidence: [], revision: 0 });
       if (this.codex.usesWorker?.(task.id)) {
         for (const item of attachments.filter((attachment) => attachment.localPath)) {
           const scope = `task:${task.id}/attachment:${item.id}`;
@@ -850,6 +863,35 @@ export class TaskOrchestrator {
       // Excerpts persist with the workflow so a task resumed after a
       // clarification can still be verified against its earlier evidence.
       const evidenceExcerpts = new Map<string, string>(Object.entries(workflow.state.excerpts ?? {}));
+      let verifiedWebAnswer: string | undefined;
+      this.webObservers.set(task.id, async (request, result) => {
+        const label = '检索和核验公开网页';
+        if (!result) {
+          sawToolActivity = true;
+          presentation.toolStarted(label);
+          queueProgress();
+          return;
+        }
+        const success = result.results.some((item) => item.type === 'text_result');
+        const commands = (request as { commands?: { search_query?: unknown } })?.commands;
+        if (success && Array.isArray(commands?.search_query)) {
+          const summary = result.output.replace(/^Search query:[^\n]*\n/gm, '').split(/\n\nWeb search queries:/)[0]!.slice(0, 6_000);
+          const links = result.results.filter((item) => item.type === 'text_result').slice(0, 6)
+            .map((item) => `- [${String(item.title ?? '来源').replace(/[\[\]\r\n]/g, ' ')}](${String(item.url)})`).join('\n');
+          verifiedWebAnswer = `后续模型整理暂时受限，先返回本次联网已取得的结果。以下为搜索摘要，尚未逐条读取原文核验：\n\n${summary}\n\n来源：\n${links}`;
+        }
+        const record = workflow.record('internet.search', success, {
+          scope: '公开网页', freshness: new Date().toISOString(),
+          requestSignature: sha256(request), ...(success ? {} : { errorCode: 'WEB_SEARCH_FAILED' })
+        });
+        keepExcerpt(workflow, evidenceExcerpts, record.id, reviewEvidenceExcerpt(result.output));
+        await this.repo.saveWorkflow(task.id, workflow.state);
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+          eventType: 'web.completed', payload: { success, evidenceId: record.id, sourceCount: result.results.filter((item) => item.type === 'text_result').length } });
+        presentation.toolCompleted(label, success);
+        queueProgress();
+        return record.id;
+      });
       const computeAvailable = Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id));
       const skillIndex = await this.guideTool.index();
       let catalogCalls = 0;
@@ -1001,12 +1043,25 @@ export class TaskOrchestrator {
         task.id
       );
       let result;
+      let isWebFallback = false;
       for (let attempt = 0; ; attempt += 1) {
         sawToolActivity = false;
         try {
           result = await runModelTurn();
           break;
         } catch (error) {
+          if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const onlyPublicWeb = workflow.state.evidence.every((item) => item.capabilityId === 'internet.search')
+            && workflow.state.contract?.mode !== 'write'
+            && (workflow.state.contract?.requiredFacts.every((fact) => fact.acceptableSources.every((source) => ['internet', 'internet.search', 'internet.*'].includes(source))) ?? true);
+          if (verifiedWebAnswer && onlyPublicWeb && /\b429\b|Too Many Requests/i.test(errorMessage)) {
+            result = { text: verifiedWebAnswer, threadId };
+            isWebFallback = true;
+            await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+              eventType: 'web.partial_fallback', payload: { reason: 'model_rate_limited' } });
+            break;
+          }
           const delayMs = MODEL_RETRY_DELAYS_MS[attempt];
           if (sawToolActivity && isRetryableModelError(error)) {
             const detail = error instanceof Error ? error.message : String(error);
@@ -1040,9 +1095,9 @@ export class TaskOrchestrator {
           if (this.cancelledTasks.has(task.id)) break;
           const candidate = result.text.trim();
           const outcome = candidate && candidate !== EMPTY_TURN_TEXT
-            ? await this.submitCompletion(task, surfaceId, workflow, evidenceExcerpts, { status: 'answered', answer: candidate, factEvidence: {}, missingFacts: [] }, computeAvailable)
+            ? await this.submitCompletion(task, surfaceId, workflow, evidenceExcerpts, { status: isWebFallback ? 'partial' : 'answered', answer: candidate, factEvidence: {}, missingFacts: isWebFallback ? workflow.state.contract?.requiredFacts.map((fact) => fact.id) ?? [] : [] }, computeAvailable)
             : { accepted: false as const, feedback: '本回合没有输出最终答复。' };
-          if (outcome.accepted || revisionTurns >= MAX_REVISION_TURNS) break;
+          if (outcome.accepted || isWebFallback || revisionTurns >= MAX_REVISION_TURNS) break;
           result = await runModelTurn([
             '你的最终答复还不能交付，原因如下：',
             outcome.feedback,
@@ -1138,6 +1193,7 @@ export class TaskOrchestrator {
       await this.deliverTask(task, publicMessage, publicMessage, 3, '暂时无法处理');
       await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'task.failed', payload: { message } });
     } finally {
+      this.webObservers.delete(task.id);
       clearTimeout(progressTimer);
       await cardWrites.catch(() => undefined);
       this.cancelledTasks.delete(task.id);
@@ -1207,15 +1263,9 @@ export class TaskOrchestrator {
     }
     if (request.params.namespace === 'artifact' && request.params.tool === 'submit') {
       try {
-        if (!this.codex.inspectOutput || !this.codex.downloadOutput) throw new Error('FILE_WORKER_NOT_ENABLED');
         const path = (request.params.arguments as { path?: unknown } | undefined)?.path;
         if (typeof path !== 'string') throw new Error('OUTPUT_PATH_REQUIRED');
-        const output = await this.codex.inspectOutput(task.id, path);
-        const ext = extname(output.name).toLowerCase();
-        if (!['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv', '.json', '.html', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) throw new Error('OUTPUT_TYPE_UNSUPPORTED');
-        if (output.size <= 0 || output.size > this.config.MEDIA_MAX_BYTES) throw new Error('OUTPUT_SIZE_INVALID');
-        await this.repo.saveTaskArtifact(task.id, output);
-        await this.deliverArtifacts(task, threadId);
+        const output = await this.submitGeneratedArtifact(task, threadId, path);
         const evidence = workflow.record('artifact.submit', true, { scope: `task:${task.id}/output:${output.sha256}` });
         keepExcerpt(workflow, evidenceExcerpts, evidence.id, JSON.stringify({ delivered: true, name: output.name, size: output.size,
           sha256: output.sha256, surface: task.request.surface }));
@@ -1463,6 +1513,54 @@ export class TaskOrchestrator {
         await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId: task.request.surface.id,
           eventType: 'image.generation_failed', payload: { reason: publicErrorDetail(reason) } });
         return { contentItems: [{ type: 'inputText', text: publicErrorDetail(reason) }], success: false };
+      }
+    }
+    if (request.params.namespace === 'listing') {
+      try {
+        if (!this.listingTool) throw new Error('LISTING_DISABLED');
+        const controller = new AbortController();
+        const timer = setInterval(() => { if (this.cancelledTasks.has(task.id)) controller.abort(); }, 250);
+        try {
+          const result = await this.listingTool.execute(task.request, request.params.tool, request.params.arguments, {
+            sources: async (current, input) => {
+              const documentSnapshots: Record<string,string> = {};
+              const attachments = [...current.attachments];
+              for (const material of input.materials) {
+                if (material.kind === 'document') {
+                  if (!this.knowledgeTool) throw new Error('LISTING_DOCUMENT_REQUIRES_AUTHORIZED_KNOWLEDGE_READ');
+                  const read = await this.knowledgeTool.execute(current.user,'read',{ref:material.reference},{surfaceId:current.surface.id,taskId:task.id});
+                  const content = read.chunks.map((c: any) => c.text).join('\n');
+                  if (material.content && !content.includes(material.content)) throw new Error('LISTING_DOCUMENT_CHANGED_OR_UNSUPPORTED');
+                  documentSnapshots[material.reference] = content;
+                } else if (material.kind === 'attachment' && material.content) {
+                  const attachment = attachments.find(a => a.id === material.reference);
+                  if (attachment && !attachment.extractedText?.includes(material.content)) {
+                    if (!this.codex.inspectInput) throw new Error('FILE_WORKER_NOT_ENABLED');
+                    await this.codex.inspectInput(task.id,attachment.name,material.content);
+                    attachment.extractedText = material.content;
+                  }
+                }
+              }
+              return {request:{...current,attachments},documentSnapshots,listingSnapshots:{}};
+            },
+            deliver: (payload, signal) => this.deliverListingFiles(task,threadId,payload,signal),
+          },controller.signal);
+          await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,surfaceId:task.request.surface.id,
+            eventType:'listing.' + request.params.tool,payload:{sessionId:result.sessionId,status:result.status,versionId:result.versionId ?? result.version?.id}});
+          return {contentItems:[{type:'inputText',text:JSON.stringify(result)}],success:!['generation_failed','revision_failed'].includes(result.status)};
+        } finally { clearInterval(timer); }
+      } catch (error) {
+        return {contentItems:[{type:'inputText',text:publicErrorDetail(error)}],success:false};
+      }
+    }
+    if (request.params.namespace === 'knowledge') {
+      try {
+        if (!this.knowledgeTool) throw new Error('KNOWLEDGE_DISABLED');
+        const result = await this.knowledgeTool.execute(task.request.user, request.params.tool, request.params.arguments,
+          { surfaceId: task.request.surface.id, taskId: task.id });
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
+      } catch (error) {
+        return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : 'KNOWLEDGE_FAILED' }], success: false };
       }
     }
     if (request.params.namespace === 'agent' && request.params.tool === 'memory') {
@@ -1950,6 +2048,28 @@ export class TaskOrchestrator {
     }
   }
 
+  /** Listing files share the existing scan, identity and original-conversation delivery path. */
+  public async deliverListingFiles(task: TaskRecord, threadId: string, payload: ListingExport, signal?: AbortSignal) {
+    if (payload.scope.owner.corpId !== task.request.user.corpId || payload.scope.owner.userId !== task.request.user.userId
+      || payload.scope.surface.type !== task.request.surface.type || payload.scope.surface.id !== task.request.surface.id) throw new Error('LISTING_EXPORT_SCOPE_MISMATCH');
+    return deliverListingExport(task.id, payload, {
+      render: (taskId, data, cancellation) => renderListingInWorker(this.codex, taskId, data, cancellation),
+      submit: (path, cancellation) => this.submitGeneratedArtifact(task, threadId, path, cancellation),
+    }, signal);
+  }
+
+  private async submitGeneratedArtifact(task: TaskRecord, threadId: string, path: string, signal?: AbortSignal) {
+    if (signal?.aborted) throw new Error('LISTING_EXPORT_CANCELLED');
+    if (!this.codex.inspectOutput || !this.codex.downloadOutput) throw new Error('FILE_WORKER_NOT_ENABLED');
+    const output = await this.codex.inspectOutput(task.id, path);
+    const ext = extname(output.name).toLowerCase();
+    if (!['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv', '.json', '.html', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) throw new Error('OUTPUT_TYPE_UNSUPPORTED');
+    if (output.size <= 0 || output.size > this.config.MEDIA_MAX_BYTES) throw new Error('OUTPUT_SIZE_INVALID');
+    await this.repo.saveTaskArtifact(task.id, output);
+    await this.deliverArtifacts(task, threadId, signal);
+    return output;
+  }
+
   private async stageArtifact(task: TaskRecord, file: { name: string; size: number; sha256: string }): Promise<string> {
       if (!this.codex.downloadOutput) throw new Error('FILE_WORKER_NOT_ENABLED');
       const buffer = await this.codex.downloadOutput(task.id, file.name);
@@ -1971,13 +2091,16 @@ export class TaskOrchestrator {
       return target;
   }
 
-  private async deliverArtifacts(task: TaskRecord, threadId: string): Promise<void> {
+  private async deliverArtifacts(task: TaskRecord, threadId: string, signal?: AbortSignal): Promise<void> {
     const files = await this.repo.listTaskArtifacts(task.id);
     if (!files.length) return;
     if (!this.sender.sendFile) throw new Error('FILE_DELIVERY_UNAVAILABLE');
     for (const file of files) {
+      if (signal?.aborted) throw new Error('LISTING_EXPORT_CANCELLED');
       const target = await this.stageArtifact(task, file);
+      if (signal?.aborted) throw new Error('LISTING_EXPORT_CANCELLED');
       if (!await this.dws.status(task.request.user)) await this.ensureAuthorization(task, threadId);
+      if (signal?.aborted) throw new Error('LISTING_EXPORT_CANCELLED');
       const idempotencyKey = sha256({ taskId: task.id, artifactSha256: file.sha256, surface: task.request.surface });
       const existing = await this.repo.getToolInvocation(idempotencyKey);
       if (existing?.status === 'completed') continue;
@@ -2314,6 +2437,7 @@ export class TaskOrchestrator {
     // Persist only the non-secret identity mapping. DWS keeps the actual
     // access/refresh credentials in its own persistent keychain volume.
     await this.repo.setDwsProfile(task.request.user, task.request.user.corpId + ':' + task.request.user.userId);
+    await this.knowledgeTool?.authorizationVerified(task.request.user).catch(() => undefined);
     await this.repo.updateTask(task.id, 'running', { threadId });
     await this.deliverTask(task, '### 授权成功\n\n原任务正在继续执行。', '授权成功，继续处理…', 1, '授权成功');
   }
@@ -2517,6 +2641,7 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
     return capability ? '使用钉钉工具：' + capability : '使用钉钉工具';
   }
   if (namespace === 'agent' && tool === 'memory') return '读取或更新用户偏好';
+  if (namespace === 'knowledge') return tool === 'status' ? '查看知识库同步状态' : '检索并核验企业知识';
   if (namespace === 'analysis' && tool === 'python') {
     const purpose = safeLabel(args.purpose);
     return purpose ? '运行计算：' + purpose : '运行计算';
@@ -2543,9 +2668,11 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
 }
 
 function capabilityIdForTool(request: CodexApprovalRequest): string | undefined {
+  if (request.params.namespace === 'listing') return `listing.${request.params.tool}`;
   if (request.method !== 'item/tool/call') return undefined;
   const { namespace, tool } = request.params;
   const args = request.params.arguments as Record<string, unknown> | undefined;
+  if (namespace === 'knowledge' && ['search', 'read', 'lookup_product', 'status'].includes(tool)) return `knowledge.${tool}`;
   if (namespace === 'agent' && (tool === 'workflow' || tool === 'capabilities')) return undefined;
   if (namespace === 'crossborderops' && tool === 'scope') return 'crossborderops.scope';
   if (namespace === 'crossborderops' && tool === 'query' && typeof args?.dataset === 'string') return `crossborderops.${args.dataset}`;

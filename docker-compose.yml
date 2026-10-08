@@ -19,6 +19,7 @@ services:
       ZINIAO_REMOTE_KNOWN_HOSTS_PATH: ${ZINIAO_REMOTE_KNOWN_HOSTS_PATH:-/home/agent/.ziniao-cli/ssh/known_hosts}
       DWS_KEYCHAIN_DIR: /var/lib/dws/keychain
       MEDIA_DIR: /var/lib/agent/media
+      KNOWLEDGE_DIR: /var/lib/agent/knowledge
       CODEX_WORKDIR: /app/workspaces
       SKILLS_DIR: /app/skills
       CROSSBORDEROPS_API_URL: ${CROSSBORDEROPS_API_URL:-http://192.168.3.75:8081/api}
@@ -40,6 +41,7 @@ services:
       - dws-data:/var/lib/dws
       - ziniao-data:/home/agent/.ziniao-cli
       - media-data:/var/lib/agent/media
+      - knowledge-data:/var/lib/agent/knowledge
       - workspace-data:/app/workspaces
     restart: unless-stopped
     networks:
@@ -70,6 +72,7 @@ services:
       FILE_WORKER_ROOT: /work/tasks
       FILE_SKILLS_DIR: /opt/file-skills
       MEDIA_MAX_BYTES: ${MEDIA_MAX_BYTES:-52428800}
+      KNOWLEDGE_MAX_SOURCE_BYTES: ${KNOWLEDGE_MAX_SOURCE_BYTES:-268435456}
     volumes:
       - file-worker-data:/work/tasks
     tmpfs:
@@ -97,7 +100,10 @@ services:
       start_period: 30s
 
   postgres:
-    image: postgres:17-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: dingtalk-agent-postgres:17-vector
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agent}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent}
@@ -154,6 +160,11 @@ services:
 
   clamav:
     image: clamav/clamav:stable
+    environment:
+      CLAMD_CONF_StreamMaxLength: ${KNOWLEDGE_MAX_SOURCE_BYTES:-268435456}
+      CLAMD_CONF_MaxFileSize: ${KNOWLEDGE_MAX_SOURCE_BYTES:-268435456}
+      CLAMD_CONF_MaxScanSize: 1073741824
+      CLAMD_CONF_AlertExceedsMax: "yes"
     volumes:
       - clamav-data:/var/lib/clamav
     ports:
@@ -177,6 +188,7 @@ volumes:
   postgres-backups:
   clamav-data:
   file-worker-data:
+  knowledge-data:
 
 networks:
   file-worker-net:
