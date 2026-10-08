@@ -39,7 +39,10 @@ export function taskCardMessages(surfaceId: string, view: TaskCardView, create =
 export class A2uiTaskCards {
   private readonly writes = new Map<string, Promise<unknown>>();
   public constructor(private readonly dws: DwsBroker, private readonly repo: Repository) {}
-  private key(task: TaskRecord): string { return sha256({ kind: 'task.a2ui.create', id: task.id, user: task.request.user, surface: task.request.surface }); }
+  private key(task: TaskRecord): string {
+    const { user, surface } = task.request;
+    return sha256({ kind: 'task.a2ui.create', id: task.id, corpId: user.corpId, userId: user.userId, surfaceType: surface.type, surfaceId: surface.id });
+  }
   public async create(task: TaskRecord): Promise<string> {
     const key = this.key(task);
     const existing = await this.repo.getToolInvocation(key);
@@ -71,7 +74,7 @@ export class A2uiTaskCards {
     // A recovered legacy template card has no A2UI creation record. Use text fallback.
     if (state?.status !== 'completed' || !saved?.bizId || saved.bizId !== task.cardBizId) throw new Error('A2UI_TASK_CARD_UNAVAILABLE');
     if (terminal(saved.view.phase)) return;
-    view = { ...view, steps: view.steps || saved.view.steps };
+    view = { phase: view.phase, activity: view.activity, steps: view.steps || saved.view.steps, answer: view.answer };
     const current = await this.repo.findTask(task.id);
     if (current?.status === 'cancelled' && view.phase !== 'cancelled') return;
     if (current?.status.startsWith('waiting_') && ['queued', 'running'].includes(view.phase)) return;

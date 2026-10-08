@@ -50,6 +50,18 @@ describe('A2UI task lifecycle', () => {
     expect(broker.createA2ui).toHaveBeenCalledWith(task.request.user, task.request.surface, expect.any(Array));
   });
 
+  it('keeps the same identity key after JSONB reorders object fields', async () => {
+    const { task, broker, repo } = await setup();
+    const recovered = { ...task, request: { ...task.request,
+      user: { userId: 'member', displayName: 'display-only', corpId: 'corp' },
+      surface: { id: 'original', type: 'group' as const } } };
+    const restarted = new A2uiTaskCards(broker as unknown as DwsBroker, repo);
+    expect(await restarted.create(recovered)).toBe('card');
+    await restarted.update(recovered, { ...initialTaskCardView(), phase: 'completed', answer: '结果' });
+    expect(broker.createA2ui).toHaveBeenCalledTimes(1);
+    expect(broker.updateA2ui).toHaveBeenCalledTimes(1);
+  });
+
   it('serializes writes, preserves history, and cannot overwrite a terminal card', async () => {
     const { cards, task, broker } = await setup();
     const running = { ...initialTaskCardView(), phase: 'running' as const, steps: '✓ 已查询资料' };
