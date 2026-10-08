@@ -16,12 +16,19 @@ async function setup() {
   const broker = { lintA2ui: vi.fn(async (_user, messages) => messages.map(JSON.stringify)),
     createA2ui: vi.fn(async () => ({ accepted: true, bizId: 'card' })),
     updateA2ui: vi.fn(async () => {}) };
-  const cards = new A2uiTaskCards(broker as unknown as DwsBroker, repo);
+  const transport = { identity: "robot" as const, create: (task: any, messages: string[]) => broker.createA2ui(task.request.user, task.request.surface, messages), update: (task: any, bizId: string, messages: string[], status: any) => broker.updateA2ui(task.request.user, bizId, messages, status) };
+  const cards = new A2uiTaskCards(broker as unknown as DwsBroker, repo, transport);
   task.cardBizId = await cards.create(task);
-  return { repo, task, broker, cards };
+  return { repo, task, broker, cards, transport };
 }
 
 describe('A2UI task lifecycle', () => {
+  it('refuses to use personal DWS as an Agent response transport', async () => {
+    const { task, broker, repo } = await setup();
+    broker.createA2ui.mockClear();
+    await expect(new A2uiTaskCards(broker as unknown as DwsBroker, repo).create(task)).rejects.toThrow('A2UI_ROBOT_TRANSPORT_UNAVAILABLE');
+    expect(broker.createA2ui).not.toHaveBeenCalled();
+  });
   it('integrates actual tools and final answer while excluding raw commands and reasoning events', async () => {
     const repo = new InMemoryRepository();
     const writes: TaskCardView[] = [];
@@ -44,18 +51,18 @@ describe('A2UI task lifecycle', () => {
     expect(send).not.toHaveBeenCalled();
   });
   it('creates once with the request identity and original surface, including after restart', async () => {
-    const { task, broker, repo } = await setup();
-    expect(await new A2uiTaskCards(broker as unknown as DwsBroker, repo).create(task)).toBe('card');
+    const { task, broker, repo, transport } = await setup();
+    expect(await new A2uiTaskCards(broker as unknown as DwsBroker, repo, transport).create(task)).toBe('card');
     expect(broker.createA2ui).toHaveBeenCalledTimes(1);
     expect(broker.createA2ui).toHaveBeenCalledWith(task.request.user, task.request.surface, expect.any(Array));
   });
 
   it('keeps the same identity key after JSONB reorders object fields', async () => {
-    const { task, broker, repo } = await setup();
+    const { task, broker, repo, transport } = await setup();
     const recovered = { ...task, request: { ...task.request,
       user: { userId: 'member', displayName: 'display-only', corpId: 'corp' },
       surface: { id: 'original', type: 'group' as const } } };
-    const restarted = new A2uiTaskCards(broker as unknown as DwsBroker, repo);
+    const restarted = new A2uiTaskCards(broker as unknown as DwsBroker, repo, transport);
     expect(await restarted.create(recovered)).toBe('card');
     await restarted.update(recovered, { ...initialTaskCardView(), phase: 'completed', answer: '结果' });
     expect(broker.createA2ui).toHaveBeenCalledTimes(1);
@@ -85,12 +92,24 @@ describe('A2UI task lifecycle', () => {
     expect(broker.updateA2ui).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps clarification replies resumable even when delivery marks the text as finished', async () => {
+    const { cards, task, repo, broker } = await setup();
+    await repo.updateTask(task.id, 'waiting_clarification');
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, {} as CodexClientLike, {} as DwsBroker,
+      { send: vi.fn(), updateTaskProcess: (task, view) => cards.update(task, view) });
+    await (orchestrator as any).deliverTask(task, '请补充', '请补充', 3, '需要补充信息');
+    expect((broker.updateA2ui.mock.calls[0] as unknown as any[])[3]).toBe('INPUTTING');
+    await repo.updateTask(task.id, 'running');
+    await cards.update(task, { ...initialTaskCardView(), phase: 'completed', answer: '补充后完成' });
+    expect((broker.updateA2ui.mock.calls[1] as unknown as any[])[3]).toBe('FINISH');
+  });
+
   it('does not repeat a write whose delivery outcome is unknown across restart', async () => {
-    const { cards, task, broker, repo } = await setup();
+    const { cards, task, broker, repo, transport } = await setup();
     broker.updateA2ui.mockRejectedValueOnce(new Error('timeout'));
     const view = { ...initialTaskCardView(), phase: 'completed' as const, answer: '结果' };
     await expect(cards.update(task, view)).rejects.toThrow('timeout');
-    await expect(new A2uiTaskCards(broker as unknown as DwsBroker, repo).update(task, view)).rejects.toThrow('OUTCOME_UNKNOWN');
+    await expect(new A2uiTaskCards(broker as unknown as DwsBroker, repo, transport).update(task, view)).rejects.toThrow('OUTCOME_UNKNOWN');
     expect(broker.updateA2ui).toHaveBeenCalledTimes(1);
   });
 
@@ -104,7 +123,10 @@ describe('A2UI task lifecycle', () => {
     expect(view.steps).toContain('⚠ 已停止');
     const messages = taskCardMessages('task', view, true);
     const components = (messages[2] as any).updateComponents.components;
-    expect(components[1]).toMatchObject({ variant: 'reasoning', defaultExpanded: false, title: '已取消' });
+    expect(components.find((c: any) => c.id === "execution")).toMatchObject({ variant: 'reasoning', defaultExpanded: false, title: '已取消' });
     expect(JSON.stringify(messages)).not.toContain('templateId');
+    expect(components.find((c: any) => c.id === 'loading').visible).toBe(false);
+    const running = taskCardMessages('task', initialTaskCardView(), true);
+    expect(JSON.stringify(running)).toContain('[AIGenerating]');
   });
 });

@@ -1240,7 +1240,7 @@ export class TaskOrchestrator {
       try {
         const current = await this.repo.findTask(task.id);
         const phase = current?.status === 'cancelled' ? 'cancelled' : current?.status === 'failed' ? 'failed'
-          : status === 3 ? 'completed' : current?.status.startsWith('waiting_') ? 'waiting' : 'running';
+          : current?.status.startsWith('waiting_') ? 'waiting' : status === 3 ? 'completed' : 'running';
         const presentation = this.taskPresentations.get(task.id);
         const view: TaskCardView = presentation?.snapshot(cardContent, phase)
           ?? { phase, activity: title, steps: '', answer: cardContent };
@@ -2714,6 +2714,8 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
     const capability = safeLabel(args.capability);
     return capability ? '使用钉钉工具：' + capability : '使用钉钉工具';
   }
+  if (namespace === 'dingtalk' && tool === 'schema') return '查询钉钉工具参数说明';
+  if (namespace === 'agent' && tool === 'capabilities') return '查找可用工具';
   if (namespace === 'agent' && tool === 'memory') return '读取或更新用户偏好';
   if (namespace === 'knowledge') return tool === 'status' ? '查看知识库同步状态' : '检索并核验企业知识';
   if (namespace === 'analysis' && tool === 'python') {

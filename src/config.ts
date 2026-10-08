@@ -11,7 +11,7 @@ const schema = z.object({
   // Stable DingTalk department ID to exclude from the Agent authorization picker.
   DINGTALK_DIRECTORY_FACTORY_DEPT_ID: z.coerce.number().int().positive().optional(),
   DINGTALK_CARD_TEMPLATE_ID: z.string().min(1).optional(),
-  DINGTALK_A2UI_TASK_CARDS: z.enum(['true', 'false']).default('true'),
+  DINGTALK_A2UI_TASK_CARDS: z.enum(['true', 'false']).default('false'),
   DINGTALK_CARD_VARIABLE: z.string().min(1).default('content'),
   DINGTALK_CARD_ACTIVITY_VARIABLE: z.string().min(1).optional(),
   DINGTALK_CARD_ACTIVITY_IN_PROCESSING: z.enum(['true', 'false']).default('false'),

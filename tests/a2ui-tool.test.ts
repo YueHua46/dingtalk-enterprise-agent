@@ -15,6 +15,12 @@ const messages = [{ version: 'v1.0', createSurface: { surfaceId: 'task', catalog
   { version: 'v1.0', updateComponents: { surfaceId: 'task', components } }];
 
 describe('A2UI display boundary', () => {
+  it('never sends an Agent presentation using personal DWS identity', async () => {
+    const broker = new DwsBroker(config());
+    const run = vi.spyOn(broker, 'runCommand');
+    await expect(broker.sendA2ui(user, { type: 'group', id: 'original-group' }, [])).rejects.toThrow('A2UI_ROBOT_TRANSPORT_UNAVAILABLE');
+    expect(run).not.toHaveBeenCalled();
+  });
   it('builds reusable sections and host-owned surfaces without a template id', () => {
     const tool = new A2uiTool({} as DwsBroker);
     const input = tool.parse('show_sections', { title: '工作步骤', sections: [{ title: '第一步', markdown: '读取资料' }] });
@@ -53,7 +59,7 @@ describe('A2UI display boundary', () => {
   it('sends to the original group with the invoking identity and finalizes using its returned bizId', async () => {
     const broker = new DwsBroker(config());
     const run = vi.spyOn(broker, 'runCommand').mockResolvedValueOnce({ bizId: 'returned-card' }).mockResolvedValueOnce({ accepted: true });
-    await expect(broker.sendA2ui(user, { type: 'group', id: 'original-group' }, messages.map(m => JSON.stringify(m))))
+    await expect(broker.sendPersonalA2ui(user, { type: 'group', id: 'original-group' }, messages.map(m => JSON.stringify(m))))
       .resolves.toEqual({ accepted: true, renderingVerified: false, bizId: 'returned-card' });
     expect(run.mock.calls[0]?.[0]).toEqual(user);
     expect(run.mock.calls[0]?.[1]).toContain('original-group');
@@ -66,10 +72,10 @@ describe('A2UI display boundary', () => {
   it('does not retry an ambiguous send or finalize and rejects a cross-user DM target', async () => {
     const broker = new DwsBroker(config());
     const run = vi.spyOn(broker, 'runCommand').mockResolvedValue({});
-    await expect(broker.sendA2ui(user, { type: 'direct', id: 'other' }, messages.map(m => JSON.stringify(m))))
+    await expect(broker.sendPersonalA2ui(user, { type: 'direct', id: 'other' }, messages.map(m => JSON.stringify(m))))
       .rejects.toThrow('A2UI_DIRECT_SURFACE_MISMATCH');
     expect(run).not.toHaveBeenCalled();
-    await expect(broker.sendA2ui(user, { type: 'direct', id: user.userId }, messages.map(m => JSON.stringify(m))))
+    await expect(broker.sendPersonalA2ui(user, { type: 'direct', id: user.userId }, messages.map(m => JSON.stringify(m))))
       .rejects.toThrow('A2UI_DELIVERY_OUTCOME_UNKNOWN');
     expect(run).toHaveBeenCalledTimes(1);
     expect(run.mock.calls[0]?.[1]).toContain(user.userId);

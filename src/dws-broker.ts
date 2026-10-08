@@ -450,6 +450,14 @@ export class DwsBroker {
 
   /** The caller owns the persistent idempotency ledger. Never retry these writes. */
   public async sendA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<unknown> {
+    // This entry point is used by Agent presentation tools. The installed DWS
+    // A2UI command sends as the OAuth user and has no robot identity parameter.
+    // Never impersonate the requester for host progress or Agent result cards.
+    throw new Error('A2UI_ROBOT_TRANSPORT_UNAVAILABLE');
+  }
+
+  /** Personal preview transport only; never use for an Agent response. */
+  public async sendPersonalA2ui(user: UserIdentity, surface: ConversationSurface, messages: string[]): Promise<unknown> {
     const created = await this.createA2ui(user, surface, messages);
     const surfaceId = JSON.parse(messages[0]!).createSurface?.surfaceId;
     if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('A2UI_FINALIZE_OUTCOME_UNKNOWN');
