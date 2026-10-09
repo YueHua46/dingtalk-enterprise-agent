@@ -4,7 +4,8 @@ import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-
 import { DwsTool } from './dws-tool.js';
 import { MediaPipeline } from './media.js';
 import { MemoryTool } from './memory-tool.js';
-import type { KnowledgeTool } from './knowledge-tool.js';
+import type { KnowledgeExecutionContext, KnowledgeTool } from './knowledge-tool.js';
+import { knowledgeEvidenceExcerpt,knowledgeCitations } from './knowledge-evidence.js';
 import type { ListingTool } from './listing-tool.js';
 import { GuideTool } from './guide-tool.js';
 import { NativeWebTool } from './native-web-tool.js';
@@ -16,7 +17,7 @@ import { CrossBorderOpsTool } from './crossborderops-tool.js';
 import { McpReadTool } from './mcp-read-tool.js';
 import { TaskWorkflow, listCapabilities, type ScreenshotDeliveryReceipt, type TaskCompletion } from './task-workflow.js';
 import { capabilityById } from './capability-catalog.js';
-import { EvidenceReviewer, formatIssues } from './evidence-reviewer.js';
+import { EvidenceReviewer, formatIssues, type ReviewProfile } from './evidence-reviewer.js';
 import { parseAnalysisInput } from './analysis-tool.js';
 import { EMPTY_TURN_TEXT } from './codex-client.js';
 import { ZiniaoBroker, ZINIAO_AUTH_INIT_FAILED, ZINIAO_LOCAL_CLIENT_REQUIRED, type ZiniaoRunOptions } from './ziniao-broker.js';
@@ -28,6 +29,7 @@ import { CardPresentation } from './card-presentation.js';
 import * as md from './markdown.js';
 import { isCancellation, isConfirmation, parseTaskControl } from './policy.js';
 import { actionHash, sha256 } from './security.js';
+import { buildQueryIntent, resolveQueryIntent, routingHint, toolPreferences, type QueryIntent } from './query-intent.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { deliverListingExport, type ListingExport } from './listing-export.js';
 import { renderListingInWorker } from './listing-export-worker.js';
@@ -38,6 +40,7 @@ import { inspectPng, isPng } from './png-validation.js';
 import type { AgentRequest, ApprovalChallenge, Attachment, TaskRecord, ToolAction } from './types.js';
 import type { Repository } from './persistence.js';
 import type { TaskQueue } from './task-queue.js';
+import type { AgentUiDocument, ExecutionUiState, A2UIFlowStatus } from './a2ui.js';
 
 export interface MessageSender {
   send(surface: AgentRequest['surface'], markdown: string, title?: string): Promise<void>;
@@ -45,6 +48,8 @@ export interface MessageSender {
   sendFile?(user: AgentRequest['user'], surface: AgentRequest['surface'], filePath: string): Promise<unknown>;
   beginTaskCard?(task: TaskRecord): Promise<string>;
   updateTaskCard?(bizId: string, content: string, flowStatus: 1 | 2 | 3 | 4 | 5, mode?: 'static' | 'stream'): Promise<void>;
+  beginTaskA2UI?(task: TaskRecord): Promise<string>;
+  updateTaskA2UI?(bizId: string, state: ExecutionUiState, status: A2UIFlowStatus): Promise<void>;
   updateTaskActivity?(bizId: string, activity: string, flowStatus: 1 | 2 | 3 | 4 | 5): Promise<void>;
   /** Interactive approval card (agree/reject buttons). Returns the card
    *  outTrackId used to correlate the card callback, or undefined when the
@@ -292,6 +297,21 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function canFastFinalizeDeliveredImage(workflow: TaskWorkflow): boolean {
+  if (workflow.state.clarification && !workflow.state.clarification.answer) return false;
+  if ((workflow.state.contract?.requiredFacts.length ?? 0) > 0) return false;
+  return workflow.state.evidence.every((item) => item.capabilityId === 'image.generate' || item.capabilityId === 'reference.read_guide');
+}
+
+function reviewProfileFor(workflow: TaskWorkflow): ReviewProfile {
+  const ids = workflow.state.evidence.map((item) => item.capabilityId);
+  if (ids.includes('knowledge.lookup_product') && ids.every((id) => id === 'knowledge.lookup_product' || id === 'knowledge.search' || id === 'knowledge.read')) {
+    return 'simple_product';
+  }
+  if (ids.some((id) => id.startsWith('crossborderops.') || id === 'analysis.python')) return 'analysis';
+  return ids.some((id) => id.startsWith('knowledge.')) ? 'knowledge_general' : 'analysis';
+}
+
 export class TaskOrchestrator {
   private readonly queues = new Map<string, Promise<void>>();
   private readonly active = new Map<string, string>();
@@ -335,6 +355,9 @@ export class TaskOrchestrator {
   private readonly preparedAttachments = new Map<string, Attachment[]>();
   private readonly imageResults = new Map<string, Map<string, ImageToolResult>>();
   private readonly imageDeliveries = new Map<string, Set<string>>();
+  private readonly a2uiTasks = new Set<string>();
+  private readonly a2uiDocuments = new Map<string, AgentUiDocument>();
+  private readonly a2uiStates = new Map<string, ExecutionUiState>();
 
   public constructor(
     private readonly config: Config,
@@ -376,7 +399,17 @@ export class TaskOrchestrator {
     await this.repo.ensureUser(request.user);
     const surfaceId = await this.repo.ensureSurface(request.user, request.surface);
     const task = await this.repo.createTask(request, surfaceId);
-    if (this.sender.beginTaskCard && this.sender.updateTaskCard) {
+    if (this.sender.beginTaskA2UI && this.sender.updateTaskA2UI) {
+      try {
+        const bizId = await this.sender.beginTaskA2UI(task);
+        await this.repo.setTaskCard(task.id, bizId);
+        task.cardBizId = bizId;
+        this.a2uiTasks.add(task.id);
+      } catch (error) {
+        await this.repo.audit({ requestId: request.requestId, taskId: task.id, user: request.user, surfaceId, eventType: 'a2ui.create_failed', payload: { reason: safeDeliveryError(error) } });
+      }
+    }
+    if (!task.cardBizId && this.sender.beginTaskCard && this.sender.updateTaskCard) {
       try {
         const bizId = await this.sender.beginTaskCard(task);
         await this.repo.setTaskCard(task.id, bizId);
@@ -766,6 +799,7 @@ export class TaskOrchestrator {
 
   private async run(task: TaskRecord, surfaceId: string): Promise<void> {
     const key = task.request.user.corpId + ':' + task.request.user.userId;
+    const taskStartedAt = Date.now();
     this.active.set(key, task.id);
     await this.repo.updateTask(task.id, 'running');
     const presentation = new CardPresentation();
@@ -778,7 +812,7 @@ export class TaskOrchestrator {
     let lastCardWriteAt = 0;
     const cardCadenceMs = 550;
     const queueCard = (content: string, status: 1 | 2 | 3 | 4 | 5, mode: 'static' | 'stream' | 'activity' = 'stream') => {
-      if (!task.cardBizId || !this.sender.updateTaskCard || this.cancelledTasks.has(task.id)) return;
+      if (!task.cardBizId || this.cancelledTasks.has(task.id)) return;
       // Keep only the newest complete snapshot. Queuing every token-sized snapshot
       // makes the client render stale states long after the model has advanced.
       pendingCard = { content, status, mode };
@@ -796,11 +830,18 @@ export class TaskOrchestrator {
             const waitMs = Math.max(0, cardCadenceMs - (Date.now() - lastCardWriteAt));
             if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
             if (this.cancelledTasks.has(task.id)) continue;
-            if (next.mode === 'activity') await this.sender.updateTaskActivity!(task.cardBizId!, next.content, next.status);
-            else await this.sender.updateTaskCard!(task.cardBizId!, next.content, next.status, next.mode);
+            if (this.a2uiTasks.has(task.id) && this.sender.updateTaskA2UI) {
+              const state = presentation.snapshot('Agent任务');
+              const result = this.a2uiDocuments.get(task.id); if (result) state.result = result;
+              state.status = next.status === 3 ? 'finished' : next.status === 5 ? 'error' : next.status === 2 ? 'inputting' : 'executing';
+              this.a2uiStates.set(task.id, state);
+              await this.sender.updateTaskA2UI(task.cardBizId!, state, next.status === 3 ? 'FINISH' : next.status === 5 ? 'ERROR' : next.status === 2 ? 'INPUTTING' : 'PROCESSING');
+            } else if (next.mode === 'activity' && this.sender.updateTaskActivity) await this.sender.updateTaskActivity!(task.cardBizId!, next.content, next.status);
+            else if (this.sender.updateTaskCard && next.mode !== 'activity') await this.sender.updateTaskCard!(task.cardBizId!, next.content, next.status, next.mode);
             lastCardWriteAt = Date.now();
           } catch (error) {
             await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'card.update_failed', payload: { reason: safeDeliveryError(error) } });
+            await this.fallbackA2UI(task, surfaceId).catch(() => undefined);
           }
         }
       }).finally(() => {
@@ -844,6 +885,9 @@ export class TaskOrchestrator {
       this.preparedAttachments.set(task.id, attachments);
       this.imageResults.delete(task.id);
       this.imageDeliveries.delete(task.id);
+      this.a2uiTasks.delete(task.id);
+      this.a2uiDocuments.delete(task.id);
+      this.a2uiStates.delete(task.id);
       for (const item of attachments) await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
         eventType: 'attachment.prepared', payload: { id: item.id, name: item.name, size: item.size, sha256: item.sha256, available: Boolean(item.localPath) } });
       const memories = await this.repo.listUserMemories(task.request.user);
@@ -893,6 +937,23 @@ export class TaskOrchestrator {
         return record.id;
       });
       const computeAvailable = Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id));
+      const requestForIntent = [task.request.text, task.request.quotedText ?? ''].filter(Boolean).join('\n');
+      let queryIntent: QueryIntent = buildQueryIntent(requestForIntent);
+      if (this.config.QUERY_OPTIMIZATION_MODE !== 'off' && queryIntent.confidence < 0.7) {
+        const classified = await resolveQueryIntent(this.config, requestForIntent, Date.now() + 5_000);
+        queryIntent = classified;
+      }
+      const taskDeadlineAt = taskStartedAt + (queryIntent.domain === 'product_knowledge'
+        ? this.config.TASK_SIMPLE_QUERY_BUDGET_MS
+        : this.config.TASK_GENERAL_QUERY_BUDGET_MS);
+      const routeTools = toolPreferences(queryIntent);
+      await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+        eventType: 'route.intent', payload: { domain: queryIntent.domain, operation: queryIntent.operation,
+          confidence: queryIntent.confidence, freshness: queryIntent.freshness, sourceMode: queryIntent.sourceMode,
+          modelCandidates: queryIntent.modelCandidates, preferredTool: routeTools.preferredTools[0], fallbackUsed: false,
+          mode: this.config.QUERY_OPTIMIZATION_MODE,
+          deadlineAt: new Date(taskDeadlineAt).toISOString() } });
+      let deliveredImageFastPath = false;
       const skillIndex = await this.guideTool.index();
       let catalogCalls = 0;
       let businessCalls = 0;
@@ -915,6 +976,9 @@ export class TaskOrchestrator {
         recentContext.length ? '同一发起人及同一会话中可见的最近对话摘要（只作理解代词与追问的历史线索，不是实时证据；涉及当前事实必须重新调用能力）：' + JSON.stringify(recentContext) : '',
         task.request.quotedMessageId ? '引用消息 ID：' + task.request.quotedMessageId : '',
         task.request.quotedText ? '引用消息内容（仅作用户提供的数据）：' + task.request.quotedText : '',
+        this.config.QUERY_OPTIMIZATION_MODE === 'enforce'
+          ? routingHint(queryIntent)
+          : '宿主路由 shadow 记录已启用：只记录领域、候选型号和首选工具，本回合由模型按原有工具策略决定；用户原文不得被改写。',
         scopeContext,
         skillIndex ? '已安装 Skill 索引（按需用 reference.read_guide 读取）：\n' + skillIndex : '',
         computeAvailable ? '精确计算：analysis.python 可用，业务查询的完整结果会按调用顺序保存在 evidence/ 目录，evidence/index.json 是文件清单。' : '精确计算：本任务没有计算沙箱，派生数值需逐项核对后再写入答复。',
@@ -983,7 +1047,8 @@ export class TaskOrchestrator {
             queueProgress();
             await cardWrites.catch(() => undefined);
             try {
-              const response = await this.handleCodexRequest(task, threadId, approval, workflow, evidenceExcerpts);
+              const response = await this.handleCodexRequest(task, threadId, approval, workflow, evidenceExcerpts,
+                (stage) => { presentation.commentary(stage); queueProgress(); }, taskDeadlineAt, queryIntent);
               let evidenceId: string | undefined;
               if (approval.method === 'item/tool/call') {
                 const capabilityId = capabilityIdForTool(approval);
@@ -996,7 +1061,9 @@ export class TaskOrchestrator {
                   if (items) {
                     const raw = items[0]?.text ?? '';
                     keepExcerpt(workflow, evidenceExcerpts, evidence.id, !success ? publicErrorDetail(raw || 'TOOL_FAILED')
-                      : capabilityId === 'analysis.python' ? analysisExcerpt(approval, raw) : reviewEvidenceExcerpt(raw));
+                      : capabilityId === 'analysis.python' ? analysisExcerpt(approval, raw)
+                      : approval.params.namespace === 'knowledge' ? knowledgeEvidenceExcerpt(raw,{operation:approval.params.tool,arguments:approval.params.arguments}) ?? reviewEvidenceExcerpt(raw)
+                      : reviewEvidenceExcerpt(raw));
                     let fileNote = '';
                     if (success && savesEvidenceFile(capabilityId) && this.codex.writeEvidence && this.codex.usesWorker?.(task.id)) {
                       try {
@@ -1027,6 +1094,24 @@ export class TaskOrchestrator {
                   durationMs: Date.now() - startedAt, evidenceId } });
               presentation.toolCompleted(label, (response as { success?: boolean } | undefined)?.success !== false);
               queueProgress();
+              if (approval.params.namespace === 'image' && approval.params.tool === 'generate'
+                && (response as { success?: boolean } | undefined)?.success !== false
+                && approval.params.arguments?.finalizeTask === true
+                && canFastFinalizeDeliveredImage(workflow)) {
+                deliveredImageFastPath = true;
+                // The file is already in the conversation. Let the tool result
+                // reach the model, then stop its otherwise redundant answer turn.
+                setTimeout(() => { void this.codex.interrupt(threadId).catch(() => undefined); }, 50).unref();
+              }
+              // Image delivery is the requested side effect. Once the image
+              // provider has rejected the call, let the host finalize the task
+              // immediately instead of asking the model to spend another turn
+              // explaining or retrying a non-retryable provider error.
+              if (approval.params.namespace === 'image' && approval.params.tool === 'generate'
+                && (response as { success?: boolean } | undefined)?.success === false) {
+                const detail = (response as { contentItems?: Array<{ text?: unknown }> } | undefined)?.contentItems?.[0]?.text;
+                throw new Error('IMAGE_GENERATION_FAILED: ' + publicErrorDetail(typeof detail === 'string' ? detail : 'IMAGE_GENERATION_FAILED'));
+              }
               return response;
             } catch (error) {
               await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
@@ -1037,7 +1122,8 @@ export class TaskOrchestrator {
               throw error;
             }
           }
-          return this.handleCodexRequest(task, threadId, approval, workflow, evidenceExcerpts);
+          return this.handleCodexRequest(task, threadId, approval, workflow, evidenceExcerpts,
+            (stage) => { presentation.commentary(stage); queueProgress(); }, taskDeadlineAt, queryIntent);
         },
         attachments,
         task.id
@@ -1046,10 +1132,21 @@ export class TaskOrchestrator {
       let isWebFallback = false;
       for (let attempt = 0; ; attempt += 1) {
         sawToolActivity = false;
+        if (Date.now() >= taskDeadlineAt) {
+          result = { text: '本任务已达到时间预算，已核验内容将保留，未核验内容暂不作确定结论。', threadId };
+          await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+            eventType: 'workflow.deadline_exceeded', payload: { stage: 'model_turn', deadlineExceeded: true, deadlineAt: new Date(taskDeadlineAt).toISOString() } });
+          break;
+        }
         try {
           result = await runModelTurn();
+          if (deliveredImageFastPath) result.text = '图片已生成并发送到当前会话。';
           break;
         } catch (error) {
+          if (deliveredImageFastPath) {
+            result = { text: '图片已生成并发送到当前会话。', threadId };
+            break;
+          }
           if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
           const errorMessage = error instanceof Error ? error.message : String(error);
           const onlyPublicWeb = workflow.state.evidence.every((item) => item.capabilityId === 'internet.search')
@@ -1067,6 +1164,9 @@ export class TaskOrchestrator {
             const detail = error instanceof Error ? error.message : String(error);
             throw new Error(`${MODEL_RETRY_UNSAFE_AFTER_TOOL}: ${detail}`);
           }
+          // The gateway owns HTTP retries for proxied model requests. Replaying
+          // a whole turn here would multiply the bounded gateway attempts.
+          if(this.config.MODEL_TOOL_COMPAT_PROXY==='true'&&isRetryableModelError(error))throw error;
           if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
           if (delayMs === undefined || !isRetryableModelError(error)) throw error;
           const nextAttempt = attempt + 2;
@@ -1085,19 +1185,36 @@ export class TaskOrchestrator {
           if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
         }
       }
+      if (deliveredImageFastPath) {
+        workflow.complete({ status: 'answered', answer: '图片已生成并发送到当前会话。', factEvidence: {}, missingFacts: [] });
+        await this.repo.saveWorkflow(task.id, workflow.state);
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          surfaceId, eventType: 'workflow.complete', payload: { revision: workflow.state.revision, status: 'answered', source: 'image_delivery' } });
+      }
       // The agent may end its turn with a plain final message instead of
       // agent.workflow complete. The host validates that message exactly like
       // a submitted completion; a failed validation starts one focused repair
       // turn carrying every issue at once.
-      if (this.enforcing()) {
+      if (this.enforcing() && !deliveredImageFastPath) {
+        const reviewProfile = reviewProfileFor(workflow);
+        const maxReviewRounds = reviewProfile === 'simple_product' ? 1 : reviewProfile === 'knowledge_general' ? 2 : MAX_REVIEW_ROUNDS;
+        let repairTurnCount = 0;
         for (let revisionTurns = 0; ; revisionTurns += 1) {
           if (workflow.state.completion || (workflow.state.clarification && !workflow.state.clarification.answer)) break;
           if (this.cancelledTasks.has(task.id)) break;
           const candidate = result.text.trim();
           const outcome = candidate && candidate !== EMPTY_TURN_TEXT
-            ? await this.submitCompletion(task, surfaceId, workflow, evidenceExcerpts, { status: isWebFallback ? 'partial' : 'answered', answer: candidate, factEvidence: {}, missingFacts: isWebFallback ? workflow.state.contract?.requiredFacts.map((fact) => fact.id) ?? [] : [] }, computeAvailable)
+            ? await this.submitCompletion(task, surfaceId, workflow, evidenceExcerpts, { status: isWebFallback ? 'partial' : 'answered', answer: candidate, factEvidence: {}, missingFacts: isWebFallback ? workflow.state.contract?.requiredFacts.map((fact) => fact.id) ?? [] : [] }, computeAvailable, taskDeadlineAt)
             : { accepted: false as const, feedback: '本回合没有输出最终答复。' };
-          if (outcome.accepted || isWebFallback || revisionTurns >= MAX_REVISION_TURNS) break;
+          if (outcome.accepted || isWebFallback || revisionTurns >= Math.min(MAX_REVISION_TURNS, maxReviewRounds)) break;
+          if (Date.now() >= taskDeadlineAt) {
+            await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+              eventType: 'workflow.deadline_exceeded', payload: { stage: 'revision_turn', deadlineExceeded: true, deadlineAt: new Date(taskDeadlineAt).toISOString() } });
+            break;
+          }
+          repairTurnCount += 1;
+          await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
+            eventType: 'workflow.repair_turn', payload: { repairTurnCount, reviewProfile } });
           result = await runModelTurn([
             '你的最终答复还不能交付，原因如下：',
             outcome.feedback,
@@ -1135,11 +1252,15 @@ export class TaskOrchestrator {
       await this.repo.updateTask(task.id, 'completed', { threadId, resultSummary: result.text, resultVisibility: 'surface' });
       await this.finishApprovalCard(task.id, 'done');
       await cardWrites.catch(() => undefined);
-      if (task.cardBizId && this.sender.updateTaskCard) {
+      if (task.cardBizId && (this.sender.updateTaskCard || this.sender.updateTaskA2UI)) {
         let activityCleared = false;
         for (const snapshot of answerSnapshots(result.text)) {
           try {
-            await this.sender.updateTaskCard(task.cardBizId, this.sender.updateTaskActivity ? snapshot : presentation.render(snapshot), 2);
+            if (this.a2uiTasks.has(task.id) && this.sender.updateTaskA2UI) {
+              this.a2uiDocuments.set(task.id, { title: '最终结果', root: { id: 'answer', component: 'Markdown', props: { content: snapshot } } });
+              const state = presentation.snapshot('Agent任务'); const result = this.a2uiDocuments.get(task.id); if (result) state.result = result; state.status = 'inputting'; this.a2uiStates.set(task.id, state);
+              await this.sender.updateTaskA2UI(task.cardBizId, state, 'INPUTTING');
+            } else if (this.sender.updateTaskCard) await this.sender.updateTaskCard(task.cardBizId, this.sender.updateTaskActivity ? snapshot : presentation.render(snapshot), 2);
             if (!activityCleared && this.sender.updateTaskActivity) {
               // The first nonempty answer switches to INPUTTING. Retire the
               // progress line here, not at finalize, so the answer layout is
@@ -1212,6 +1333,19 @@ export class TaskOrchestrator {
   }
 
   private async deliverTask(task: TaskRecord, fallback: string, cardContent: string, status: 1 | 2 | 3 | 4 | 5, title: string): Promise<void> {
+    if (task.cardBizId && this.a2uiTasks.has(task.id) && this.sender.updateTaskA2UI) {
+      try {
+        this.a2uiDocuments.set(task.id, { title, root: { id: 'answer', component: 'Markdown', props: { content: cardContent } } });
+        const state: ExecutionUiState = { ...(this.a2uiStates.get(task.id) ?? { title: 'Agent任务', steps: [] }), status: status === 3 ? 'finished' : status === 5 ? 'error' : 'inputting' };
+        const result = this.a2uiDocuments.get(task.id); if (result) state.result = result;
+        this.a2uiStates.set(task.id, state);
+        await this.sender.updateTaskA2UI(task.cardBizId, state, status === 3 ? 'FINISH' : status === 5 ? 'ERROR' : 'INPUTTING');
+        return;
+      } catch (error) {
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, eventType: 'a2ui.update_failed', payload: { reason: safeDeliveryError(error) } });
+        await this.fallbackA2UI(task, task.request.surface.id).catch(() => undefined);
+      }
+    }
     if (task.cardBizId && this.sender.updateTaskCard) {
       try {
         await this.sender.updateTaskCard(task.cardBizId, cardContent, status);
@@ -1239,7 +1373,19 @@ export class TaskOrchestrator {
     await this.sender.send(task.request.surface, fallback, title);
   }
 
-  private async handleCodexRequest(task: TaskRecord, threadId: string, request: CodexApprovalRequest, workflow: TaskWorkflow, evidenceExcerpts: Map<string, string>): Promise<unknown> {
+  /** A failed AI-card delta must move to the existing native-card path before Markdown. */
+  private async fallbackA2UI(task: TaskRecord, surfaceId: string): Promise<void> {
+    if (!this.a2uiTasks.has(task.id) || !this.sender.beginTaskCard || !this.sender.updateTaskCard) return;
+    const bizId = await this.sender.beginTaskCard(task);
+    await this.repo.setTaskCard(task.id, bizId);
+    task.cardBizId = bizId;
+    this.a2uiTasks.delete(task.id);
+    await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'a2ui.fallback_native' });
+  }
+
+  private async handleCodexRequest(task: TaskRecord, threadId: string, request: CodexApprovalRequest, workflow: TaskWorkflow,
+    evidenceExcerpts: Map<string, string>, onKnowledgeProgress?: (stage: string) => void,
+    taskDeadlineAt?: number, queryIntent?: QueryIntent): Promise<unknown> {
     if (request.method === 'mcpServer/elicitation/request') {
       const accepted = isWhitelistedReadOnlyMcpElicitation(request);
       await this.repo.audit({
@@ -1405,11 +1551,21 @@ export class TaskOrchestrator {
     if (request.params.namespace === 'agent' && request.params.tool === 'capabilities') {
       return { contentItems: [{ type: 'inputText', text: JSON.stringify(listCapabilities(request.params.arguments)) }], success: true };
     }
+    if (request.params.namespace === 'agent' && ['ui.render', 'ui_render'].includes(request.params.tool)) {
+      try {
+        const { validateUiDocument } = await import('./a2ui.js');
+        const document = request.params.arguments as AgentUiDocument;
+        const errors = validateUiDocument(document, { maxNodes: this.config.DINGTALK_A2UI_MAX_COMPONENTS, maxBytes: this.config.DINGTALK_A2UI_MAX_MESSAGE_BYTES });
+        if (errors.length) throw new Error(`A2UI_INVALID:${errors.join('|')}`);
+        this.a2uiDocuments.set(task.id, document);
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify({ accepted: true, components: 'validated' }) }], success: true };
+      } catch (error) { return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : String(error) }], success: false }; }
+    }
     if (request.params.namespace === 'agent' && request.params.tool === 'workflow') {
       const args = request.params.arguments as Record<string, unknown> | undefined;
       if (args?.operation === 'complete') {
         const outcome = await this.submitCompletion(task, undefined, workflow, evidenceExcerpts, args.completion,
-          Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id)));
+          Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id)), taskDeadlineAt);
         return outcome.accepted
           ? { contentItems: [{ type: 'inputText', text: JSON.stringify({ accepted: true, status: outcome.completion.status }) }], success: true }
           : { contentItems: [{ type: 'inputText', text: outcome.feedback }], success: false };
@@ -1556,11 +1712,25 @@ export class TaskOrchestrator {
     if (request.params.namespace === 'knowledge') {
       try {
         if (!this.knowledgeTool) throw new Error('KNOWLEDGE_DISABLED');
-        const result = await this.knowledgeTool.execute(task.request.user, request.params.tool, request.params.arguments,
-          { surfaceId: task.request.surface.id, taskId: task.id });
+        const context: KnowledgeExecutionContext = {
+          surfaceId: task.request.surface.id,
+          taskId: task.id,
+          requestText:[task.request.text,task.request.quotedText??''].filter(Boolean).join('\n'),
+          deadlineAt: Math.min(taskDeadlineAt ?? (Date.now() + this.config.KNOWLEDGE_QUERY_BUDGET_MS), Date.now() + this.config.KNOWLEDGE_QUERY_BUDGET_MS),
+          ...(queryIntent?.modelCandidates?.length ? { modelCandidates: queryIntent.modelCandidates } : {})
+        };
+        if (onKnowledgeProgress) context.onProgress = onKnowledgeProgress;
+        const result = await this.knowledgeTool.execute(task.request.user, request.params.tool, request.params.arguments, context);
         return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
       } catch (error) {
-        return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : 'KNOWLEDGE_FAILED' }], success: false };
+        const reason = error instanceof Error ? error.message : 'KNOWLEDGE_FAILED';
+        const fallback = queryIntent?.domain === 'business_data'
+          ? '\nROUTE_FALLBACK_HINT：知识库查询未完成；如果用户实际询问店铺经营数据，请改用 crossborderops.scope / crossborderops.query。'
+          : '';
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'route.fallback', payload: { from: 'knowledge', to: queryIntent?.domain === 'business_data' ? 'crossborderops' : 'model',
+            fallbackUsed: true, toolMismatchReason: reason.slice(0, 240) } });
+        return { contentItems: [{ type: 'inputText', text: reason + fallback }], success: false };
       }
     }
     if (request.params.namespace === 'agent' && request.params.tool === 'memory') {
@@ -1616,7 +1786,13 @@ export class TaskOrchestrator {
           eventType: 'crossborderops.query_failed',
           payload: { reason: reason.slice(0, 240) },
         });
-        return { contentItems: [{ type: 'inputText', text: reason }], success: false };
+        const fallback = queryIntent?.domain === 'product_knowledge'
+          ? '\nROUTE_FALLBACK_HINT：该经营数据接口与用户问题可能不匹配；请改用 knowledge.lookup_product 或 knowledge.search，并保留用户原始型号。'
+          : '';
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'route.fallback', payload: { from: 'crossborderops', to: queryIntent?.domain === 'product_knowledge' ? 'knowledge' : 'model',
+            fallbackUsed: true, toolMismatchReason: reason.slice(0, 240) } });
+        return { contentItems: [{ type: 'inputText', text: reason + fallback }], success: false };
       }
     }
     if (request.params.namespace === 'lingxing' && request.params.tool === 'action') {
@@ -1759,6 +1935,15 @@ export class TaskOrchestrator {
       const input = this.dwsTool.parse(request.params.arguments);
       await this.dwsTool.validateArgs(input);
       const action = this.dwsTool.action(input);
+      // One knowledge query must have one source/version/latency policy. Raw
+      // office reads after RAG bypass its indexed-version and scope controls.
+      // Internal permission checks still call the broker directly. Real write
+      // tasks retain their existing read-before-write and approval flow.
+      if(action.risk==='read'&&workflow.state.contract?.mode!=='write'
+        &&['doc','sheet','drive'].includes(input.capability.split('.')[0]!)
+        &&workflow.state.evidence.some(e=>e.capabilityId.startsWith('knowledge.'))){
+        return {contentItems:[{type:'inputText',text:'KNOWLEDGE_QUERY_ROUTE_REQUIRED：本任务已进入知识问答流程，文档/表格/文件查询必须统一经过 knowledge 工具，以遵守用户指定来源和入库版本。不要换办公接口绕过查询范围或预算。已入库资料缺图、缺字段时明确说明无法确认；只有用户要求最新时，knowledge 才读取实时资料并同步。'}],success:false};
+      }
       // Authorization is bound to an actual DWS tool invocation, not a guess
       // based on the wording of the user's message.
       if (typeof this.dws.status === 'function') {
@@ -1802,7 +1987,7 @@ export class TaskOrchestrator {
    * number of verifier rounds is bounded so a task always terminates.
    */
   private async submitCompletion(task: TaskRecord, surfaceId: string | undefined, workflow: TaskWorkflow, evidenceExcerpts: Map<string, string>,
-    raw: unknown, computeAvailable: boolean): Promise<{ accepted: true; completion: TaskCompletion } | { accepted: false; feedback: string }> {
+    raw: unknown, computeAvailable: boolean, taskDeadlineAt?: number): Promise<{ accepted: true; completion: TaskCompletion } | { accepted: false; feedback: string }> {
     const audit = (eventType: string, payload: Record<string, unknown>) => this.repo.audit({ requestId: task.request.requestId, taskId: task.id,
       user: task.request.user, ...(surfaceId ? { surfaceId } : {}), eventType, payload });
     let completion: TaskCompletion;
@@ -1812,7 +1997,29 @@ export class TaskOrchestrator {
       await audit('workflow.complete_rejected', { stage: 'structure', reason: publicErrorDetail(error) });
       return { accepted: false, feedback: error instanceof Error ? error.message : String(error) };
     }
+    let citation:string|undefined;
+    try { citation=knowledgeCitations(evidenceExcerpts.values(),completion.sourceRefs); }
+    catch(error){
+      delete workflow.state.completion;
+      await audit('workflow.complete_rejected',{stage:'source_identity',selectedSourceRefs:completion.sourceRefs??[],reason:publicErrorDetail(error)});
+      return {accepted:false,feedback:error instanceof Error?error.message:String(error)};
+    }
+    if(citation&& !citation.split('；').every(link=>completion.answer.includes(link.slice(link.lastIndexOf('](')+2,-1)))){
+      completion={...completion,answer:completion.answer+'\n\n资料出处：'+citation};
+      workflow.state.completion=completion;
+    }
+    if (taskDeadlineAt !== undefined && Date.now() >= taskDeadlineAt) {
+      completion = { ...completion, status: 'blocked',
+        answer: '已取得部分资料，但在任务时间预算内无法完成全部事实核验；未核实的参数暂不作确定结论。',
+        missingFacts: [...new Set([...completion.missingFacts, 'deadline_verification'])] };
+      workflow.state.completion = completion;
+      await audit('workflow.deadline_exceeded', { reviewProfile: reviewProfileFor(workflow), deadlineExceeded: true, deadlineAt: new Date(taskDeadlineAt).toISOString() });
+      await this.repo.saveWorkflow(task.id, workflow.state);
+      return { accepted: true, completion };
+    }
     if (this.enforcing()) {
+      const reviewProfile = reviewProfileFor(workflow);
+      const maxReviewRounds = reviewProfile === 'simple_product' ? 1 : reviewProfile === 'knowledge_general' ? 2 : MAX_REVIEW_ROUNDS;
       const round = (workflow.state.reviewRounds ?? 0) + 1;
       workflow.state.reviewRounds = round;
       const startedAt = Date.now();
@@ -1822,25 +2029,36 @@ export class TaskOrchestrator {
         ...(workflow.state.clarification?.answer ? { clarificationAnswer: workflow.state.clarification.answer } : {}),
         ...(workflow.state.contract ? { contract: workflow.state.contract } : {}),
         completion, evidence: workflow.state.evidence, excerpts: Object.fromEntries(evidenceExcerpts),
-        computeAvailable, round, maxRounds: MAX_REVIEW_ROUNDS
+        computeAvailable, round, maxRounds: maxReviewRounds, profile: reviewProfile
       });
       await audit('workflow.review', { round, status: review.status, durationMs: Date.now() - startedAt,
+        reviewProfile,
         blocking: review.issues.filter((issue) => issue.severity === 'blocking').length,
         advisory: review.issues.filter((issue) => issue.severity === 'advisory').length,
         ...(review.status === 'pass' ? {} : { reason: review.reason }) });
-      if (review.status === 'revise' && round < MAX_REVIEW_ROUNDS) {
+      if (review.status === 'revise' && round < maxReviewRounds) {
         delete workflow.state.completion;
         await this.repo.saveWorkflow(task.id, workflow.state);
         await audit('workflow.complete_rejected', { stage: 'review', round, reason: review.reason });
         return { accepted: false, feedback: [
-          `交付前核验未通过（第 ${round}/${MAX_REVIEW_ROUNDS} 轮），以下是本轮发现的全部问题：`,
+          `交付前核验未通过（第 ${round}/${maxReviewRounds} 轮），以下是本轮发现的全部问题：`,
           formatIssues(review.issues),
-          round + 1 === MAX_REVIEW_ROUNDS
+          round + 1 === maxReviewRounds
             ? '请一次性修正所有“必须修正”项。下一轮是最后一轮核验：无法用证据支持的内容请删除，或明确标注为推断并说明依据。'
             : '请一次性修正所有“必须修正”项，其余内容保持不变。'
         ].join('\n') };
       }
-      if (review.status === 'revise') await audit('workflow.review_budget_exhausted', { round, reason: review.reason });
+      if (review.status === 'revise') {
+        await audit('workflow.review_budget_exhausted', { round, reason: review.reason });
+        // A round limit limits work; it must not convert a rejected answer
+        // into a verified fact. Preserve the draft privately for diagnosis.
+        if(workflow.state.evidence.some(e=>e.capabilityId.startsWith('knowledge.'))){
+          completion={...completion,status:'blocked',answer:'这次查询未能得到足以可靠回答问题的证据；现有资料之间的对应关系或结论仍无法确认，因此暂时不能给出确定答案。',
+            missingFacts:[...new Set([...completion.missingFacts,...Object.keys(completion.factEvidence)])]};
+          workflow.state.completion=completion;
+          await audit('workflow.unsupported_answer_withheld',{round});
+        }
+      }
       if (review.status === 'unavailable') await audit('workflow.review_unavailable', { round, reason: review.reason });
     }
     await this.repo.saveWorkflow(task.id, workflow.state);
@@ -2603,6 +2821,13 @@ const DWS_AUTH_INIT_GUIDANCE = [
 
 function userFacingTaskError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith('IMAGE_GENERATION_FAILED:')) {
+    const detail = message.slice('IMAGE_GENERATION_FAILED:'.length).trim();
+    if (/\b401\b|invalid api key|authentication/i.test(detail)) {
+      return '图片生成服务认证失败：请管理员为 IMAGE_BASE_URL 对应的 Sub2API Antigravity 分组配置有效的 IMAGE_API_KEY。';
+    }
+    return `图片生成失败：${publicErrorDetail(detail)}。`;
+  }
   if (message === 'WORKFLOW_COMPLETION_REQUIRED') {
     return '本次未取得足以完成任务的已核验数据，已停止输出未经证实的结论。请稍后重试；若持续出现，需要检查工具调用链路。';
   }

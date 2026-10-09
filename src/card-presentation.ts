@@ -1,9 +1,14 @@
+import type { ExecutionStep, ExecutionUiState, AgentUiDocument } from './a2ui.js';
+
 /** User-visible activity only. Never feed reasoning or raw tool arguments here. */
 export class CardPresentation {
   private activity = '正在处理';
   private note = '';
   private readonly completed: string[] = [];
   private readonly activeTools: string[] = [];
+  private readonly steps: ExecutionStep[] = [];
+  private sequence = 0;
+  private result: AgentUiDocument | undefined;
 
   public commentary(text: string): void {
     const clean = text.replace(/\s+/g, ' ').trim();
@@ -18,12 +23,16 @@ export class CardPresentation {
     this.activeTools.push(label);
     this.activity = '正在使用工具';
     this.note = label;
+    const id = `tool-${++this.sequence}`;
+    this.steps.push({ id, label, kind: 'tool', status: 'running', startedAt: new Date().toISOString() });
   }
 
   public toolCompleted(label: string, success: boolean): void {
     const index = this.activeTools.lastIndexOf(label);
     if (index >= 0) this.activeTools.splice(index, 1);
     this.completed.push((success ? '已完成：' : '未完成：') + label);
+    const step = [...this.steps].reverse().find((item) => item.label === label && item.status === 'running');
+    if (step) { step.status = success ? 'success' : 'failed'; step.finishedAt = new Date().toISOString(); }
     if (this.completed.length > 3) this.completed.shift();
     if (this.activeTools.length === 0) {
       this.activity = '正在整理结果';
@@ -31,6 +40,16 @@ export class CardPresentation {
     } else {
       this.note = this.activeTools.at(-1)!;
     }
+  }
+
+  public setResult(result: AgentUiDocument | undefined): void { this.result = result; }
+
+  public snapshot(title = 'Agent任务'): ExecutionUiState {
+    const active = this.steps.find((step) => step.status === 'running');
+    const state: ExecutionUiState = { title, status: active ? 'executing' : (this.result ? 'inputting' : 'processing'), steps: this.steps.map((step) => ({ ...step })) };
+    if (active) state.activeStepId = active.id;
+    if (this.result) state.result = this.result;
+    return state;
   }
 
   public render(answer = ''): string {

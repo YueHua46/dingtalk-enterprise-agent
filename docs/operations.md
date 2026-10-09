@@ -147,7 +147,7 @@ Gateway 镜像内置 `vendor/amazon-skill` Python 包，通过宿主动态命名
 
 默认渠道由 `IMAGE_PROVIDER`、`IMAGE_BASE_URL`、`IMAGE_API_KEY`、`IMAGE_MODEL` 配置。新增同协议渠道只改 `IMAGE_PROVIDERS_JSON` 注册表，密钥应使用 `apiKeyEnv` 引用环境变量；只有新增完全不同协议时才需要增加一次 Provider 适配器。
 
-若必须在**同一个 Gemini API 请求**中同时拥有 Google Search 和自定义函数，需要改用支持 Gemini 3 工具组合的官方 Gemini API 路由及相应凭证，而非当前 Antigravity OAuth 路由。公网 `MODEL_BASE_URL` 目前使用 HTTP 时，`npm run check:env` 会报错；正式使用前应改为 HTTPS。
+若必须在**同一个 Gemini API 请求**中同时拥有 Google Search 和自定义函数，需要改用支持 Gemini 3 工具组合的官方 Gemini API 路由及相应凭证，而非当前 Antigravity OAuth 路由。当前文本模型由 `MODEL_PROVIDER` 选择；公网模型中转地址使用 HTTP 时，`npm run check:env` 会报错，正式使用前应改为 HTTPS。
 
 ## 5. 启停、更新与状态
 

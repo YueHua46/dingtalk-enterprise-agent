@@ -23,12 +23,12 @@ export function sheetExportResult(value:unknown):Record<string,any>{
 export function sheetExportProtocol(dws:DwsBroker,user:UserIdentity,node:string,path:string,maxBytes:number,background:boolean){
  return {
   submit:async()=>sheetExportResult(await dws.runCommand(user,['sheet','+knowledge-export-submit','--node',node],{background})),
-  query:async(job:string)=>sheetExportResult(await dws.runCommand(user,['sheet','+knowledge-export-get','--job-id',job],{background})),
-  download:async(raw:string)=>{
+  query:async(job:string,timeout=60_000)=>sheetExportResult(await dws.runCommand(user,['sheet','+knowledge-export-get','--job-id',job],{background,timeout})),
+  download:async(raw:string,timeout=60_000)=>{
    const url=new URL(raw);
    if(url.protocol!=='https:'||url.username||url.password)throw new Error('KNOWLEDGE_EXPORT_URL_INVALID');
    // The URL is exclusively the current same-employee official query result.
-   const response=await fetch(url,{signal:AbortSignal.timeout(60_000),redirect:'error'});
+   const response=await fetch(url,{signal:AbortSignal.timeout(timeout),redirect:'error'});
    if(!response.ok)throw Object.assign(new Error('KNOWLEDGE_SHEET_DOWNLOAD_HTTP_'+response.status),{
     dwsServerCode:'HTTP_'+response.status,dwsRequestId:safe(response.headers.get('x-request-id'))});
    if(!response.body)throw new Error('KNOWLEDGE_BINARY_EMPTY');

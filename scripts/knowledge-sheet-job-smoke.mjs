@@ -33,6 +33,12 @@ try{
  assert.equal(polls,30);assert.equal(waits,29);checks.push('only_processing_is_polled_with_finite_budget');
  await pool.query('UPDATE knowledge_sheet_exports SET job_id=NULL,source_hash=NULL WHERE corp_id=$1',[user.corpId]);
  await assert.rejects(journal.downloadJob(user,node,hash,{submit:noSubmit,query:async()=>assert.fail('guessed job'),download:async()=>{}},async()=>{}),/PENDING_RESOLUTION/);checks.push('legacy_unknown_does_not_submit_or_guess');
+ await pool.query("UPDATE knowledge_sheet_exports SET state='retry_authorized' WHERE corp_id=$1",[user.corpId]);
+ await assert.rejects(journal.downloadJob(user,node,hash,{submit:async()=>{submits++;return {jobId:'reissued_fixture'};},query:async()=>{throw new Error('fixture_new_query_failure');},download:async()=>assert.fail()},async()=>{},async()=>{}),/fixture_new_query_failure/);
+ assert.equal((await row()).job_id,'reissued_fixture');assert.equal(submits,2);checks.push('explicit_reissue_consumed_once_and_new_job_retained');
+ await assert.rejects(journal.downloadJob(user,node,hash,{submit:noSubmit,query:async job=>{assert.equal(job,'reissued_fixture');throw new Error('fixture_new_query_failure');},download:async()=>assert.fail()},async()=>{},async()=>{}),/fixture_new_query_failure/);assert.equal(submits,2);checks.push('subsequent_retry_queries_reissued_job_without_resubmit');
+ const events=(await pool.query('SELECT event,job_id,diagnostic FROM knowledge_export_events WHERE corp_id=$1 ORDER BY id',[user.corpId])).rows;
+ assert(events.some(e=>e.event==='job_received'&&e.job_id==='reissued_fixture'));assert(events.some(e=>e.event==='query_result'&&e.diagnostic?.status==='SUCCESS'));assert(events.some(e=>e.event==='failed'&&e.job_id==='reissued_fixture'));checks.push('append_only_job_query_and_failure_history');
  const result={kind:'actual_postgres_protocol_fixtures',checks,passed:checks.length,realDwsCalls:0,modelCalls:0};
  await writeFile('output/knowledge-diagnostics/sheet-job-fixtures.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));
-}finally{await pool.query('DELETE FROM knowledge_resources WHERE corp_id=$1',[user.corpId]);await pool.end();}
+}finally{await pool.query('DELETE FROM knowledge_resources WHERE corp_id=$1',[user.corpId]);await pool.query('DELETE FROM knowledge_export_events WHERE corp_id=$1',[user.corpId]);await pool.end();}

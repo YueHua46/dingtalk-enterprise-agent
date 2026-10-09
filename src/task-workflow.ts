@@ -40,6 +40,8 @@ export interface TaskCompletion {
   answer: string;
   factEvidence: Record<string, string[]>;
   missingFacts: string[];
+  /** Document identities selected from successful knowledge results, not URLs. */
+  sourceRefs?: string[];
   /** Host-verified entity coverage gaps; never accepted from model input. */
   coverageGaps?: string[];
 }
@@ -108,7 +110,7 @@ export const workflowDynamicTools = [{
     description: [
       'operation=plan：可选。多步骤任务可登记工作计划 contract={goal, deliverables[], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；登记后宿主会在提交时核对每项事实是否有对应来源的成功证据，需要列全的事实（enumeration=all）还会核对分页完整性。计划可随进展修订。',
       'operation=clarify：仅当缺少只有发起人能决定、且会改变查询对象、跨越权限或影响真实写入目标的条件时使用，提供 question（给发起人的一个最小问题）与 reason。',
-      'operation=complete：提交最终答复 completion={status: answered|partial|blocked, answer: 给用户的完整回答, factEvidence: {事实ID: [证据ID]}（可为空对象，宿主会自动关联）, missingFacts: [未满足的事实ID]}。宿主会核验答复是否被证据支持；未通过时一次性返回所有问题，逐条修正后重新提交。'
+      'operation=complete：提交最终答复 completion={status: answered|partial|blocked, answer: 给用户的完整回答, factEvidence: {事实ID: 单个证据ID或证据ID数组}（可为空对象，宿主会自动关联已有成功查询，不需要为填写引用重复查资料）, missingFacts: [未满足的事实ID]}。宿主会核验答复是否被证据支持；未通过时一次性返回所有问题，逐条修正后重新提交。'
     ].join('\n'),
     inputSchema: {
       type: 'object', additionalProperties: false,
@@ -121,8 +123,11 @@ export const workflowDynamicTools = [{
           properties: {
             status: { type: 'string', enum: ['answered', 'partial', 'blocked'] },
             answer: { type: 'string', minLength: 1, maxLength: 30000 },
-            factEvidence: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } } },
-            missingFacts: { type: 'array', items: { type: 'string' } }
+            factEvidence: { type: 'object', additionalProperties: { anyOf: [
+              { type: 'string' }, { type: 'array', items: { type: 'string' } }
+            ] } },
+            missingFacts: { type: 'array', items: { type: 'string' } },
+            sourceRefs: { type: 'array', maxItems: 20, uniqueItems: true, items: { type: 'string' }, description: '知识库答案实际采用的各资料 source.ref。多资料比较必须包含比较双方；不要选无关检索结果。宿主用已查询的真实元数据生成出处链接，不需要再次查资料。' }
           },
           required: ['status', 'answer']
         }
@@ -215,7 +220,9 @@ export class TaskWorkflow {
   /** Keeps a bounded excerpt with the task so verification survives resumption. */
   public storeExcerpt(evidenceId: string, text: string): void {
     const excerpts = this.state.excerpts ?? (this.state.excerpts = {});
-    excerpts[evidenceId] = text.slice(0, MAX_STORED_EXCERPT_CHARS);
+    let limit=MAX_STORED_EXCERPT_CHARS;
+    try{if(JSON.parse(text)?.kind==='knowledge_evidence')limit=40000;}catch{/* Preserve existing non-knowledge format. */}
+    excerpts[evidenceId] = text.slice(0, limit);
     const ids = Object.keys(excerpts);
     for (const id of ids.slice(0, Math.max(0, ids.length - MAX_STORED_EXCERPTS))) delete excerpts[id];
   }
@@ -247,8 +254,21 @@ export class TaskWorkflow {
       || !Array.isArray(missingFactsInput) || missingFactsInput.some((item) => typeof item !== 'string')) {
       throw new Error('WORKFLOW_COMPLETION_INVALID: completion={status:"answered|partial|blocked",answer:"完整回答",factEvidence:{},missingFacts:[]}');
     }
-    const factEvidence = factEvidenceInput as Record<string, unknown>;
+    // The public contract accepts one or many evidence references. Canonicalize
+    // cardinality before checking successful IDs and source/coverage rules;
+    // this never promotes an arbitrary string into verified evidence.
+    const factEvidence = Object.fromEntries(Object.entries(factEvidenceInput).map(([factId, ids]) => {
+      const references = typeof ids === 'string' ? [ids] : ids;
+      if (!Array.isArray(references) || references.some(id => typeof id !== 'string')) {
+        throw new Error('WORKFLOW_EVIDENCE_INVALID: factEvidence 每项须为证据ID字符串或字符串数组；引用关联已有查询，不需要重复取证。');
+      }
+      return [factId, references as string[]];
+    }));
     const missingFacts = missingFactsInput as string[];
+    if (value.sourceRefs !== undefined && (!Array.isArray(value.sourceRefs) || value.sourceRefs.length > 20
+      || value.sourceRefs.some(ref => typeof ref !== 'string' || !/^[a-zA-Z0-9_-]{8,128}$/.test(ref)))) {
+      throw new Error('WORKFLOW_SOURCE_REFS_INVALID: sourceRefs 须为已有知识库查询返回的 source.ref 数组。');
+    }
     const status = value.status as TaskCompletion['status'];
     const citations: Record<string, string[]> = {};
     const populationGaps: string[] = [];
@@ -347,6 +367,7 @@ export class TaskWorkflow {
     }
     const completion: TaskCompletion = { status,
       answer: value.answer.trim(), factEvidence: citations, missingFacts,
+      ...(value.sourceRefs !== undefined ? {sourceRefs:[...new Set(value.sourceRefs as string[])]} : {}),
       ...(populationGaps.length ? { coverageGaps: [...new Set(populationGaps)] } : {}) };
     this.state.completion = completion;
     this.state.revision += 1;

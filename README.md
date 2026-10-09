@@ -61,8 +61,9 @@ Copy-Item .env.example .env
 | `DINGTALK_CLIENT_ID` / `DINGTALK_CLIENT_SECRET` | 企业内部机器人应用与 Stream 连接、媒体接口 |
 | `DINGTALK_ROBOT_CODE` | 机器人发送身份 |
 | `DWS_BOT_PROFILE` | 可选。已授权的机器人发送 Profile，仅 DWS 卡片降级与群消息回退路径需要；员工授权引导私聊走钉钉原生机器人接口，不依赖它 |
-| `MODEL_BASE_URL` / `MODEL_API_KEY` | 兼容 Responses API 的模型中转地址与密钥 |
-| `MODEL_NAME` | 中转支持的模型名 |
+| `MODEL_PROVIDER` | 文本模型选择：`tokenshop` 或 `gemini` |
+| `TOKENSHOP_MODEL_BASE_URL` / `TOKENSHOP_MODEL_API_KEY` / `TOKENSHOP_MODEL_NAME` | Tokenshop GPT 配置；旧 `MODEL_*` 仍作为兼容别名 |
+| `GEMINI_MODEL_BASE_URL` / `GEMINI_MODEL_API_KEY` / `GEMINI_MODEL_NAME` | Antigravity Gemini Responses 配置；未单独设置 key 时复用 `IMAGE_API_KEY` |
 | `IMAGE_BASE_URL` / `IMAGE_API_KEY` | 原生图像生成/改图渠道地址与密钥；未填写 `IMAGE_API_KEY` 时兼容复用 `MODEL_API_KEY` |
 | `IMAGE_MODEL` / `IMAGE_PROVIDER` | 默认生图模型与渠道别名 |
 | `IMAGE_PROVIDERS_JSON` | 可选的多渠道注册表；通过 `apiKeyEnv`、`baseUrlEnv`、`modelEnv` 引用环境变量，不把密钥写进 JSON |
@@ -98,6 +99,24 @@ IMAGE_PROVIDERS_JSON={"providers":{"gemini":{"driver":"gemini-native","baseUrlEn
 ```
 
 完全不同协议的渠道只需新增一次 Provider 适配器；后续同协议模型均由配置切换。
+
+### 文本模型切换
+
+文本模型通过 `MODEL_PROVIDER` 选择，Tokenshop 与 Antigravity 的配置彼此独立；改完 `.env` 后重建 gateway 容器即可切换。Gemini 和原生生图可共用 Antigravity key：留空 `GEMINI_MODEL_API_KEY` 时会读取 `IMAGE_API_KEY`。
+
+```env
+MODEL_PROVIDER=gemini
+GEMINI_MODEL_BASE_URL=http://43.142.171.134:8080/v1
+GEMINI_MODEL_API_KEY=
+GEMINI_MODEL_NAME=gemini-3.8-flash-high
+
+# Keep these for switching back to Tokenshop GPT:
+TOKENSHOP_MODEL_BASE_URL=https://your-tokenshop-host/v1
+TOKENSHOP_MODEL_API_KEY=your-tokenshop-key
+TOKENSHOP_MODEL_NAME=gpt-6.1-sol
+```
+
+切回 GPT 时只需把 `MODEL_PROVIDER` 改成 `tokenshop`。不要把两个渠道的 key 交叉填写。
 
 ## Docker 启动
 

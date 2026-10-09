@@ -13,6 +13,7 @@ type Output = { name: string; path: string; size: number; sha256: string };
 export class RemoteCodexClient implements CodexClientLike {
   private ready = false;
   private readonly active = new Map<string, Rpc>();
+  private readonly activeTurnIds = new Map<string, string>();
   private readonly fresh = new Map<string, { threadId: string; rpc: Rpc }>();
   private readonly uploaded = new Map<string, Attachment>();
   public constructor(private readonly config: Config) {}
@@ -26,6 +27,7 @@ export class RemoteCodexClient implements CodexClientLike {
     for (const rpc of this.active.values()) rpc.close();
     for (const session of this.fresh.values()) session.rpc.close();
     this.active.clear();
+    this.activeTurnIds.clear();
     this.fresh.clear();
     this.ready = false;
   }
@@ -66,7 +68,8 @@ export class RemoteCodexClient implements CodexClientLike {
     }
   }
   public async interrupt(threadId: string): Promise<void> {
-    await this.active.get(threadId)?.request('turn/interrupt', { threadId });
+    const turnId = this.activeTurnIds.get(threadId);
+    if (turnId) await this.active.get(threadId)?.request('turn/interrupt', { threadId, turnId });
   }
   public async turn(threadId: string, input: string, onEvent?: (event: CodexEvent) => void, onApproval?: (request: CodexApprovalRequest) => Promise<unknown>, attachments: Attachment[] = [], taskId?: string): Promise<CodexTurnResult> {
     if (!taskId) throw new Error('FILE_TASK_ID_REQUIRED');
@@ -95,9 +98,11 @@ export class RemoteCodexClient implements CodexClientLike {
       const result = await rpc.request('turn/start', { threadId, input: inputs, approvalPolicy: 'never' }, 10 * 60_000);
       const turnId = String(result?.turn?.id ?? result?.id ?? '');
       if (!turnId) throw new Error('Codex turn/start returned no turn id');
+      this.activeTurnIds.set(threadId, turnId);
       return { text: await rpc.waitForTurn(turnId), threadId };
     } finally {
       this.active.delete(threadId);
+      this.activeTurnIds.delete(threadId);
       rpc.close();
     }
   }

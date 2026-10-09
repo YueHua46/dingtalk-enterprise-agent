@@ -223,7 +223,9 @@ function attachRpc(ws: WebSocket, taskId: string, task: TaskPaths): void {
     '-c', 'model_providers.enterprise_proxy.env_key="OPENAI_API_KEY"',
     '-c', 'model_providers.enterprise_proxy.wire_api="responses"',
     '-c', 'model_providers.enterprise_proxy.supports_standalone_web_search=true',
-    '-c', 'model_providers.enterprise_proxy.supports_websockets=false'
+    '-c', 'model_providers.enterprise_proxy.supports_websockets=false',
+    '-c', 'model_providers.enterprise_proxy.request_max_retries=0',
+    '-c', 'model_providers.enterprise_proxy.stream_max_retries=0'
   ];
   const child = spawn(settings.codexBin, args, {
     cwd: task.root,

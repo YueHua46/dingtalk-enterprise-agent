@@ -77,6 +77,9 @@ async function processResource(item,phase){
    }catch(error){
     const code=knowledgeErrorCode(error);entry[phase]={status:'failed',code,elapsedMs:Date.now()-start,
       stage:/^[a-z_]{1,40}$/.test(error.sourceStage??'')?error.sourceStage:undefined,
+      localErrorName:/^[A-Za-z]{1,40}$/.test(error.name??'')?error.name:undefined,
+      localErrorCode:/^[A-Z_0-9]{1,80}$/.test(error.code??'')?error.code:undefined,
+      localFrames:['TypeError','ReferenceError'].includes(error.name)?error.stack?.split('\n').slice(1,4):undefined,
       providerCode:error.providerCode,
       providerRequestId:error.providerRequestId,
       providerType:['new_api_error','server_error','upstream_error','overloaded_error','insufficient_quota','rate_limit_error','authentication_error','invalid_request_error'].includes(error.providerType)?error.providerType:undefined,
@@ -87,6 +90,10 @@ async function processResource(item,phase){
       modelImageOrdinal:Number.isSafeInteger(error.modelImageOrdinal)&&error.modelImageOrdinal>=1?error.modelImageOrdinal:undefined,
       modelImageHash:/^[a-f0-9]{64}$/.test(error.modelImageHash??'')?error.modelImageHash:undefined,
       dwsReason:error.dwsReason,
+      dwsExitCode:Number.isInteger(error.dwsExitCode)?error.dwsExitCode:undefined,
+      dwsStdoutBytes:Number.isSafeInteger(error.dwsStdoutBytes)?error.dwsStdoutBytes:undefined,
+      dwsStderrBytes:Number.isSafeInteger(error.dwsStderrBytes)?error.dwsStderrBytes:undefined,
+      dwsLocalFailure:['module_missing','binary_missing','spawn_not_found','spawn_denied'].includes(error.dwsLocalFailure)?error.dwsLocalFailure:undefined,
       dwsServerCode:error.dwsServerCode,
       dwsRequestId:error.dwsRequestId,
       dwsTransportKind:error.dwsTransportKind,
@@ -96,8 +103,12 @@ async function processResource(item,phase){
       dwsCauseCode:error.dwsCauseCode,
       dwsCategory:/^[a-z_]{1,40}$/i.test(error.dwsCategory??'')?error.dwsCategory:undefined,
       dwsCode:/^[A-Z_0-9.]{1,100}$/i.test(error.dwsCode??'')?error.dwsCode:undefined};report.counts[phase].failed++;
-    await store.state(user,resource.nodeId,code==='permission_denied'?'denied':code==='not_found'?'deleted':'stale',code);
+    await store.failure(user,resource.nodeId,code);
     if(code==='auth_required'){authFailed=true;await pool.query('UPDATE knowledge_users SET paused=true WHERE corp_id=$1 AND user_id=$2',[corpId,userId]);}
+    if(code==='KNOWLEDGE_EMBEDDING_HTTP_403'&&error.providerCode==='AccessDenied.Unpurchased'){
+      stopping=true;
+      report.interruption={at:new Date().toISOString(),reason:'embedding_provider_AccessDenied.Unpurchased',checkpointPreserved:true};
+    }
    }
    report.counts[phase].processed++;await summaries();await save();
    console.log(JSON.stringify({phase,node:resource.nodeId,...report.counts[phase]}));
@@ -108,6 +119,9 @@ const heartbeat=setInterval(()=>{void save();},15_000);heartbeat.unref();
 try{
  await save();if(!await dws.status(user,{fresh:true}))throw new Error('DWS_OAUTH_REQUIRED');
  await store.enable(user);
+ const providerDenied=await pool.query(`SELECT 1 FROM knowledge_embedding_rejections WHERE corp_id=$1 AND user_id=$2
+   AND embedding_model=$3 AND provider_code='AccessDenied.Unpurchased' LIMIT 1`,[corpId,userId,config.EMBEDDING_MODEL]);
+ if(providerDenied.rowCount)throw new Error('KNOWLEDGE_EMBEDDING_SERVICE_ACTIVATION_REQUIRED');
  // A fresh full directory scan precedes ingestion; it takes the normal scan lock.
  if(process.argv.includes('--resume')){
   const prior=await pool.query(`SELECT id,counts,finished_at FROM knowledge_sync_runs WHERE corp_id=$1 AND user_id=$2 AND directory_complete
@@ -123,7 +137,9 @@ try{
    SELECT 1 FROM knowledge_versions v WHERE v.id=r.active_version AND v.corp_id=$1 AND v.user_id=$2 AND v.parser_version=$5 AND v.embedding_model=$6)))
   ORDER BY CASE WHEN title='各产品参数资料' THEN 0 ELSE 1 END,extension,title`,[corpId,userId,retryFailed,upgradeParser,knowledgeParserVersion,config.EMBEDDING_MODEL]);
  const supported=[];
- for(const row of rows){const resource=await store.resource(user,row.node_id);if(source.supported(resource))supported.push(row);}
+ const nodesFlag=process.argv.indexOf('--nodes'),nodes=nodesFlag<0?undefined:process.argv[nodesFlag+1]?.split(',');
+ if(nodesFlag>=0&&(!nodes?.length||nodes.length>5||nodes.some(n=>!/^[A-Za-z0-9_-]{8,128}$/.test(n))))throw new Error('KNOWLEDGE_DIAGNOSTIC_NODES_INVALID');
+ for(const row of rows){const resource=await store.resource(user,row.node_id);if(source.supported(resource)&&(!nodes||nodes.includes(row.node_id)))supported.push(row);}
  report.eligibleResources=supported.length;report.selectedNodes=rows.length;report.directoryNodes=report.catalog?.counts?.nodes??rows.length;await save();
  report.phase='text_and_images';
  for(const phase of ['text','images'])report.counts[phase]={total:supported.length,processed:0,passed:0,needsReview:0,failed:0,skipped:0};

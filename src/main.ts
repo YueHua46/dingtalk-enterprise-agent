@@ -22,6 +22,8 @@ import { TaskOrchestrator } from './task-orchestrator.js';
 import { RedisTaskQueue } from './task-queue.js';
 import { RetentionService } from './retention.js';
 import { DingTalkNativeCardBroker } from './dingtalk-card.js';
+import { DingTalkA2UICardBroker } from './dingtalk-a2ui.js';
+import { executionToA2UI, stableSurfaceId } from './a2ui.js';
 import { ZiniaoBroker } from './ziniao-broker.js';
 import { ZiniaoRemoteBroker } from './ziniao-remote-broker.js';
 import * as md from './markdown.js';
@@ -42,15 +44,29 @@ if (config.NODE_ENV === 'production') {
 
 const codex = config.FILE_WORKER_MODE === 'off' ? new CodexClient(config) : new HybridCodexClient(config);
 const dws = new DwsBroker(config);
-const knowledgeModel = new KnowledgeModel(config);
-const knowledgeStore = pool ? new KnowledgeStore(pool, config.EMBEDDING_MODEL) : undefined;
-const knowledgeSource = new KnowledgeSource(config, dws, knowledgeModel,knowledgeStore);
-const knowledgeSync = knowledgeStore ? new KnowledgeSync(config, knowledgeStore, dws, knowledgeSource, knowledgeModel) : undefined;
-const knowledgeTool = knowledgeStore && knowledgeSync ? new KnowledgeTool(config, knowledgeStore, knowledgeSync, knowledgeModel) : undefined;
-if (pool) registerKnowledgeDatabaseMetrics(pool);
+const knowledgeConfig = {...config,FILE_WORKER_URL:config.KNOWLEDGE_WORKER_URL??config.FILE_WORKER_URL,
+  CLAMAV_HOST:config.KNOWLEDGE_CLAMAV_HOST??config.CLAMAV_HOST,CLAMAV_PORT:config.KNOWLEDGE_CLAMAV_PORT??config.CLAMAV_PORT};
+const knowledgePool = config.KNOWLEDGE_DATABASE_URL ? new Pool({connectionString:config.KNOWLEDGE_DATABASE_URL,max:6}) : pool;
+const knowledgeModel = new KnowledgeModel(knowledgeConfig);
+const knowledgeStore = knowledgePool ? new KnowledgeStore(knowledgePool, config.EMBEDDING_MODEL,config.KNOWLEDGE_READY_ONLY==='true',config.KNOWLEDGE_SHARED_INDEX_USERS.split(',').map(id=>id.trim()).filter(Boolean)) : undefined;
+const knowledgeSource = new KnowledgeSource(knowledgeConfig, dws, knowledgeModel,knowledgeStore);
+const knowledgeSync = knowledgeStore ? new KnowledgeSync(knowledgeConfig, knowledgeStore, dws, knowledgeSource, knowledgeModel) : undefined;
+const knowledgeTool = knowledgeStore && knowledgeSync ? new KnowledgeTool(knowledgeConfig, knowledgeStore, knowledgeSync, knowledgeModel) : undefined;
+if (knowledgePool) registerKnowledgeDatabaseMetrics(knowledgePool);
 const nativeCards = new DingTalkNativeCardBroker(config);
+const a2uiCards = new DingTalkA2UICardBroker(config);
 let stream: DingTalkStreamAdapter | undefined;
 const sender = {
+  ...(a2uiCards.enabled() ? {
+    async beginTaskA2UI(task: TaskRecord): Promise<string> {
+      const initial = executionToA2UI({ title: 'Agent任务', status: 'processing', steps: [] }, config.DINGTALK_A2UI_CATALOG_ID, stableSurfaceId(task.id));
+      return a2uiCards.create(task.request.surface, initial, task.id);
+    },
+    async updateTaskA2UI(bizId: string, state: import('./a2ui.js').ExecutionUiState, status: import('./a2ui.js').A2UIFlowStatus): Promise<void> {
+      const messages = executionToA2UI(state, config.DINGTALK_A2UI_CATALOG_ID, stableSurfaceId(bizId)).filter((message) => !('createSurface' in message));
+      await a2uiCards.update(bizId, messages, status);
+    }
+  } : {}),
   ...(nativeCards.enabled() ? {
     async beginTaskCard(task: TaskRecord): Promise<string> {
       return nativeCards.create(task.request.surface);
@@ -153,6 +169,7 @@ const shutdown = async () => {
   await codex.stop();
   await app.close();
   await pool?.end();
+  if(knowledgePool!==pool)await knowledgePool?.end();
 };
 process.once('SIGINT', () => void shutdown());
 process.once('SIGTERM', () => void shutdown());

@@ -88,6 +88,40 @@ async function waitUntil(check: () => boolean): Promise<void> {
 }
 
 describe('TaskOrchestrator integration', () => {
+  it.each([true, false])('finalizes image delivery immediately only with finalizeTask=%s', async (finalizeTask) => {
+    const repo = new InMemoryRepository();
+    let interruptTurn!: () => void;
+    const interrupted = new Promise<void>((resolve) => { interruptTurn = resolve; });
+    const codex = {
+      startThread: vi.fn(async () => 'thread-image-fast'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'image', tool: 'generate', arguments: { operation: 'generate', prompt: 'A red apple', finalizeTask }
+        } });
+        expect(response.success).toBe(true);
+        if (finalizeTask) {
+          await interrupted;
+          throw new Error('turn interrupted');
+        }
+        return { text: '图片和文案已完成。', threadId: 'thread-image-fast' };
+      }),
+      interrupt: vi.fn(async () => { interruptTurn(); })
+    } as unknown as CodexClient;
+    const sender: MessageSender = { async send() {} };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, {} as DwsBroker, sender);
+    vi.spyOn(orchestrator as any, 'generateAndDeliverImages').mockResolvedValue({ publicResult: {
+      delivered: true, provider: 'gemini', model: 'gemini-3.1-flash-image', operation: 'generate', images: []
+    } });
+
+    const task = await orchestrator.accept(request('image-fast', '生成一张苹果图片'));
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+
+    if (finalizeTask) expect(codex.interrupt).toHaveBeenCalledWith('thread-image-fast');
+    else expect(codex.interrupt).not.toHaveBeenCalled();
+    expect((await repo.findTask(task!.id))?.resultSummary).toBe(finalizeTask ? '图片已生成并发送到当前会话。' : '图片和文案已完成。');
+    expect(repo.audits.some((item: any) => item.eventType === 'workflow.complete' && item.payload.source === 'image_delivery')).toBe(finalizeTask);
+  });
+
   it('authorizes the invoking seller by private message and resumes a read', async () => {
     const repo = new InMemoryRepository();
     const direct: string[] = [];

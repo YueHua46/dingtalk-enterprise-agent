@@ -31,4 +31,14 @@ describe('Responses namespace compatibility', () => {
     expect(restoreSseChunk(stream, adapted.toolNames)).toContain('"namespace":"dingtalk"');
     expect(restoreSseChunk('data: [DONE]', adapted.toolNames)).toBe('data: [DONE]');
   });
+
+  it('sanitizes dotted child names for strict Responses providers', () => {
+    const adapted = adaptModelRequest({ tools: [{ type: 'namespace', name: 'agent', tools: [
+      { type: 'function', name: 'ui.render', parameters: { type: 'object' } }
+    ] }] });
+    expect((adapted.body.tools as any[])[0].name).toBe('agent__ui_render');
+    expect(adapted.toolNames.get('agent__ui_render')).toEqual({ namespace: 'agent', name: 'ui.render' });
+    expect(restoreModelResponse({ output: [{ type: 'function_call', name: 'agent__ui_render', arguments: '{}' }] }, adapted.toolNames))
+      .toEqual({ output: [{ type: 'function_call', name: 'ui.render', namespace: 'agent', arguments: '{}' }] });
+  });
 });

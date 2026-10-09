@@ -16,7 +16,8 @@ export const imageDynamicTools = [{
       '生成或编辑图片。operation=generate 用文字生成；operation=edit 用当前任务中的图片附件加文字指令进行改图。',
       '改图时优先传 inputAttachmentIds；不传时宿主会使用当前任务中的全部图片附件。',
       '结果由宿主直接投递到当前钉钉会话，不要把本地路径展示给用户。',
-      'provider 可选，必须是已配置的渠道别名；不传时使用默认生图渠道。'
+      'provider 可选，必须是已配置的渠道别名；不传时使用默认生图渠道。',
+      '仅当本次图片投递会完成用户整个请求、没有其他图片或文案等交付时，设置 finalizeTask=true；送达后宿主会直接结束任务。复合任务不设置此项。'
     ].join('\n'),
     inputSchema: {
       type: 'object',
@@ -27,7 +28,8 @@ export const imageDynamicTools = [{
         inputAttachmentIds: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string', minLength: 1, maxLength: 200 } },
         provider: { type: 'string', pattern: '^[a-zA-Z0-9._-]{1,64}$' },
         aspectRatio: { type: 'string', pattern: '^\\d+:\\d+$' },
-        imageSize: { type: 'string', enum: ['1K', '2K', '4K'] }
+        imageSize: { type: 'string', enum: ['1K', '2K', '4K'] },
+        finalizeTask: { type: 'boolean' }
       },
       required: ['operation', 'prompt']
     }

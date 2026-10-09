@@ -95,7 +95,7 @@ export class KnowledgeSource {
           binary.quality.push(...media.quality);
         }
         if(references.some(r=>r.whiteboard)){
-          const rendered=await this.binary(user,resource,'pdf',['doc','+export','--node',resource.nodeId,'--export-format','pdf'],true,background,undefined,fingerprint(result.content.jsonml));
+          const rendered=await this.binary(user,resource,'pdf',['doc','+export','--node',resource.nodeId,'--export-format','pdf'],true,background,undefined,fingerprint(result.content.jsonml),cacheNodeId);
           binary.images.push(...rendered.images);binary.pages.push(...rendered.pages);binary.quality.push(...rendered.quality);
         }
         if(!binary.images.length)throw new Error('KNOWLEDGE_DOCUMENT_IMAGES_UNVERIFIED');
@@ -106,7 +106,7 @@ export class KnowledgeSource {
       return { content, hash: fingerprint(result.content.jsonml) };
     }
     const kind = resource.extension === 'axls' ? 'xlsx' : resource.extension;
-    const binary = await this.binary(user, resource, kind, resource.extension === 'axls' ? ['sheet','export','--node',resource.nodeId] : undefined,vision,background);
+    const binary = await this.binary(user, resource, kind, resource.extension === 'axls' ? ['sheet','export','--node',resource.nodeId] : undefined,vision,background,undefined,undefined,cacheNodeId);
     const content: KnowledgeContent = { chunks:[],facts:[],quality:[] };
     await this.mergeBinary(content,binary,resource,vision,user,cacheNodeId);
     if (!/^[a-f0-9]{64}$/.test(binary.sourceHash)) throw new Error('KNOWLEDGE_SOURCE_HASH_INVALID');
@@ -146,7 +146,7 @@ export class KnowledgeSource {
     }
     if (!content.chunks.length) content.quality.push('no_text_requires_review');
   }
-  private async binary(user: UserIdentity, resource: KnowledgeResource, extension: string, exportArgs?: string[], images = true, background = false,inlineBytes?:Buffer,exportSourceHash?:string): Promise<BinaryResult> {
+  private async binary(user: UserIdentity, resource: KnowledgeResource, extension: string, exportArgs?: string[], images = true, background = false,inlineBytes?:Buffer,exportSourceHash?:string,entryNode=resource.nodeId): Promise<BinaryResult> {
     if (!this.config.FILE_WORKER_URL || !this.config.FILE_WORKER_SECRET) throw new Error('KNOWLEDGE_FILE_WORKER_REQUIRED');
     await mkdir(this.config.KNOWLEDGE_DIR, { recursive:true });
     const directory = await mkdtemp(join(this.config.KNOWLEDGE_DIR,'parse-'));
@@ -180,7 +180,7 @@ export class KnowledgeSource {
           ()=>run(exportArgs),jobId=>run(['doc','+export-get','--job-id',jobId]),async()=>{
             const latest=await this.dws.runCommand(user,['doc','+fetch','--node',resource.nodeId,'--scope','full','--detail','full'],{background}) as any;
             if(latest.complete!==true||!latest.content?.jsonml||fingerprint(latest.content.jsonml)!==exportSourceHash)throw new Error('KNOWLEDGE_SOURCE_CHANGED_DURING_EXPORT');
-          });
+          },entryNode);
       }else if(exportArgs?.[0]==='sheet'&&exportArgs[1]==='export'){
         if(!this.imageStore)throw new Error('KNOWLEDGE_EXPORT_STORE_REQUIRED');
         await new KnowledgeSheetExport(this.imageStore.pool).downloadJob(user,resource.nodeId,resource.metadataHash,
@@ -189,7 +189,7 @@ export class KnowledgeSource {
             if(!file.size)throw new Error('KNOWLEDGE_BINARY_EMPTY');
             if(file.size>this.config.KNOWLEDGE_MAX_SOURCE_BYTES)throw new Error('KNOWLEDGE_SOURCE_SIZE_LIMIT');
             stage='security_scan';await new MediaPipeline(this.config).scanFile(path);scanned=true;
-          });
+          },undefined,entryNode);
       }else if (exportArgs) downloaded=await this.dws.runCommand(user,[...exportArgs,'--output',name],{cwd:directory,timeout:240_000,background}) as Record<string,any>;
       else await this.dws.downloadDriveFile(user,resource.nodeId,directory,name,{background});
       const info = await stat(path);

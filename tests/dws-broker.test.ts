@@ -2,6 +2,26 @@ import { describe, expect, it, vi } from 'vitest';
 import { DwsBroker, buildDeviceAuthorizationArgs, buildDwsEnvironment, isConfirmationGateError } from '../src/dws-broker.js';
 
 describe('DwsBroker device authorization', () => {
+  it('classifies wrapper startup stderr without retaining its private paths', async () => {
+    const broker = new DwsBroker({ DWS_BIN: 'dws' } as any);
+    vi.spyOn(broker as any, 'status').mockResolvedValue({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' });
+    vi.spyOn(broker as any, 'run').mockRejectedValue({ code: 1, stdout: '', stderr: 'Error: Cannot find module secret/private/path\nMODULE_NOT_FOUND' });
+    const error = await broker.runCommand({ corpId: 'corp-1', userId: 'user-1' }, ['drive', '+download']).catch(error => error);
+    expect(error.dwsExitCode).toBe(1);
+    expect(error.dwsLocalFailure).toBe('module_missing');
+    expect(error.dwsStdoutBytes).toBe(0);
+    expect(JSON.stringify(error)).not.toContain('secret/private');
+  });
+  it('preserves local spawn failures with empty CLI output without exposing paths', async () => {
+    const broker = new DwsBroker({ DWS_BIN: 'dws' } as any);
+    vi.spyOn(broker as any, 'status').mockResolvedValue({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' });
+    vi.spyOn(broker as any, 'run').mockRejectedValue(Object.assign(new Error('spawn secret-path ENOENT'), { code: 'ENOENT', stdout: '', stderr: '' }));
+    const error = await broker.runCommand({ corpId: 'corp-1', userId: 'user-1' }, ['drive', '+download']).catch(error => error);
+    expect(error.code).toBe('ENOENT');
+    expect(error.dwsReason).toBe('local_process_failed');
+    expect(error.message).toBe('DWS_LOCAL_PROCESS_FAILED');
+    expect(JSON.stringify(error)).not.toContain('secret-path');
+  });
   it('isolates DWS routing and preserves existing proxy exclusions', () => {
     const inherited={HTTPS_PROXY:'http://127.0.0.1:7897',NO_PROXY:'localhost',no_proxy:'127.0.0.1'};
     const env=buildDwsEnvironment({DWS_CONFIG_DIR:'./data/dws',DWS_NO_PROXY:'mcp.dingtalk.com,localhost'},inherited);

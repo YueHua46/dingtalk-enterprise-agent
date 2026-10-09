@@ -486,7 +486,14 @@ function readCommandError(error:unknown):unknown {
  const failure=error as {killed?:boolean;signal?:unknown;code?:unknown;stdout?:unknown;stderr?:unknown};
  if(failure.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER')return new Error('DWS_OUTPUT_LIMIT');
  if(failure.killed&&failure.signal)return new Error('DWS_COMMAND_TIMEOUT');
- if(typeof failure.stdout==='string'||typeof failure.stderr==='string')return asCliCommandError([{text:String(failure.stdout??'')},{text:String(failure.stderr??'')}]);
+ if(typeof failure.code==='string'&&/^[A-Z_0-9]{1,80}$/.test(failure.code))return Object.assign(new Error('DWS_LOCAL_PROCESS_FAILED'),{code:failure.code,dwsReason:'local_process_failed'});
+ if(typeof failure.stdout==='string'||typeof failure.stderr==='string'){
+  const stdout=String(failure.stdout??''),stderr=String(failure.stderr??'');
+  const diagnostic=asCliCommandError([{text:stdout},{text:stderr}]);
+  const localKind=/MODULE_NOT_FOUND|Cannot find module/.test(stderr)?'module_missing':/dws binary not found/.test(stderr)?'binary_missing':/spawn.*ENOENT/.test(stderr)?'spawn_not_found':/spawn.*(?:EACCES|EPERM)/.test(stderr)?'spawn_denied':undefined;
+  return Object.assign(diagnostic,{dwsExitCode:typeof failure.code==='number'?failure.code:undefined,
+   dwsStdoutBytes:Buffer.byteLength(stdout),dwsStderrBytes:Buffer.byteLength(stderr),dwsLocalFailure:localKind});
+ }
  return error;
 }
 

@@ -8,26 +8,59 @@ const schema = z.object({
   DINGTALK_CLIENT_ID: z.string().min(1).optional(),
   DINGTALK_CLIENT_SECRET: z.string().min(1).optional(),
   DINGTALK_ROBOT_CODE: z.string().min(1),
+  DINGTALK_API_BASE_URL: z.string().url().default('https://api.dingtalk.com'),
   // Stable DingTalk department ID to exclude from the Agent authorization picker.
   DINGTALK_DIRECTORY_FACTORY_DEPT_ID: z.coerce.number().int().positive().optional(),
   DINGTALK_CARD_TEMPLATE_ID: z.string().min(1).optional(),
   DINGTALK_CARD_VARIABLE: z.string().min(1).default('content'),
   DINGTALK_CARD_ACTIVITY_VARIABLE: z.string().min(1).optional(),
   DINGTALK_CARD_ACTIVITY_IN_PROCESSING: z.enum(['true', 'false']).default('false'),
+  DINGTALK_A2UI_ENABLED: z.enum(['true', 'false']).default('true'),
+  DINGTALK_A2UI_CATALOG_ID: z.string().url().default('https://dingtalk.com/card/a2ui/catalogs/public/catalog.json'),
+  DINGTALK_A2UI_MAX_MESSAGE_BYTES: z.coerce.number().int().positive().default(256 * 1024),
+  DINGTALK_A2UI_MAX_COMPONENTS: z.coerce.number().int().positive().default(200),
+  DINGTALK_A2UI_UPDATE_PATH: z.string().min(1).default('/v1.0/card/ai/instances'),
   // Interactive approval card (agree/reject buttons) for high-risk writes.
   DINGTALK_APPROVAL_CARD_TEMPLATE_ID: z.string().min(1).optional(),
   DINGTALK_APPROVAL_CARD_CONTENT_VAR: z.string().min(1).default('content'),
   DINGTALK_APPROVAL_CARD_STATUS_VAR: z.string().min(1).default('status'),
   DINGTALK_APPROVAL_CARD_TTL_MS: z.coerce.number().int().positive().default(5 * 60 * 1000),
+  MODEL_PROVIDER: z.enum(['tokenshop', 'gemini']).default('tokenshop'),
+  TOKENSHOP_MODEL_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.string().url().optional()),
+  TOKENSHOP_MODEL_API_KEY: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
+  TOKENSHOP_MODEL_NAME: z.string().min(1).optional(),
+  GEMINI_MODEL_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.string().url().optional()),
+  GEMINI_MODEL_API_KEY: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
+  GEMINI_MODEL_NAME: z.string().min(1).optional(),
   MODEL_BASE_URL: z.string().url().optional(),
   MODEL_TOOL_COMPAT_PROXY: z.enum(['true', 'false']).default('false'),
+  MODEL_REQUEST_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(6),
+  MODEL_REQUEST_RETRY_BUDGET_MS: z.coerce.number().int().min(5_000).max(180_000).default(120_000),
   MODEL_API_KEY: z.string().min(1).optional(),
   MODEL_NAME: z.string().default('gpt-5.6-sol'),
   KNOWLEDGE_ENABLED: z.enum(['true', 'false']).default('false'),
   KNOWLEDGE_TEST_USERS: z.string().default(''),
+  KNOWLEDGE_DATABASE_URL: z.preprocess(v=>v===''?undefined:v,z.string().url().optional()),
+  KNOWLEDGE_WORKER_URL: z.preprocess(v=>v===''?undefined:v,z.string().url().optional()),
+  KNOWLEDGE_CLAMAV_HOST: z.string().optional(),
+  KNOWLEDGE_CLAMAV_PORT: z.coerce.number().int().positive().optional(),
+  KNOWLEDGE_AUTO_SYNC: z.enum(['true','false']).default('true'),
+  KNOWLEDGE_READY_ONLY: z.enum(['true','false']).default('false'),
+  KNOWLEDGE_SHARED_INDEX_USERS: z.string().default('').refine(value=>!value.trim()||value.split(',').every(id=>/^[a-zA-Z0-9_-]{1,128}$/.test(id.trim())), 'requires comma-separated employee IDs'),
   KNOWLEDGE_DIR: z.string().default('./data/knowledge'),
   KNOWLEDGE_SYNC_INTERVAL_MS: z.coerce.number().int().min(60_000).default(900_000),
-  KNOWLEDGE_VISION_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(50),
+  // Task-local duplicate result reuse only; indexed content has no age cutoff.
+  // Permission is still checked through the current employee's DWS identity.
+  KNOWLEDGE_VERIFICATION_TTL_MS: z.coerce.number().int().min(30_000).max(15 * 60_000).default(5 * 60_000),
+  KNOWLEDGE_QUERY_BUDGET_MS: z.coerce.number().int().min(5_000).max(120_000).default(60_000),
+  TASK_SIMPLE_QUERY_BUDGET_MS: z.coerce.number().int().min(30_000).max(180_000).default(90_000),
+  TASK_GENERAL_QUERY_BUDGET_MS: z.coerce.number().int().min(60_000).max(300_000).default(180_000),
+  QUERY_OPTIMIZATION_MODE: z.enum(['off', 'shadow', 'enforce']).default('shadow'),
+  KNOWLEDGE_MAX_SOURCES: z.coerce.number().int().min(1).max(20).default(8),
+  KNOWLEDGE_MAX_RETRIEVAL_ROUNDS: z.coerce.number().int().min(1).max(3).default(2),
+  KNOWLEDGE_RERANK_MAX_DOCUMENTS: z.coerce.number().int().min(1).max(60).default(40),
+  KNOWLEDGE_RERANK_MAX_BYTES: z.coerce.number().int().min(8_000).max(100_000).default(40_000),
+  KNOWLEDGE_VISION_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(2),
   KNOWLEDGE_MAX_SOURCE_BYTES:z.coerce.number().int().positive().max(256*1024*1024).default(256*1024*1024),
   EMBEDDING_BASE_URL: z.preprocess((v) => v === '' ? undefined : v, z.string().url().optional()),
   EMBEDDING_API_KEY: z.preprocess((v) => v === '' ? undefined : v, z.string().min(1).optional()),
@@ -112,7 +145,19 @@ const schema = z.object({
 export type Config = z.infer<typeof schema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const result = schema.safeParse(env);
+  const provider = env.MODEL_PROVIDER || 'tokenshop';
+  const selected = provider === 'gemini'
+    ? {
+        MODEL_BASE_URL: env.GEMINI_MODEL_BASE_URL,
+        MODEL_API_KEY: env.GEMINI_MODEL_API_KEY || env.IMAGE_API_KEY,
+        MODEL_NAME: env.GEMINI_MODEL_NAME || 'gemini-3.8-flash-high'
+      }
+    : {
+        MODEL_BASE_URL: env.TOKENSHOP_MODEL_BASE_URL || env.MODEL_BASE_URL,
+        MODEL_API_KEY: env.TOKENSHOP_MODEL_API_KEY || env.MODEL_API_KEY,
+        MODEL_NAME: env.TOKENSHOP_MODEL_NAME || env.MODEL_NAME || 'gpt-5.6-sol'
+      };
+  const result = schema.safeParse({ ...env, MODEL_PROVIDER: provider, ...selected });
   if (!result.success) {
     const details = result.error.issues.map((issue) => issue.path.join('.') + ': ' + issue.message).join('; ');
     throw new Error('Invalid configuration: ' + details);

@@ -8,6 +8,14 @@ export interface AdaptedModelRequest {
   toolNames: Map<string, ToolIdentity>;
 }
 
+/** Responses tool names accepted by the compatibility bridge are limited to
+ * letters, digits, `_` and `-`. Codex namespaces may contain dotted operation
+ * names (for example `agent.ui.render`), so flattening must sanitize the child
+ * name while retaining the original identity in `toolNames`. */
+function providerToolName(namespace: string, name: string): string {
+  return `${namespace}__${name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
 /** Reconcile Codex's Responses namespace extension with Sub2API's Antigravity bridge. */
 export function adaptModelRequest(value: unknown): AdaptedModelRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid model request');
@@ -25,10 +33,17 @@ export function adaptModelRequest(value: unknown): AdaptedModelRequest {
         if (!rawChild || typeof rawChild !== 'object' || Array.isArray(rawChild)) continue;
         const child = rawChild as Record<string, unknown>;
         if (child.type !== 'function' || typeof child.name !== 'string') continue;
-        const flatName = `${tool.name}__${child.name}`;
+        const flatName = providerToolName(tool.name, child.name);
         if (toolNames.has(flatName)) throw new Error('Duplicate model tool name');
         toolNames.set(flatName, { namespace: tool.name, name: child.name });
-        output.push({ ...child, name: flatName });
+        // The provider sees flat functions, so their descriptions must carry
+        // both the namespace's rules and the individual operation's purpose.
+        // Dropping the parent description silently discards source boundaries,
+        // citation requirements, and other shared tool contracts.
+        const description = [tool.description, child.description]
+          .filter((text): text is string => typeof text === 'string' && text.length > 0)
+          .join('\n\n');
+        output.push({ ...child, name: flatName, ...(description ? { description } : {}) });
       }
     }
     return output;
@@ -47,7 +62,7 @@ export function adaptModelRequest(value: unknown): AdaptedModelRequest {
     if (!value || typeof value !== 'object') return;
     const item = value as Record<string, unknown>;
     if (item.type === 'function_call' && typeof item.namespace === 'string' && typeof item.name === 'string') {
-      const flatName = `${item.namespace}__${item.name}`;
+      const flatName = providerToolName(item.namespace, item.name);
       if (toolNames.has(flatName)) {
         item.name = flatName;
         delete item.namespace;

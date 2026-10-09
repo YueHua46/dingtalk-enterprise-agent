@@ -30,6 +30,23 @@ export function chunkText(text: string, position: KnowledgePosition, method: str
   for (let start = 0; start < safe.length; start += 1600) result.push({ text: safe.slice(start, start + 2000), position, method });
   return result;
 }
+
+/** Merge the tiny structural leaves produced by JSONML while preserving the
+ * first block as the citation anchor. Small isolated leaves are the main
+ * source of poor recall for titles, definitions, and model explanations. */
+function coalesceStructuredChunks(chunks: KnowledgeChunk[]): KnowledgeChunk[] {
+  const result: KnowledgeChunk[] = [];
+  for (const chunk of chunks) {
+    const previous = result.at(-1);
+    if (previous && previous.method === 'jsonml' && chunk.method === 'jsonml'
+      && previous.position.block === chunk.position.block
+      && previous.text.length < 700 && chunk.text.length < 700
+      && previous.text.length + chunk.text.length + 1 <= 1800) {
+      previous.text += '\n' + chunk.text;
+    } else result.push({ ...chunk, position: { ...chunk.position } });
+  }
+  return result;
+}
 export function parseJsonml(raw: unknown): KnowledgeContent {
   const tree = typeof raw === 'string' ? JSON.parse(raw) : raw;
   if (!Array.isArray(tree)) throw new Error('KNOWLEDGE_JSONML_INVALID');
@@ -57,8 +74,9 @@ export function parseJsonml(raw: unknown): KnowledgeContent {
   };
   imageWalk(tree,'root');
   walk(tree, 'root');
-  if (!chunks.length) quality.push('no_text_requires_image_check');
-  return { chunks, facts: [], quality };
+  const merged = coalesceStructuredChunks(chunks);
+  if (!merged.length) quality.push('no_text_requires_image_check');
+  return { chunks: merged, facts: [], quality };
 }
 
 // RFC4180 parser, including multiline quoted cells. Row-marker stripping is

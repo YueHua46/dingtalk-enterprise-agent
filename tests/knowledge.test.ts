@@ -18,12 +18,41 @@ it('preserves safe parser diagnoses and distinguishes sandbox timeout from IPC o
 });
 
 const config=loadConfig({NODE_ENV:'test',DINGTALK_ROBOT_CODE:'test',FILE_WORKER_MODE:'off',EMBEDDING_BASE_URL:'https://example.org/v1',EMBEDDING_API_KEY:'test'});
+it.each(['allowed','own_incomplete','denied','changed'])('ordinary shared discovery never downloads or exposes another employee index (%s)',async(outcome)=>{
+ const user={corpId:'corp',userId:'second'},node={nodeId:'shared1234',name:'共享知识',extension:'adoc',type:'file'};
+ const shared={...resourceFromNode(node,'workspace123','共享知识',null),status:'ready',activeVersion:'owner-version'};
+ const chunk={text:'已识别图片答案',position:{block:'b'},method:'vision'},order:string[]=[];
+ const reuse=vi.fn(async(u:any,_r:any,_v:any,hash:string)=>{order.push('reuse');expect(u).toEqual(user);if(hash!=='matching')throw Error('KNOWLEDGE_SHARED_SOURCE_CHANGED');return 'private-version';});
+ const store={sharedIndexUsers:['owner'],sharedResource:async()=>shared,resource:async()=>outcome==='own_incomplete'?{...shared,status:'needs_review',activeVersion:'incomplete-version'}:undefined,discover:async(u:any)=>{expect(u).toEqual(user);order.push('register');},reuseVerifiedIndex:reuse,failure:async()=>{},updateMetadata:async()=>{},state:async()=>{},status:async()=>({}),
+ candidates:async()=>[{node_id:node.nodeId,...chunk,version_id:'owner-version'}],pool:{query:async(sql:string)=>({rowCount:0,rows:sql.includes('SELECT source_hash')&&outcome==='own_incomplete'?[{source_hash:'matching',parser_version:knowledgeParserVersion}]:sql.includes('SELECT text,position')?[chunk]:sql.includes('SELECT quality')?[{quality:[]}]:[]})}};
+ const read=vi.fn(async(u:any)=>{expect(u).toEqual(user);order.push('read');return {hash:outcome==='changed'?'changed':'matching',content:{chunks:[],facts:[],quality:['image_pending']}};});
+ const enqueueResource=vi.fn(async()=>{order.push('queue');});
+ const sync={allowed:()=>true,enqueue:async()=>{},enqueueResource,authorizationVerified:async()=>{},source:{supported:()=>true,metadata:async(u:any)=>{expect(u).toEqual(user);order.push('metadata');if(outcome==='denied')throw Error('forbidden');return node;},read}};
+ const rerank=vi.fn(async()=>[{index:0,score:.9}]),model={embed:async()=>[Array(1024).fill(1)],rerank};
+ const result=await new KnowledgeTool({...config,KNOWLEDGE_READY_ONLY:'true',RERANK_MODEL:'rerank'},store as any,sync as any,model as any).execute(user,'search',{query:'完全没有字面匹配的提问'});
+ expect(result.hits).toEqual([]);expect(read).not.toHaveBeenCalled();expect(reuse).not.toHaveBeenCalled();expect(rerank).not.toHaveBeenCalled();expect(result.coverageGaps).toHaveLength(1);
+ expect(enqueueResource).toHaveBeenCalledTimes(outcome==='denied'?0:1);
+});
+it('pilot mode rejects incomplete indexed resources before any source or model call',async()=>{
+ const user={corpId:'corp',userId:'employee'},resource=resourceFromNode({nodeId:'abcdefgh123',name:'未完成',extension:'adoc'},'space123','未完成',null);
+ const read=vi.fn(),embed=vi.fn();
+ const store={resource:async()=>resource,failure:async()=>{},pool:{query:async()=>({rows:[],rowCount:0})}};
+ const sync={allowed:()=>true,enqueue:async()=>{},source:{supported:()=>true,read}};
+ await expect(new KnowledgeTool({...config,KNOWLEDGE_READY_ONLY:'true'},store as any,sync as any,{embed} as any).execute(user,'read',{ref:resource.nodeId})).rejects.toThrow('KNOWLEDGE_REFERENCE_NOT_COMPLETE');
+ expect(read).not.toHaveBeenCalled();expect(embed).not.toHaveBeenCalled();
+});
+it('pilot mode does not start queues or mutate scheduling state',async()=>{
+ const query=vi.fn(),user={corpId:'corp',userId:'employee'};
+ const sync=new KnowledgeSync({...config,KNOWLEDGE_AUTO_SYNC:'false'},{pool:{query}} as any,{} as any,{} as any,{} as any);
+ await sync.start();await sync.enqueue(user);await sync.enqueueResource(user,'abcdefgh123');await sync.authorizationVerified(user);
+ expect(query).not.toHaveBeenCalled();
+});
 it('persists sheet submission failure before another run can resubmit',async()=>{
  let state:string|undefined;
  const query=async(sql:string)=>{
   if(sql.includes('pg_try'))return {rows:[{locked:true}]};
   if(sql.startsWith('SELECT state'))return {rows:state?[{state,job_id:null}]:[]};
-  if(sql.startsWith('INSERT INTO'))state='starting';
+  if(sql.startsWith('INSERT INTO knowledge_sheet_exports'))state='starting';
   if(sql.includes("state='failed'"))state='failed';
   return {rows:[]};
  };
@@ -264,11 +293,11 @@ describe('knowledge model protocol',()=>{
 });
 it.each([false,true])('never sends revoked cached candidates to rerank, including fallback (%s)',async(fail)=>{
   const user={corpId:'corp',userId:'employee'},node={nodeId:'allowed123',name:'当前说明',type:'file',extension:'adoc'};
-  const resource={...resourceFromNode(node,'workspace123','当前说明',null),activeVersion:'version'};
+  const resource={...resourceFromNode(node,'workspace123','当前说明',null),activeVersion:'version',status:'ready'};
   const chunk={text:'当前可读答案',position:{block:'b'},method:'jsonml'};
-  const store={resource:async(_u:unknown,id:string)=>({...resource,nodeId:id}),state:async()=>{},status:async()=>({}),
+  const store={resource:async(_u:unknown,id:string)=>({...resource,nodeId:id}),failure:async()=>{},state:async()=>{},status:async()=>({}),
     candidates:async()=>[{node_id:'revoked123',text:'撤权缓存',version_id:'version',position:chunk.position},{node_id:node.nodeId,...chunk,version_id:'version'}],
-    pool:{query:async(sql:string)=>({rows:sql.includes('SELECT source_hash')?[{source_hash:'hash',parser_version:knowledgeParserVersion}]:sql.includes('SELECT text,position')?[chunk]:sql.includes('SELECT quality')?[{quality:[]}]:[]})}};
+    pool:{query:async(sql:string)=>({rows:sql.includes('SELECT source_hash')?[{source_hash:'hash',parser_version:knowledgeParserVersion,embedding_model:config.EMBEDDING_MODEL}]:sql.includes('SELECT text,position')?[chunk]:sql.includes('SELECT quality')?[{quality:[]}]:[]})}};
   const sync={allowed:()=>true,enqueue:async()=>{},authorizationVerified:async()=>{},source:{supported:()=>true,
     metadata:async(_u:unknown,id:string)=>{if(id==='revoked123')throw new Error('forbidden');return node;},
     read:async()=>({hash:'hash',content:{chunks:[chunk],facts:[],quality:[]}})}};

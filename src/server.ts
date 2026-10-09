@@ -14,6 +14,7 @@ import { DingTalkDirectory, type DirectoryCandidate } from './dingtalk-directory
 import { verifyModelTaskToken } from './file-worker-auth.js';
 import { NativeWebTool } from './native-web-tool.js';
 import { StandaloneWebSearch } from './standalone-web-search.js';
+import { requestModelWithRetry } from './model-request-retry.js';
 
 export interface ReadinessProbe {
   check(): Promise<Record<string, string>>;
@@ -121,10 +122,16 @@ export async function createServer(
       if (workerTaskId && config.MODEL_API_KEY) headers.authorization = `Bearer ${config.MODEL_API_KEY}`;
       else if (typeof request.headers.authorization === 'string') headers.authorization = request.headers.authorization;
       let response: Response;
+      const cancellation=new AbortController();
+      reply.raw.once('close',()=>{if(!reply.raw.writableFinished)cancellation.abort();});
       try {
-        response = await fetch(upstream, {
-          method: 'POST', headers, body: JSON.stringify(adapted.body), signal: AbortSignal.timeout(10 * 60 * 1000)
-        });
+        const result=await requestModelWithRetry(upstream,{
+          method:'POST',headers,body:JSON.stringify(adapted.body),
+          signal:AbortSignal.any([AbortSignal.timeout(10*60*1000),cancellation.signal])
+        },{maxAttempts:config.MODEL_REQUEST_MAX_ATTEMPTS,budgetMs:config.MODEL_REQUEST_RETRY_BUDGET_MS,
+          onRetry:event=>request.log.warn(event,'model request retry scheduled')});
+        response=result.response;
+        reply.header('x-model-request-attempts',String(result.attempts));
       } catch (error) {
         request.log.error({ error: error instanceof Error ? error.name : 'UnknownError' }, 'model upstream unavailable');
         return reply.code(502).send({ error: 'model_upstream_unavailable' });
