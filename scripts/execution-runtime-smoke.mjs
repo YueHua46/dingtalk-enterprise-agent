@@ -28,7 +28,7 @@ try {
   const file={file:'facts.json',evidenceId:'facts',capabilityId:'analysis.table',arguments:'{}',kind:'calculation',
     sha256:createHash('sha256').update(JSON.stringify(result)).digest('hex'),...describeEvidence(JSON.stringify(result))};
   const workflow=new TaskWorkflow({evidence:[],revision:0,evidenceFiles:[file]});
-  const codex={usesWorker:()=>true,writeEvidence:(_task,name,content)=>api('/evidence/'+name,'PUT',JSON.parse(content)),runPython:(_task,code)=>api('/python','POST',{code}),renderReport:(_task,payload)=>api('/report-render','POST',payload)};
+  const codex={usesWorker:()=>true,writeEvidence:(_task,name,content)=>api('/evidence/'+name,'PUT',JSON.parse(content)),runPython:(_task,code)=>api('/python','POST',{code}),renderReport:(_task,payload)=>api('/report-render','POST',payload),inspectOutput:(_task,path)=>api('/outputs/inspect','POST',{path})};
   const config=loadConfig({...process.env,NODE_ENV:'test',FILE_WORKER_MODE:'off'});
   const host=new TaskOrchestrator(config,new InMemoryRepository(),codex,{},{});
   const task={id,request:{text:'synthetic test',requestId:id,user:{corpId:'synthetic',userId:'synthetic'},surface:{type:'group',id:'synthetic'}}};
