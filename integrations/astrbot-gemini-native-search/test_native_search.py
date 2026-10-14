@@ -23,7 +23,7 @@ sys.modules["astrbot"] = types.ModuleType("astrbot")
 sys.modules["astrbot.api"] = types.ModuleType("astrbot.api")
 event_api = types.ModuleType("astrbot.api.event")
 event_api.AstrMessageEvent = object
-event_api.filter = types.SimpleNamespace(llm_tool=identity_decorator)
+event_api.filter = types.SimpleNamespace(llm_tool=identity_decorator, on_llm_request=identity_decorator)
 sys.modules[event_api.__name__] = event_api
 star_api = types.ModuleType("astrbot.api.star")
 star_api.Context = object
@@ -51,6 +51,30 @@ def grounded_response():
 
 
 class SearchTests(unittest.IsolatedAsyncioTestCase):
+    def test_current_public_query_boundary(self):
+        self.assertEqual(plugin.current_fact_query("我的世界基岩版最新版本现在是什么"), "我的世界基岩版最新版本现在是什么")
+        self.assertIsNone(plugin.current_fact_query("我的订单现在更新了吗"))
+        self.assertIsNone(plugin.current_fact_query("今天我的API key更新为 secret"))
+        self.assertIsNone(plugin.current_fact_query("你好"))
+
+    async def test_fresh_fact_hook_searches_preserves_tools_and_persona(self):
+        extras = {}
+        event = types.SimpleNamespace(get_message_str=lambda: "我的世界基岩版最新版本现在是什么", get_extra=lambda k: extras.get(k), set_extra=lambda k,v: extras.update({k:v}), unified_msg_origin="current-session")
+        tools = object()
+        request = types.SimpleNamespace(system_prompt="Existing persona", prompt="Original user question", func_tool=tools)
+        context = types.SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider()))
+        instance = plugin.GeminiNativeSearch(context)
+        with patch.object(plugin, "search_native", AsyncMock(return_value={"status":"ok","answer":"Fresh release","sources":[{"url":"https://example.com"}]})) as search:
+            await instance.ground_current_public_facts(event, request)
+            await instance.ground_current_public_facts(event, request)
+        search.assert_awaited_once()
+        self.assertIn("我的世界基岩版", search.await_args.args[1])
+        self.assertNotIn("Existing persona", search.await_args.args[1])
+        self.assertTrue(request.system_prompt.startswith("Existing persona"))
+        self.assertTrue(request.prompt.startswith("Original user question"))
+        self.assertIs(request.func_tool, tools)
+        self.assertEqual(extras["gemini_current_fact_grounding_status"], "ok")
+
     async def test_only_native_tool_and_query_are_sent_using_current_key(self):
         client = AsyncMock()
         client.post.return_value = grounded_response()

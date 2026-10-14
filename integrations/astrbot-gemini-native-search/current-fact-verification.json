@@ -1,0 +1,19 @@
+{
+  "http": 200,
+  "stop_reason": "end_turn",
+  "source_count": 5,
+  "source_urls": [
+    "https://feedback.minecraft.net/hc/en-us/articles/49419163013261-Minecraft-Bedrock-Edition-26-52-Hotfix-Changelog",
+    "https://feedback.minecraft.net/hc/en-us/articles/49576781082125-Minecraft-Beta-Preview-26-70-20",
+    "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFKfLtjNzJlP7hv4TCrLhUbVM6ApYj8t5kUxptP07fPFkOikg1hq4UTuu8SPdCuK3IpLxgmy0vAL62JkPxmoYMbx6GEWelBG3OzwiyDbQ3txnBS6SO0mdbAAGNLEUzQ2W6hYhPP6UFyoa1icR-swIeZGzVGcRluFhzqal0ZL6xlpPPZD_M8h8ImFmAiaYJpnQ-CQ2j1LNk59sAY988EfWRqTpcVUDAd",
+    "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQHleQdLAXv9jtPG5M5TP9Go883ZPMFUaGVistuqlZVH5MP8bMg7SDy16o-eb06xsz7bi3UU4L40slrz9uKgS20I6XJZcc6ZCQw6nghoBMOlTPr12ITItceZZi9srLkoXwBQpBx7D3JBlDhE3c1AqsER9gPV7_XYba4=",
+    "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFu49uJRyVFK2Ly4Nbb7tVcnLHL6VTbzHGzlFH_y98nq6jKfGqphGGIbWh41vOHiI7vq23yd0Cs-g-iER2BG4VNS5GwT6rX-W8DoCyEsPKRARmS-lCJDpNvmnajuKCXOUketNOg4FqH6AY6qj6Bjhsm1yCROnqyu3SEJ6ECnboX1Uh-8i9E4HLBNGfltC-dPQy0bfYD8Q=="
+  ],
+  "grounding_status": "ok",
+  "persona_prefix_preserved": true,
+  "tools_preserved": true,
+  "tool_choice_forced": false,
+  "answer": "基岩版现在正式稳定版是2026年9月25日出的26.52热修复版，更新日志见 https://feedback.minecraft.net/hc/en-us/articles/49419163013261-Minecraft-Bedrock-Edition-26-52-Hotfix-Changelog ；测试预览版则是2026年10月13日的26.70.20，来源是 https://feedback.minecraft.net/hc/en-us/articles/49576781082125-Minecraft-Beta-Preview-26-70-20 啦，你自己去看哦。",
+  "duration_seconds": 36.74,
+  "scope": "Actual deployed pre-request hook + actual provider and saved persona; does not exercise QQ delivery or other plugin hooks"
+}
