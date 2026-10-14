@@ -1,0 +1,25 @@
+{
+  "marketplace": "DE",
+  "currency": "EUR",
+  "asin": ["B0EXAMPLE01"],
+  "sku": [],
+  "advertising_stage": "stable",
+  "business_goal": "稳定盈利",
+  "analysis_period": {"start_date": "2026-10-01", "end_date": "2026-10-07"},
+  "target_acos": 0.2,
+  "break_even_acos": null,
+  "target_profit": null,
+  "product_economics": {
+    "selling_price": 229.99,
+    "actual_price": 219.99,
+    "discount": null,
+    "unit_cost": null,
+    "fba_fee": null,
+    "referral_fee": null,
+    "refund_rate": null
+  },
+  "inventory": {},
+  "listing_context": {},
+  "prior_changes": [],
+  "report_sources": ["crossborderops"]
+}

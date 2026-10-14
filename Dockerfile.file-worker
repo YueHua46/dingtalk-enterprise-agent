@@ -9,11 +9,11 @@ RUN npm run build
 
 FROM ${NODE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
-RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g; s|http://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources
+    RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g; s|http://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv libreoffice-writer libreoffice-calc libreoffice-impress \
     poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
-    fonts-noto-cjk ca-certificates tini curl \
+    fonts-noto-cjk fonts-wqy-zenhei ca-certificates tini curl \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir \
     python-docx openpyxl python-pptx pypdf pdfplumber pymupdf \
@@ -25,6 +25,11 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY file-skills /opt/file-skills
+# A symlink outside a venv loses pyvenv.cfg discovery. Use an exec wrapper so
+# login shells and structured Python both retain the installed dependencies.
+RUN install -m 0755 /opt/file-skills/python-runtime /usr/local/bin/python && \
+    install -m 0755 /opt/file-skills/python-runtime /usr/local/bin/python3 && \
+    /usr/local/bin/python3 -c "import reportlab, pypdf, pandas, fitz"
 # Read-only copy of the business skills so their analysis scripts can run in a task sandbox.
 COPY skills /opt/agent-skills
 COPY config /app/config

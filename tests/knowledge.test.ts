@@ -352,6 +352,7 @@ describe('structured document evidence',()=>{
     expect(knowledgeErrorCode(Object.assign(new Error('download failed'),{dwsCategory:'api',dwsReason:'doc_export_download_failed',dwsCauseCode:'NoSuchKey'}))).toBe('KNOWLEDGE_DWS_EXPORT_OBJECT_MISSING');
   });
   it('does not classify network failures as permission denial',()=>{
+    expect(knowledgeErrorCode(Object.assign(new Error("EACCES: permission denied, mkdtemp '/var/lib/agent/knowledge/parse-test'"),{code:'EACCES'}))).toBe('KNOWLEDGE_LOCAL_FILESYSTEM_ERROR');
     expect(knowledgeErrorCode(new Error('network timeout'))).toBe('source_read_failed');
     expect(knowledgeErrorCode(new Error('forbidden'))).toBe('permission_denied');
     expect(knowledgeErrorCode(new Error('KNOWLEDGE_VISION_HTTP_403'))).toBe('KNOWLEDGE_VISION_HTTP_403');

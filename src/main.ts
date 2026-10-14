@@ -22,8 +22,6 @@ import { TaskOrchestrator } from './task-orchestrator.js';
 import { RedisTaskQueue } from './task-queue.js';
 import { RetentionService } from './retention.js';
 import { DingTalkNativeCardBroker } from './dingtalk-card.js';
-import { DingTalkA2UICardBroker } from './dingtalk-a2ui.js';
-import { executionToA2UI, stableSurfaceId } from './a2ui.js';
 import { ZiniaoBroker } from './ziniao-broker.js';
 import { ZiniaoRemoteBroker } from './ziniao-remote-broker.js';
 import * as md from './markdown.js';
@@ -54,19 +52,8 @@ const knowledgeSync = knowledgeStore ? new KnowledgeSync(knowledgeConfig, knowle
 const knowledgeTool = knowledgeStore && knowledgeSync ? new KnowledgeTool(knowledgeConfig, knowledgeStore, knowledgeSync, knowledgeModel) : undefined;
 if (knowledgePool) registerKnowledgeDatabaseMetrics(knowledgePool);
 const nativeCards = new DingTalkNativeCardBroker(config);
-const a2uiCards = new DingTalkA2UICardBroker(config);
 let stream: DingTalkStreamAdapter | undefined;
 const sender = {
-  ...(a2uiCards.enabled() ? {
-    async beginTaskA2UI(task: TaskRecord): Promise<string> {
-      const initial = executionToA2UI({ title: 'Agent任务', status: 'processing', steps: [] }, config.DINGTALK_A2UI_CATALOG_ID, stableSurfaceId(task.id));
-      return a2uiCards.create(task.request.surface, initial, task.id);
-    },
-    async updateTaskA2UI(bizId: string, state: import('./a2ui.js').ExecutionUiState, status: import('./a2ui.js').A2UIFlowStatus): Promise<void> {
-      const messages = executionToA2UI(state, config.DINGTALK_A2UI_CATALOG_ID, stableSurfaceId(bizId)).filter((message) => !('createSurface' in message));
-      await a2uiCards.update(bizId, messages, status);
-    }
-  } : {}),
   ...(nativeCards.enabled() ? {
     async beginTaskCard(task: TaskRecord): Promise<string> {
       return nativeCards.create(task.request.surface);

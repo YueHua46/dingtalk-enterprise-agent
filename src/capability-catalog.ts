@@ -7,6 +7,8 @@ import type { RiskLevel } from './types.js';
 
 export interface CapabilityDescriptor {
   id: string;
+  /** Whether an invocation is preparation for the Agent or part of the user's goal. */
+  executionRole?: 'preparation' | 'goal' | 'delivery';
   purpose: string;
   risk: RiskLevel;
   identity: 'dingtalk_user' | 'scoped_service' | 'public_service' | 'none';
@@ -57,6 +59,8 @@ const fixed: CapabilityDescriptor[] = [
     identity: 'scoped_service' as const, scope: '仅工具目录，不读取共享密钥业务数据', source: 'lingxing',
     freshness: 'live' as const, supports: ['工具发现'], skills: ['amazon-business-performance-analysis']
   })),
+  { id: 'analysis.table', purpose: '对保存证据表做精确分组、求和、比率和排序', risk: 'read', identity: 'none', scope: '当前任务证据', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
+  { id: 'artifact.render_report', purpose: '从结构化事实生成报告', risk: 'read', identity: 'none', scope: '当前任务', source: 'artifact', freshness: 'static', supports: ['报告文件'], skills: [] },
   { id: 'analysis.python', purpose: '在任务沙箱中运行 Python，对已取得的证据文件做精确的派生计算或运行 Skill 分析脚本；代码与输出即计算证据', risk: 'read', identity: 'none', scope: '当前任务沙箱，无网络', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
   { id: 'internet.search', purpose: '检索公开网页', risk: 'read', identity: 'none', scope: '公开网页', source: 'internet', freshness: 'live', supports: ['公开事实'], skills: [] },
   ...[...AMAZON_OPERATIONS].map((operation) => ({
@@ -65,7 +69,7 @@ const fixed: CapabilityDescriptor[] = [
     freshness: 'live' as const, supports: ['Amazon 页面观察事实'], skills: ['amazon-page-research']
   })),
   { id: 'image.generate', purpose: '调用已配置的原生图像模型生成或编辑图片，并投递到当前钉钉会话', risk: 'write', identity: 'none', scope: '当前任务附件与原会话', source: 'image', freshness: 'static', supports: ['生成图片', '编辑图片', '图片投递回执'], skills: [] },
-  { id: 'reference.read_guide', purpose: '读取已安装 Skill 的操作说明', risk: 'read', identity: 'none', scope: '本地 Skill 文件', source: 'skill', freshness: 'static', supports: ['方法说明'], skills: [] },
+  { id: 'reference.read_guide', executionRole: 'preparation', purpose: '读取已安装 Skill 的操作说明', risk: 'read', identity: 'none', scope: '本地 Skill 文件', source: 'skill', freshness: 'static', supports: ['方法说明'], skills: [] },
   { id: 'reference.list_guides', purpose: '列出已安装 Skill 的名称与用途', risk: 'read', identity: 'none', scope: '本地 Skill 文件', source: 'skill', freshness: 'static', supports: ['方法说明'], skills: [] },
 ];
 

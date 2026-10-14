@@ -1,0 +1,32 @@
+# Application-only rebuild against a previously verified runtime image.
+# Pass immutable local image tags/digests. Use the main Dockerfiles whenever
+# package.json or OS/Python/CLI dependencies change.
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG GATEWAY_RUNTIME_IMAGE
+ARG WORKER_RUNTIME_IMAGE
+FROM ${NODE_IMAGE} AS build
+USER root
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --include=dev
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM ${GATEWAY_RUNTIME_IMAGE} AS gateway
+COPY --from=build /app/dist /app/dist
+COPY migrations /app/migrations
+COPY scripts /app/scripts
+COPY skills /app/skills
+COPY config /app/config
+COPY workspaces /app/workspaces
+COPY AGENTS.md /app/AGENTS.md
+
+FROM ${WORKER_RUNTIME_IMAGE} AS file-worker
+COPY --from=build /app/dist /app/dist
+COPY file-skills /opt/file-skills
+COPY skills /opt/agent-skills
+COPY config /app/config
+RUN install -m 0755 /opt/file-skills/python-runtime /usr/local/bin/python && \
+    install -m 0755 /opt/file-skills/python-runtime /usr/local/bin/python3 && \
+    /usr/local/bin/python3 -c "import reportlab, pypdf, pandas, fitz"

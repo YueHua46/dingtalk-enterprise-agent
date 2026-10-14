@@ -48,6 +48,7 @@ export function asCliCommandError(outputs: Array<{ text: string }>): Error {
     if (parsed?.ok === false || parsed?.error) {
       return Object.assign(new Error(String(parsed?.error?.message ?? 'DWS command failed')), {
         ...boundedDwsDiagnostic(parsed.error),
+        dwsRaw: boundedRawDwsError(parsed.error),
         dwsCode: String(parsed?.error?.code ?? parsed?.error?.exit_code ?? ''),
         dwsCategory: String(parsed?.error?.category ?? parsed?.error?.type ?? ''),
         dwsRetryable: parsed?.error?.retryable === true,
@@ -58,6 +59,26 @@ export function asCliCommandError(outputs: Array<{ text: string }>): Error {
     }
   }
   return new Error('DWS command failed');
+}
+
+// Keep enough provider text to identify permission/endpoint failures while
+// preventing credentials, headers, URLs and large response bodies from being
+// persisted in the knowledge database.
+export function redactDwsErrorText(raw:string): string {
+  return raw
+    .replace(/Bearer\s+[^\s"',;}]+/gi, 'Bearer <redacted>')
+    .replace(/\bsk-[A-Za-z0-9_.-]+/g, '<redacted>')
+    .replace(/https?:\/\/[^\s"']+/gi, '<url:redacted>')
+    .replace(/(access[_-]?token|refresh[_-]?token|app[_-]?secret|authorization|cookie|password|secret|device[_-]?code|user[_-]?code)["'\s:=]+[^\s,;}"']+/gi, '$1=<redacted>');
+}
+function boundedRawDwsError(error:any): string | undefined {
+  // Retain the error envelope, including nested upstream cause and details.
+  // Structured credential fields are removed before serializing, even when
+  // they contain objects, whitespace or arrays.
+  const raw=JSON.stringify(error ?? {},(key,value)=>
+    /access.?token|refresh.?token|app.?secret|authorization|cookie|password|secret|device.?code|user.?code/i.test(key)?'<redacted>':value);
+  const redacted=redactDwsErrorText(raw);
+  return redacted.length>16000?redacted.slice(0,16000)+' [truncated]':redacted;
 }
 
 // Extract only identifiers, never the original response, parameters or tokens.

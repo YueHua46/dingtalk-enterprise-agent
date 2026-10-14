@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, request
 
@@ -138,20 +139,37 @@ def _query_sids(scope: dict, params: dict) -> list[int]:
     allowed = {int(value) for value in scope.get("lingxing_sids") or []}
     requested = params.get("store_sids", params.get("store_sid"))
     if requested in (None, ""):
-        return sorted(allowed)
-    if not isinstance(requested, list):
-        requested = [requested]
-    try:
-        selected = sorted({int(value) for value in requested})
-    except (TypeError, ValueError) as exc:
-        raise ValueError("store_sids 必须为整数列表") from exc
+        selected = sorted(allowed)
+    else:
+        if not isinstance(requested, list):
+            requested = [requested]
+        try:
+            selected = sorted({int(value) for value in requested})
+        except (TypeError, ValueError) as exc:
+            raise ValueError("store_sids 必须为整数列表") from exc
     if not set(selected).issubset(allowed):
         raise PermissionError("请求范围包含当前钉钉用户未授权店铺")
+    if params.get("site"):
+        aliases = {"US": "美国", "DE": "德国", "JP": "日本", "UK": "英国", "GB": "英国", "CA": "加拿大", "MX": "墨西哥", "FR": "法国", "IT": "意大利", "ES": "西班牙", "AU": "澳大利亚"}
+        site = str(params["site"]).strip()
+        country = aliases.get(site.upper(), site)
+        store_sids = {int(s["lingxing_sid"]) for s in scope.get("stores", [])
+                      if s.get("lingxing_sid") is not None and (s.get("country") == country or str(s.get("marketplace") or "").upper() == site.upper())}
+        selected = sorted(set(selected) & store_sids)
     return selected
 
 
 def _daily_scope(sids: list[int]) -> dict:
     return {"allowed_sites": None, "allowed_registration_identities": None, "allowed_lingxing_sids": set(sids)}
+
+
+def _completed_end_date(db, params, sids):
+    if params.get("end_date"):
+        return _parse_query_date(params["end_date"], date.today())
+    from services.daily_data_availability import default_daily_end_date
+    observed = default_daily_end_date(db, **_daily_scope(sids))
+    yesterday = datetime.now(ZoneInfo("Asia/Shanghai")).date() - timedelta(days=1)
+    return min(observed, yesterday)
 
 
 def _daily_query(dataset: str, params: dict, sids: list[int]):
@@ -163,7 +181,7 @@ def _daily_query(dataset: str, params: dict, sids: list[int]):
 
     db = Database()
     scope = _daily_scope(sids)
-    end = _parse_query_date(params.get("end_date"), default_daily_end_date(db, **scope))
+    end = _completed_end_date(db, params, sids)
     start = _parse_query_date(params.get("start_date"), end - timedelta(days=max(1, int(params.get("days") or 7)) - 1))
     if start > end:
         raise ValueError("start_date 不能晚于 end_date")
@@ -229,18 +247,50 @@ def _daily_query(dataset: str, params: dict, sids: list[int]):
 
 def _ads_query(dataset: str, params: dict, sids: list[int]):
     from database.database import Database
-    from services.ad_optimization_service import _parse_date
+    from services.daily_data_availability import default_daily_end_date
     db = Database()
-    start = _parse_date(params.get("start_date"))
-    end = _parse_date(params.get("end_date"))
+    supported = {"start_date", "end_date", "days", "site", "store_sid", "store_sids", "limit", "offset"}
+    if dataset != "ads.summary":
+        supported.add("q")
+    if dataset == "ads.metrics":
+        supported.update({"sources", "dimensions", "campaign_ids", "ad_group_ids", "asins", "order_by"})
+    unknown = set(params) - supported
+    if unknown:
+        raise ValueError(f"{dataset} 不支持参数 {', '.join(sorted(unknown))}；筛选不会被静默忽略")
+    end = _completed_end_date(db, params, sids)
+    days = int(params.get("days") or 7)
+    if not 1 <= days <= 92:
+        raise ValueError("days 必须在 1..92 之间")
+    start = _parse_query_date(params.get("start_date"), end - timedelta(days=days-1))
+    if start > end or (end-start).days >= 92:
+        raise ValueError("广告查询时间窗必须为 1..92 天")
+    if dataset == "ads.metrics":
+        from services.agent_ads_metrics_service import ads_metrics
+        from services.agent_ads_names import enrich_campaign_names
+        return enrich_campaign_names(ads_metrics(db, sids, params, start, end), sids)
     limit = max(1, min(int(params.get("limit") or 100), 500))
     offset = max(0, int(params.get("offset") or 0))
     q = params.get("q") or None
     if dataset == "ads.summary":
         return {
-            "sp": [row for sid in sids for row in db.ad_reports.daily_summary_sp(sid=sid, start_date=start, end_date=end)],
-            "sb": [row for sid in sids for row in db.ad_reports.daily_summary_sb(sid=sid, start_date=start, end_date=end)],
-            "placements": [row for sid in sids for row in db.ad_reports.daily_summary_sp_placements(sid=sid, start_date=start, end_date=end)],
+            "sp": [{**row, "sid": sid} for sid in sids for row in db.ad_reports.daily_summary_sp(sid=sid, start_date=start, end_date=end)],
+            "sb": [{**row, "sid": sid} for sid in sids for row in db.ad_reports.daily_summary_sb(sid=sid, start_date=start, end_date=end)],
+            "placements": [{**row, "sid": sid} for sid in sids for row in db.ad_reports.daily_summary_sp_placements(sid=sid, start_date=start, end_date=end)],
+            "period": {"start_date": start.isoformat(), "end_date": end.isoformat()},
+            "semantics": {"sp_source": "sp_search_terms", "sb_source": "sb_search_terms", "placements_overlap_sp": True,
+                          "missing_store_or_date": "unknown_not_zero", "actual_bid_budget_cost_profit": "not_provided"},
+            # This endpoint is server-aggregated by day and is complete for
+            # the requested scope. Keep the fact explicit so callers do not
+            # have to infer completeness from the shape of the payload.
+            "coverage": {
+                "mode": "complete",
+                "basis": "server_daily_aggregate",
+                "scope": "requested_authorized_stores",
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "population": "stored_report_rows",
+                "upstream_acquisition_completeness": "not_verified",
+            },
         }
     rows = []
     total = 0
@@ -259,7 +309,29 @@ def _ads_query(dataset: str, params: dict, sids: list[int]):
         rows.extend(page)
         total += int(count or 0)
     rows.sort(key=lambda row: (str(row.get("report_date") or ""), float(row.get("spend") or 0), int(row.get("id") or 0)), reverse=True)
-    return {"rows": rows[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
+    page = rows[offset:offset + limit]
+    next_offset = offset + len(page)
+    has_more = next_offset < total
+    return {
+        "rows": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "period": {"start_date": start.isoformat(), "end_date": end.isoformat()},
+        # Pagination is part of the data contract. A successful response can
+        # still be only one page; expose that fact beside the rows instead of
+        # making the Agent reverse-engineer a backend default.
+        "coverage": {
+            "mode": "page" if has_more or offset > 0 else "complete",
+            "basis": "ordered_rows",
+            "total": total,
+            "offset": offset,
+            "returned": len(page),
+            "limit": limit,
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
+        },
+    }
 
 
 def _reviews_query(dataset: str, params: dict, sids: list[int]):
@@ -336,7 +408,10 @@ def query_agent_data():
             data = _rank_query(dataset, params, sids)
         else:
             return json_error("不支持的数据集", status=400)
-        return json_success(data={"dataset": dataset, "data": json_safe_value(data), "scope": json_safe_value(scope), "evidence": {"queried_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "crossborderops", "authorized_lingxing_sids": sids, "requested_start_date": params.get("start_date"), "requested_end_date": params.get("end_date")}})
+        selected_stores = [s for s in scope.get("stores", []) if s.get("lingxing_sid") in sids]
+        effective_scope = {**scope, "lingxing_sids": sids, "stores": selected_stores,
+                           "store_ids": [s["id"] for s in selected_stores if "id" in s]}
+        return json_success(data={"dataset": dataset, "data": json_safe_value(data), "scope": json_safe_value(effective_scope), "evidence": {"queried_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source": "crossborderops", "authorized_lingxing_sids": sids, "applied_store_sids": sids, "requested_start_date": params.get("start_date"), "requested_end_date": params.get("end_date")}})
     except PermissionError as exc:
         return json_error(str(exc), status=403)
     except ValueError as exc:

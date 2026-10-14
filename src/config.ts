@@ -15,7 +15,9 @@ const schema = z.object({
   DINGTALK_CARD_VARIABLE: z.string().min(1).default('content'),
   DINGTALK_CARD_ACTIVITY_VARIABLE: z.string().min(1).optional(),
   DINGTALK_CARD_ACTIVITY_IN_PROCESSING: z.enum(['true', 'false']).default('false'),
-  DINGTALK_A2UI_ENABLED: z.enum(['true', 'false']).default('true'),
+  // DingTalk's A2UI card API is currently unavailable for this deployment.
+  // The runtime transport is intentionally not wired into main.ts.
+  DINGTALK_A2UI_ENABLED: z.enum(['true', 'false']).default('false'),
   DINGTALK_A2UI_CATALOG_ID: z.string().url().default('https://dingtalk.com/card/a2ui/catalogs/public/catalog.json'),
   DINGTALK_A2UI_MAX_MESSAGE_BYTES: z.coerce.number().int().positive().default(256 * 1024),
   DINGTALK_A2UI_MAX_COMPONENTS: z.coerce.number().int().positive().default(200),
@@ -35,7 +37,17 @@ const schema = z.object({
   MODEL_BASE_URL: z.string().url().optional(),
   MODEL_TOOL_COMPAT_PROXY: z.enum(['true', 'false']).default('false'),
   MODEL_REQUEST_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(6),
-  MODEL_REQUEST_RETRY_BUDGET_MS: z.coerce.number().int().min(5_000).max(180_000).default(120_000),
+  // Six total attempts means five retries. Keep enough wall-clock budget for
+  // all attempts instead of allowing one hung upstream request to consume it.
+  MODEL_REQUEST_RETRY_BUDGET_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(1_200_000),
+  MODEL_REQUEST_ATTEMPT_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(300_000).default(180_000),
+  // Per-attempt reviewer deadline. Transient failures share the model retry
+  // budget instead of consuming a separate, shorter delivery deadline.
+  MODEL_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(300_000).default(180_000),
+  MODEL_REVIEW_PROVIDER: z.enum(['primary', 'tokenshop', 'gemini']).default('primary'),
+  MODEL_REVIEW_BASE_URL: z.string().url().optional(),
+  MODEL_REVIEW_API_KEY: z.string().min(1).optional(),
+  MODEL_REVIEW_NAME: z.string().min(1).optional(),
   MODEL_API_KEY: z.string().min(1).optional(),
   MODEL_NAME: z.string().default('gpt-5.6-sol'),
   KNOWLEDGE_ENABLED: z.enum(['true', 'false']).default('false'),
@@ -53,8 +65,11 @@ const schema = z.object({
   // Permission is still checked through the current employee's DWS identity.
   KNOWLEDGE_VERIFICATION_TTL_MS: z.coerce.number().int().min(30_000).max(15 * 60_000).default(5 * 60_000),
   KNOWLEDGE_QUERY_BUDGET_MS: z.coerce.number().int().min(5_000).max(120_000).default(60_000),
-  TASK_SIMPLE_QUERY_BUDGET_MS: z.coerce.number().int().min(30_000).max(180_000).default(90_000),
-  TASK_GENERAL_QUERY_BUDGET_MS: z.coerce.number().int().min(60_000).max(300_000).default(180_000),
+  // These are long-running task guardrails, not answer-generation deadlines.
+  // A task may continue with progress/evidence after the first budget window;
+  // the host must never replace a real result with a generic timeout answer.
+  TASK_SIMPLE_QUERY_BUDGET_MS: z.coerce.number().int().min(60_000).max(900_000).default(300_000),
+  TASK_GENERAL_QUERY_BUDGET_MS: z.coerce.number().int().min(120_000).max(1_800_000).default(900_000),
   QUERY_OPTIMIZATION_MODE: z.enum(['off', 'shadow', 'enforce']).default('shadow'),
   KNOWLEDGE_MAX_SOURCES: z.coerce.number().int().min(1).max(20).default(8),
   KNOWLEDGE_MAX_RETRIEVAL_ROUNDS: z.coerce.number().int().min(1).max(3).default(2),
@@ -157,7 +172,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         MODEL_API_KEY: env.TOKENSHOP_MODEL_API_KEY || env.MODEL_API_KEY,
         MODEL_NAME: env.TOKENSHOP_MODEL_NAME || env.MODEL_NAME || 'gpt-5.6-sol'
       };
-  const result = schema.safeParse({ ...env, MODEL_PROVIDER: provider, ...selected });
+  const reviewProvider = env.MODEL_REVIEW_PROVIDER || 'primary';
+  const review = reviewProvider === 'primary' ? selected : reviewProvider === 'gemini'
+    ? {MODEL_BASE_URL: env.GEMINI_MODEL_BASE_URL, MODEL_API_KEY: env.GEMINI_MODEL_API_KEY || env.IMAGE_API_KEY,
+       MODEL_NAME: env.GEMINI_MODEL_NAME || 'gemini-3.8-flash-high'}
+    : {MODEL_BASE_URL: env.TOKENSHOP_MODEL_BASE_URL || env.MODEL_BASE_URL, MODEL_API_KEY: env.TOKENSHOP_MODEL_API_KEY || env.MODEL_API_KEY,
+       MODEL_NAME: env.TOKENSHOP_MODEL_NAME || env.MODEL_NAME || 'gpt-5.6-sol'};
+  if (reviewProvider !== 'primary' && (!review.MODEL_BASE_URL || !review.MODEL_API_KEY)) throw new Error('MODEL_REVIEW_PROVIDER requires its configured endpoint and key');
+  const result = schema.safeParse({ ...env, MODEL_PROVIDER: provider, ...selected,
+    MODEL_REVIEW_BASE_URL: review.MODEL_BASE_URL, MODEL_REVIEW_API_KEY: review.MODEL_API_KEY, MODEL_REVIEW_NAME: review.MODEL_NAME});
   if (!result.success) {
     const details = result.error.issues.map((issue) => issue.path.join('.') + ': ' + issue.message).join('; ');
     throw new Error('Invalid configuration: ' + details);

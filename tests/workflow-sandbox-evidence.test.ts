@@ -88,11 +88,11 @@ describe('sandbox evidence', () => {
     const review = vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'pass', issues: [], reason: 'ok' });
     const task = await orchestrator.accept(request);
     await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
-    expect([...files.keys()]).toEqual(['01_crossborderops.daily.metrics.json', 'index.json']);
+    expect([...files.keys()]).toEqual(['01_crossborderops.daily.metrics.json', 'index.json', '02_analysis.python.json']);
     expect(JSON.parse(files.get('index.json')!)[0]).toMatchObject({ file: '01_crossborderops.daily.metrics.json', capabilityId: 'crossborderops.daily.metrics' });
     expect(files.get('01_crossborderops.daily.metrics.json')!.length).toBeGreaterThan(70_000);
     expect(toolText).toContain('evidence/01_crossborderops.daily.metrics.json');
-    expect(toolText).toContain('已截断显示');
+    expect(toolText).toContain('当前仅展示结构化摘录');
     const input = review.mock.calls[0]![0] as { excerpts: Record<string, string>; computeAvailable: boolean };
     expect(input.computeAvailable).toBe(true);
     expect(Object.values(input.excerpts).some((text) => text.includes('units=35') && text.includes('合计销量'))).toBe(true);

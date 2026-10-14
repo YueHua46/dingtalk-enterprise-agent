@@ -9,7 +9,9 @@ export class RetentionService {
   public constructor(private readonly config: Config, private readonly repo: Repository) {}
 
   public async start(): Promise<void> {
-    await this.run();
+    await this.run().catch((error) => {
+      console.error('Initial retention cleanup skipped:', error instanceof Error ? error.message : String(error));
+    });
     this.timer = setInterval(() => void this.run().catch((error) => {
       console.error('Retention cleanup failed:', error instanceof Error ? error.message : String(error));
     }), 6 * 60 * 60 * 1000);
@@ -36,7 +38,13 @@ export class RetentionService {
     if (!response.ok) throw new Error('FILE_WORKER_LIST_FAILED');
     const body = await response.json() as { taskIds?: string[] };
     for (const taskId of body.taskIds ?? []) {
-      const task = await this.repo.findTask(taskId);
+      let task;
+      try {
+        task = await this.repo.findTask(taskId);
+      } catch (error) {
+        console.error('Retention skipped unreadable task:', taskId, error instanceof Error ? error.message : String(error));
+        continue;
+      }
       if (task && (task.createdAt >= cutoffMs || !['completed', 'cancelled', 'failed'].includes(task.status))) continue;
       const deletion = await fetch(base + '/tasks/' + taskId, { method: 'DELETE', headers, signal: AbortSignal.timeout(30_000) });
       if (!deletion.ok && deletion.status !== 409) throw new Error('FILE_WORKER_DELETE_FAILED:' + taskId);

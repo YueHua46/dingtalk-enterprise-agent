@@ -37,6 +37,73 @@ function setup(codex: Record<string, unknown>) {
 }
 
 describe('enforced task completion', () => {
+  it('does not restart the exhausted reviewer budget for an unchanged file', async () => {
+    const codex = {
+      inspectOutput: vi.fn(async () => ({name: 'report.pdf', size: 100, sha256: 'same', reviewText: '正文'})),
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
+        for (let i = 0; i < 2; i++) {
+          const result = await onTool(call('artifact', 'submit', {path: 'report.pdf'}));
+          expect(result.success).toBe(false);
+          expect(result.contentItems[0].text).toContain('ARTIFACT_REVIEW_UNAVAILABLE');
+        }
+        return {text: '独立审核不可用，文件尚未发送。', threadId: 'thread-1'};
+      })
+    };
+    const {repo, orchestrator} = setup(codex);
+    const publish = vi.spyOn(orchestrator as any, 'submitGeneratedArtifact');
+    const review = vi.spyOn((orchestrator as any).evidenceReviewer, 'review')
+      .mockResolvedValueOnce({status: 'unavailable', issues: [], reason: 'review_http_502'}).mockResolvedValue(pass);
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(review.mock.calls.filter(([input]) => input.completion.answer === '正文')).toHaveLength(1);
+    expect(publish).not.toHaveBeenCalled();
+    expect((await repo.getWorkflow(task!.id))?.artifactReviews?.same.status).toBe('unavailable');
+    await orchestrator.stop();
+  });
+  it('reviews the actual report body and never publishes a rejected file', async () => {
+    const body = '每单亏损120美元，已证实';
+    const codex = {
+      inspectOutput: vi.fn(async () => ({name: 'report.pdf', path: '/output/report.pdf', size: 100, sha256: 'original', reviewText: body})),
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
+        const result = await onTool(call('artifact', 'submit', {path: 'report.pdf'}));
+        expect(result.success).toBe(false);
+        expect(result.contentItems[0].text).toContain('ARTIFACT_REVIEW_REVISE');
+        return {text: '缺成本依据，报告尚未发送。', threadId: 'thread-1'};
+      })
+    };
+    const {repo, orchestrator} = setup(codex);
+    const publish = vi.spyOn(orchestrator as any, 'submitGeneratedArtifact');
+    const review = vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValueOnce(revise('缺少成本证据')).mockResolvedValue(pass);
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(review.mock.calls[0]![0].completion.answer).toBe(body);
+    expect(publish).not.toHaveBeenCalled();
+    expect(await repo.listTaskArtifacts(task!.id)).toEqual([]);
+    await orchestrator.stop();
+  });
+
+  it('rejects a file that changed after content verification', async () => {
+    const codex = {
+      inspectOutput: vi.fn().mockResolvedValueOnce({name: 'report.pdf', size: 100, sha256: 'a', reviewText: '已核实正文'})
+        .mockResolvedValue({name: 'report.pdf', size: 100, sha256: 'b', reviewText: '已改写正文'}),
+      startThread: vi.fn(async () => 'thread-1'),
+      turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
+        const result = await onTool(call('artifact', 'submit', {path: 'report.pdf'}));
+        expect(result.success).toBe(false);
+        expect(result.contentItems[0].text).toContain('OUTPUT_CHANGED_AFTER_REVIEW');
+        return {text: '文件变化，尚未发送。', threadId: 'thread-1'};
+      })
+    };
+    const {repo, orchestrator} = setup(codex);
+    const publish = vi.spyOn(orchestrator as any, 'submitGeneratedArtifact');
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue(pass);
+    const task = await orchestrator.accept(request);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(publish).not.toHaveBeenCalled();
+    await orchestrator.stop();
+  });
   it('lets the agent own its plan, rejects an unsupported blocked claim, and delivers after one review', async () => {
     let reviews = 0;
     const codex = {
@@ -136,7 +203,7 @@ describe('enforced task completion', () => {
     await orchestrator.stop();
   });
 
-  it('does not reject an answer because the verifier is unavailable', async () => {
+  it('preserves a draft but explicitly marks unavailable verification as partial', async () => {
     const codex = {
       startThread: vi.fn(async () => 'thread-1'),
       turn: vi.fn(async () => ({ text: '答复', threadId: 'thread-1' }))
@@ -145,12 +212,13 @@ describe('enforced task completion', () => {
     vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'unavailable', issues: [], reason: 'timeout' });
     const task = await orchestrator.accept(request);
     await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
-    expect(sent).toContain('答复');
+    expect(sent.some(text => text.includes('答复') && text.includes('独立核验未完成'))).toBe(true);
+    expect((await repo.getWorkflow(task!.id))?.completion?.status).toBe('partial');
     expect(codex.turn).toHaveBeenCalledTimes(1);
     await orchestrator.stop();
   });
 
-  it('always terminates: delivers after the final verifier round', async () => {
+  it('terminates with unresolved findings instead of delivering a rejected draft', async () => {
     let turns = 0;
     const codex = {
       startThread: vi.fn(async () => 'thread-1'),
@@ -161,7 +229,9 @@ describe('enforced task completion', () => {
     const task = await orchestrator.accept(request);
     await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
     expect(review).toHaveBeenCalledTimes(MAX_REVIEW_ROUNDS);
-    expect(sent).toContain(`第 ${MAX_REVIEW_ROUNDS} 稿`);
+    expect(sent).not.toContain(`第 ${MAX_REVIEW_ROUNDS} 稿`);
+    expect(sent.some(text => text.includes('仍有问题'))).toBe(true);
+    expect((await repo.getWorkflow(task!.id))?.completion?.status).toBe('partial');
     await orchestrator.stop();
   });
 });

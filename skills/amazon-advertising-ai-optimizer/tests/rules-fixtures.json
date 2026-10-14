@@ -1,0 +1,16 @@
+{
+  "germany": {
+    "insufficient_sample": {"clicks": 14, "expected": "no_bid_change"},
+    "bid_upper_bound": {"requested_change": 0.25, "expected_max_change": 0.2},
+    "search_term_insufficient": {"clicks": 5, "expected": "observe"}
+  },
+  "japan": {
+    "launch": {"ctr": 0.005, "acos": 0.6, "expected": "observe_traffic_and_indexing"},
+    "mature_p0": {"ctr": 0.002, "acos": 0.45, "expected": "p0"}
+  },
+  "missing_profit": {
+    "unit_cost": null,
+    "fba_fee": null,
+    "expected": "unknown_profit_metrics"
+  }
+}

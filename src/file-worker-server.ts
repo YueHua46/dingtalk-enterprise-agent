@@ -9,6 +9,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { issueModelTaskToken } from './file-worker-auth.js';
 import { listingExportSchema, readListingExportBody } from './listing-export.js';
 import { knowledgeWorkerError } from './knowledge-worker-errors.js';
+import { reportRenderSchema } from './report-render.js';
 
 interface WorkerSettings {
   secret: string;
@@ -82,7 +83,15 @@ const server = createServer(async (request, response) => {
         if ((await handle.stat()).size !== file.size) throw new Error('OUTPUT_CHANGED');
         for await (const chunk of handle.createReadStream()) digest.update(chunk as Buffer);
       } finally { await handle.close().catch(() => undefined); }
-      return json(response, 200, { name: basename(file.path), path: file.path, size: file.size, sha256: digest.digest('hex') });
+      const sha256 = digest.digest('hex');
+      const {stdout} = await execFileAsync('/opt/venv/bin/python', [join(settings.skillsDir, 'output_text.py'), file.path], {
+        uid: task.uid, gid: task.uid, timeout: 60_000, maxBuffer: 2 * 1024 * 1024,
+        env: {PATH: process.env.PATH, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1'}
+      });
+      const content = JSON.parse(stdout) as {sha256: string; text: string | null; complete: boolean};
+      if (content.sha256 !== sha256) throw new Error('OUTPUT_CHANGED');
+      return json(response, 200, { name: basename(file.path), path: file.path, size: file.size, sha256,
+        ...(content.complete ? {reviewText: content.text} : {}) });
     }
     if (request.method === 'POST' && segments[2] === 'inputs' && segments[3] === 'inspect') {
       const task = await loadTask(taskId);
@@ -145,6 +154,24 @@ const server = createServer(async (request, response) => {
       await writeFile(path, body, { mode: 0o600 });
       if (process.getuid?.() === 0) await chown(path, task.uid, task.uid);
       return json(response, 200, { path: `evidence/${segments[3]}` });
+    }
+    if (request.method === 'POST' && segments[2] === 'report-render' && segments.length === 3) {
+      const task = await loadTask(taskId);
+      const payload = reportRenderSchema.parse(JSON.parse(await readBody(request, 512 * 1024)));
+      const id = randomUUID();
+      const source = join(task.tmp, `report-${id}.json`);
+      const name = `advertising-report-${id}.pdf`;
+      await writeFile(source, JSON.stringify(payload.report), {mode: 0o600, flag: 'wx'});
+      if (process.getuid?.() === 0) await chown(source, task.uid, task.uid);
+      try {
+        await execFileAsync('/opt/venv/bin/python', [
+          '/opt/agent-skills/amazon-advertising-ai-optimizer/scripts/render_ad_report.py',
+          '--input', source, '--output', join(task.output, name)
+        ], {uid: task.uid, gid: task.uid, cwd: task.tmp, timeout: 90_000, maxBuffer: 256 * 1024,
+          env: {PATH: process.env.PATH, HOME: task.home, TMPDIR: task.tmp, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1'}});
+        await checkedOutput(task, name);
+        return json(response, 200, {path: name});
+      } finally {await rm(source, {force: true});}
     }
     if (request.method === 'POST' && segments[2] === 'listing-export' && segments.length === 3) {
       const task = await loadTask(taskId);
@@ -317,10 +344,10 @@ async function runPython(task: TaskPaths, code: string): Promise<{ exitCode: num
   const clip = (value: unknown, limit: number) => String(value ?? '').slice(0, limit);
   try {
     const { stdout, stderr } = await execFileAsync('/opt/venv/bin/python', [script], {
-      cwd: task.root, uid: task.uid, gid: task.uid, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+      cwd: task.root, uid: task.uid, gid: task.uid, timeout: 120_000, maxBuffer: 512 * 1024,
       env: { PATH: process.env.PATH, HOME: task.home, TMPDIR: task.tmp, MPLBACKEND: 'Agg', MPLCONFIGDIR: task.tmp, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }
     });
-    return { exitCode: 0, stdout: clip(stdout, 64_000), stderr: clip(stderr, 8_000), timedOut: false };
+    return { exitCode: 0, stdout: String(stdout), stderr: clip(stderr, 8_000), timedOut: false };
   } catch (error) {
     const failure = error as { code?: unknown; killed?: boolean; signal?: unknown; stdout?: unknown; stderr?: unknown; message?: string };
     return { exitCode: typeof failure.code === 'number' ? failure.code : 1, stdout: clip(failure.stdout, 64_000),

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 
@@ -90,7 +90,7 @@ def test_dingtalk_transient_88_without_subcode_is_retried(monkeypatch):
 
 def test_ads_page_offset_is_applied_after_merging_stores(monkeypatch):
     import database.database as database_module
-    import services.ad_optimization_service as ads_module
+    import services.daily_data_availability as availability_module
 
     class Reports:
         def list_sp_search_terms(self, *, sid, limit, offset, **_kwargs):
@@ -103,8 +103,18 @@ def test_ads_page_offset_is_applied_after_merging_stores(monkeypatch):
             return rows, 2
 
     monkeypatch.setattr(database_module, "Database", lambda: SimpleNamespace(ad_reports=Reports()))
-    monkeypatch.setattr(ads_module, "_parse_date", lambda value: value)
+    monkeypatch.setattr(availability_module, "default_daily_end_date", lambda *_args, **_kwargs: date(2026, 9, 24))
     page = _ads_query("ads.sp_search_terms", {"limit": 2, "offset": 1}, [1, 2])
     assert page["total"] == 4
     assert len(page["rows"]) == 2
     assert [row["spend"] for row in page["rows"]] == [10, 9]
+    assert page["coverage"] == {
+        "mode": "page",
+        "basis": "ordered_rows",
+        "total": 4,
+        "offset": 1,
+        "returned": 2,
+        "limit": 2,
+        "has_more": True,
+        "next_offset": 3,
+    }

@@ -337,7 +337,8 @@ describe('TaskOrchestrator integration', () => {
         for (const request of [
           { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'store.open', args: ['--name', 'BAGWAT-US'] } },
           { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'page.extract', args: ['--mode', 'running'] } },
-          { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'page.screenshot', args: ['--store-id', '123'] } },
+          { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'page.content', args: ['--store-id', '123'] } },
+          { namespace: 'ziniao', tool: 'cli', arguments: { capability: 'page.screenshot', args: ['--store-id', '123'], goalStatus: 'satisfied', evidence: { status: 'ok', title: 'BAGWAT-US 首页', state: '目标页面已打开' } } },
           { namespace: 'artifact', tool: 'submit', arguments: { path: 'independent.png' } }
         ]) {
           const response = await onRequest({ method: 'item/tool/call', params: request });
@@ -688,11 +689,11 @@ describe('TaskOrchestrator integration', () => {
     const final = writes.findLast((item) => item.kind === 'answer');
     expect(final).toEqual({
       kind: 'answer',
-      content: '模型上游服务已按间隔重试 3 次，但仍然失败。最终原因：上游服务暂无可用资源。错误详情：unexpected status 503 Service Unavailable: No available accounts; [请求标识已隐藏]; url=[地址已隐藏]。请稍后重新发送原任务。',
+      content: '模型上游服务已按间隔重试 5 次，但仍然失败。最终原因：上游服务暂无可用资源。错误详情：unexpected status 503 Service Unavailable: No available accounts; [请求标识已隐藏]; url=[地址已隐藏]。请稍后重新发送原任务。',
       status: 3
     });
-    expect(codex.turn).toHaveBeenCalledTimes(4);
-    expect(retryDelays).toEqual([1_000, 3_000, 7_000]);
+    expect(codex.turn).toHaveBeenCalledTimes(6);
+    expect(retryDelays).toEqual([1_000, 3_000, 7_000, 15_000, 20_000]);
     expect(writes.some((item) => item.status === 5)).toBe(false);
     expect(writes.some((item) => item.kind === 'activity' && item.content === '' && item.status === 2)).toBe(true);
     expect(final?.content).not.toContain('request_id');
@@ -739,7 +740,7 @@ describe('TaskOrchestrator integration', () => {
     expect(repo.audits.filter((item: any) => item.eventType === 'model.retry_scheduled')).toHaveLength(2);
   });
 
-  it('does not replay a model turn after any tool activity', async () => {
+  it('allows bounded continuation after preparation tool activity', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
     const sleep = vi.fn(async () => undefined);
@@ -762,8 +763,8 @@ describe('TaskOrchestrator integration', () => {
     await orchestrator.accept(request('message-model-no-replay', '读取说明'));
     await waitUntil(() => sent.some((item) => item.includes('最终原因')));
 
-    expect(codex.turn).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
+    expect(codex.turn).toHaveBeenCalledTimes(6);
+    expect(sleep).toHaveBeenCalledTimes(5);
   });
 
   it('returns an actionable sanitized reason for otherwise unknown failures', async () => {
@@ -1311,7 +1312,7 @@ describe('TaskOrchestrator integration', () => {
     }), repo, codex, broker, sender);
     await orchestrator.accept({ ...request('message-card-timeout', '创建一个测试待办'), surface: { type: 'group', id: 'group-1' } });
     await waitUntil(() => updates.length >= 1);
-    expect(updates[0]).toMatchObject({ status: 'processing' });
+    expect(updates[0]).toMatchObject({ status: 'cancelled' });
     expect(updates[0]!.content).toContain('超时');
     expect(broker.runCommand).not.toHaveBeenCalled();
   });
@@ -1358,7 +1359,7 @@ describe('TaskOrchestrator integration', () => {
     errorLog.mockRestore();
   });
 
-  it('lets the model finish gracefully after the approval card is rejected', async () => {
+  it('closes the task and explains the rejected operation after approval is rejected', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
     const cardStatuses: string[] = [];
@@ -1385,12 +1386,12 @@ describe('TaskOrchestrator integration', () => {
     const task = await orchestrator.accept(request('message-card-reject', '创建一个测试待办'));
     await waitUntil(() => sent.some((item) => item.includes('等待确认')));
     expect(await orchestrator.handleApprovalCardClick({ userId: 'user-1', outTrackId: 'approval-card-reject', action: 'reject', challengeId: (await repo.getApproval(task!.id))!.challenge.challengeId })).toBe(true);
-    await waitUntil(() => sent.some((item) => item.includes('如需要我可以先列出草稿')));
+    await waitUntil(() => sent.some((item) => item.includes('任务已结束')));
     expect(toolText).toContain('DWS_CONFIRMATION_DECLINED');
-    expect(cardStatuses).toEqual(['processing', 'done']);
+    expect(cardStatuses).toEqual(['cancelled']);
     expect((broker.runCommand as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     const stored = await repo.findTask(task!.id);
-    expect(stored?.status).toBe('completed');
+    expect(stored?.status).toBe('cancelled');
   });
 
   it('cancels a task by quoting its task card and sending bare cancel', async () => {

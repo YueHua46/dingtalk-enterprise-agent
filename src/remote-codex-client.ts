@@ -8,7 +8,7 @@ import type { Attachment, CodexTurnResult, UserIdentity } from './types.js';
 
 const workerTools = enterpriseTools.filter((item) => item.name !== 'internet');
 
-type Output = { name: string; path: string; size: number; sha256: string };
+type Output = { name: string; path: string; size: number; sha256: string; reviewText?: string };
 
 export class RemoteCodexClient implements CodexClientLike {
   private ready = false;
@@ -112,6 +112,9 @@ export class RemoteCodexClient implements CodexClientLike {
     if (!response.ok) throw new Error('LISTING_EXPORT_RENDER_FAILED');
     return await response.json() as { docx: string; xlsx: string };
   }
+  public async renderReport(taskId: string, payload: import('./report-render.js').ReportRender): Promise<{path: string}> {
+    return this.api(`/tasks/${taskId}/report-render`, {method: 'POST', body: JSON.stringify(payload)}, 100_000) as Promise<{path: string}>;
+  }
   public async inspectOutput(taskId: string, path: string): Promise<Output> {
     return this.api(`/tasks/${taskId}/outputs/inspect`, { method: 'POST', body: JSON.stringify({ path }), headers: { 'content-type': 'application/json' } }) as Promise<Output>;
   }
@@ -167,7 +170,7 @@ export class RemoteCodexClient implements CodexClientLike {
       }
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('FILE_WORKER_RPC_UNAVAILABLE');
-    const rpc = new Rpc(socket, onEvent, onApproval);
+    const rpc = new Rpc(socket, onEvent, onApproval, this.config.MODEL_REQUEST_RETRY_BUDGET_MS + this.config.TASK_GENERAL_QUERY_BUDGET_MS);
     await rpc.request('initialize', { clientInfo: { name: 'dingtalk-enterprise-agent', title: 'DingTalk Enterprise Agent', version: '0.1.0' }, capabilities: { experimentalApi: true } });
     rpc.notify('initialized', {});
     await rpc.request('skills/extraRoots/set', { extraRoots: [this.config.FILE_WORKER_SKILLS_DIR] });
@@ -192,7 +195,7 @@ class Rpc {
   private readonly messages = new Map<string, string>();
   private readonly phases = new Map<string, string>();
   private readonly turns = new Map<string, { result?: any; resolve?: (value: string) => void; reject?: (error: Error) => void; timer?: NodeJS.Timeout }>();
-  public constructor(private readonly socket: WebSocket, private onEvent?: (event: CodexEvent) => void, private onApproval?: (request: CodexApprovalRequest) => Promise<unknown>) {
+  public constructor(private readonly socket: WebSocket, private onEvent?: (event: CodexEvent) => void, private onApproval?: (request: CodexApprovalRequest) => Promise<unknown>, private readonly turnTimeoutMs = 20 * 60_000) {
     socket.on('message', (data) => this.handle(String(data)));
     socket.on('close', () => this.fail(new Error('File worker App Server disconnected')));
   }
@@ -220,7 +223,7 @@ class Rpc {
       turn.timer = setTimeout(() => {
         this.turns.delete(turnId);
         reject(new Error(`Codex turn timed out: ${turnId}`));
-      }, 20 * 60_000);
+      }, Math.max(20 * 60_000, this.turnTimeoutMs));
     });
   }
   private handle(raw: string): void {

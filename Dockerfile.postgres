@@ -1,6 +1,6 @@
 FROM postgres:17-alpine
 ARG PGVECTOR_VERSION=0.8.6
-RUN apk add --no-cache --virtual .vector-build build-base clang19 llvm19-dev git \
+RUN apk add --no-cache --virtual .vector-build build-base clang21 llvm21-dev git \
     && git clone --depth 1 --branch v${PGVECTOR_VERSION} https://github.com/pgvector/pgvector.git /tmp/pgvector \
     && make -C /tmp/pgvector OPTFLAGS='' \
     && make -C /tmp/pgvector install \

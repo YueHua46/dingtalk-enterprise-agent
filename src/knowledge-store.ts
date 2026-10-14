@@ -78,10 +78,11 @@ export class KnowledgeStore {
   }
   // A failed refresh proves nothing about whether the indexed content changed.
   // Keep its serving state; only actual access/deletion decisions disable it.
-  public async failure(user: UserIdentity, node: string, code: string): Promise<void> {
+  public async failure(user: UserIdentity, node: string, code: string, diagnostic?: unknown): Promise<void> {
     await this.pool.query(`UPDATE knowledge_resources SET error_code=$4,updated_at=now(),
+      last_error_diagnostic=COALESCE($5::jsonb,last_error_diagnostic),
       status=CASE WHEN $4='permission_denied' THEN 'denied' WHEN $4='not_found' THEN 'deleted' ELSE status END
-      WHERE corp_id=$1 AND user_id=$2 AND node_id=$3`,[user.corpId,user.userId,node,code]);
+      WHERE corp_id=$1 AND user_id=$2 AND node_id=$3`,[user.corpId,user.userId,node,code,diagnostic ? JSON.stringify(diagnostic) : null]);
   }
   public async updateMetadata(user: UserIdentity, resource: KnowledgeResource): Promise<void> {
     await this.pool.query(`UPDATE knowledge_resources SET metadata=$4,metadata_hash=$5,title=$6,parent_id=$7,extension=$8,

@@ -8,7 +8,8 @@ COPY src ./src
 RUN npm run build
 
 FROM ${NODE_IMAGE}
-RUN apt-get update \
+RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g; s|http://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources \
+  && apt-get update \
   && apt-get install -y --no-install-recommends bubblewrap ca-certificates tini curl unzip openssh-client python3 python3-venv \
   && rm -rf /var/lib/apt/lists/*
 RUN npm install --global @openai/codex@0.155.1 dingtalk-workspace-cli@1.0.63 @ziniao-open/cli@1.1.3 \
@@ -27,7 +28,7 @@ COPY config ./config
 COPY workspaces ./workspaces
 COPY AGENTS.md ./AGENTS.md
 RUN useradd --create-home --uid 10001 agent \
-  && mkdir -p /var/lib/codex /var/lib/dws /var/lib/agent/media /app/workspaces /home/agent/.ziniao-cli \
+  && mkdir -p /var/lib/codex /var/lib/dws /var/lib/agent/media /var/lib/agent/knowledge /app/workspaces /home/agent/.ziniao-cli \
   && chown -R agent:agent /app/workspaces /var/lib/codex /var/lib/dws /var/lib/agent /home/agent/.ziniao-cli
 USER agent
 ENV NODE_ENV=production

@@ -1,0 +1,31 @@
+{
+  "report_title": "日本站摄像头广告分析报告",
+  "marketplace": "JP / JPY",
+  "store_name": "Flaty BeautyLife",
+  "asins": ["B0H2MH1MN7"],
+  "analysis_period": "最近14天（以报表数据截至时间为准）",
+  "advertising_stage": "未知（需结合数据判断）",
+  "generated_at": "2026-10-10 10:00 UTC",
+  "executive_summary": "当前广告存在需要进一步核查的成本效率问题。以下建议均为人工确认前的分析建议。",
+  "data_quality": {
+    "数据来源": "CrossBorderOps",
+    "授权范围": "当前钉钉用户有效店铺范围",
+    "数据覆盖": "按查询结果填写",
+    "缺失字段": "未知",
+    "归因口径": "按来源报表说明填写"
+  },
+  "overall_metrics": [
+    {"metric": "CTR", "value": "未知", "benchmark": "按站点规则", "status": "待验证"},
+    {"metric": "ACoS", "value": "未知", "benchmark": "目标 ACoS", "status": "待验证"}
+  ],
+  "anomalies": [],
+  "search_terms": [],
+  "targets": [],
+  "placements": [],
+  "budget_bid": [],
+  "negatives": [],
+  "execution_plan": [],
+  "review_plan": [],
+  "risks": [],
+  "sources": ["CrossBorderOps 实际查询结果", "本 Skill 对应站点规则摘要"]
+}

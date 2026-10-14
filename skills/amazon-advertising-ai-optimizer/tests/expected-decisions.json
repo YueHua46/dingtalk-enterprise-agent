@@ -1,0 +1,10 @@
+{
+  "invariants": [
+    "clicks_below_site_threshold_never_produce_bid_change",
+    "germany_bid_change_is_within_minus20_to_plus20_percent",
+    "germany_search_terms_below_6_clicks_are_observation_only",
+    "missing_profit_inputs_do_not_produce_profit_claim",
+    "recommendations_are_not_execution_receipts",
+    "crossborderops_scope_is_current_user_scoped"
+  ]
+}

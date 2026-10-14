@@ -8,6 +8,14 @@ const contract = {
 };
 
 describe('TaskWorkflow evidence contract', () => {
+  it('preserves observed coverage through recording and task resume', () => {
+    const workflow = new TaskWorkflow();
+    const coverage = {mode: 'page', total: 11020, returned: 50, offset: 0, limit: 50, has_more: true, next_offset: 50};
+    const evidence = workflow.record('crossborderops.ads.placements', true, {coverage});
+    coverage.total = 0;
+    const restored = new TaskWorkflow(JSON.parse(JSON.stringify(workflow.state)));
+    expect(restored.state.evidence.find(item => item.id === evidence.id)?.coverage).toMatchObject({total: 11020, returned: 50, has_more: true});
+  });
   it('requires real evidence from an acceptable capability', () => {
     const workflow = new TaskWorkflow();
     workflow.plan(contract);
@@ -92,6 +100,35 @@ describe('TaskWorkflow evidence contract', () => {
     expect(workflow.state.excerpts?.[evidence.id]).toHaveLength(12_000);
     for (let index = 0; index < 45; index += 1) workflow.storeExcerpt('id-' + index, 'row');
     expect(Object.keys(workflow.state.excerpts!)).toHaveLength(40);
+  });
+
+  it('tracks step acceptance separately from tool execution', () => {
+    const workflow = new TaskWorkflow();
+    const evidence = workflow.record('ziniao.page.visit', true);
+    workflow.storeExcerpt(evidence.id, JSON.stringify({ url: 'https://example.test', title: '目标页', state: 'ready' }));
+    expect(workflow.state.steps?.[0]?.state).toBe('observed');
+    const checkpoint = workflow.parseCheckpoint({
+      criterion: '目标页面已打开且可继续观察', evidenceIds: [evidence.id], status: 'satisfied',
+      reason: '宿主保存的页面 URL、标题和状态均符合目标', nextAction: 'continue'
+    });
+    checkpoint.verdict = 'pass';
+    workflow.storeCheckpoint(checkpoint);
+    expect(workflow.state.steps?.[0]?.state).toBe('verified');
+  });
+
+  it('requires planned critical steps to have their own verified checkpoint', () => {
+    const workflow = new TaskWorkflow();
+    workflow.plan({
+      goal: '打开目标页面并确认页面状态', deliverables: ['页面证据'], requiredFacts: [], assumptions: [], openQuestions: [], completionCriteria: ['目标页面已确认'],
+      steps: [{ stepId: 'navigate', purpose: '打开页面', action: 'page.visit', acceptanceCriteria: '最终页面不是错误页且符合目标', preferredEvidence: ['url', 'content'], fallbackEvidence: ['screenshot'], recoveryStrategy: '重新定位后再观察', critical: true }]
+    });
+    const evidence = workflow.record('ziniao.page.visit', true);
+    workflow.storeExcerpt(evidence.id, JSON.stringify({ url: 'https://example.test', content: '目标页面' }));
+    const checkpoint = workflow.parseCheckpoint({ stepId: 'navigate', criterion: '最终页面不是错误页且符合目标', evidenceIds: [evidence.id], observationMethod: ['url', 'content'], status: 'satisfied', reason: '页面结构化证据符合验收条件', nextAction: 'continue' });
+    checkpoint.verdict = 'pass';
+    workflow.storeCheckpoint(checkpoint);
+    expect(workflow.state.checkpoints?.[0]?.stepId).toBe('navigate');
+    expect(workflow.state.checkpoints?.[0]?.observationMethod).toEqual(['url', 'content']);
   });
 
   it('requires contiguous pages of one query for a complete collection', () => {

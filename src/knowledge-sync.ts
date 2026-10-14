@@ -9,6 +9,7 @@ import { KnowledgeStore, type KnowledgeResource } from './knowledge-store.js';
 import type { KnowledgeSource } from './knowledge-source.js';
 import { knowledgeFailures } from './knowledge-metrics.js';
 import { KnowledgeExport } from './knowledge-export.js';
+import { redactDwsErrorText } from './dws-broker.js';
 
 export function resourceFromNode(node: Record<string, any>, workspaceId: string, path: string, parentId: string | null): KnowledgeResource {
   if (typeof node.nodeId !== 'string' || !/^[a-zA-Z0-9_-]{8,128}$/.test(node.nodeId) || typeof node.name !== 'string') throw new Error('KNOWLEDGE_NODE_INVALID');
@@ -29,6 +30,7 @@ export function knowledgeErrorCode(error: unknown): string {
   if(diagnostic.dwsReason==='doc_export_download_failed'&&diagnostic.dwsCauseCode==='NoSuchKey')return 'KNOWLEDGE_DWS_EXPORT_OBJECT_MISSING';
   if(error instanceof Error&&error.message==='DWS_COMMAND_TIMEOUT')return 'KNOWLEDGE_DWS_TIMEOUT';
   if(error instanceof Error&&error.message==='DWS_OUTPUT_LIMIT')return 'KNOWLEDGE_DWS_OUTPUT_LIMIT';
+  if (/\bEACCES\b|\bEPERM\b|mkdtemp|read-only file system/i.test(message)) return 'KNOWLEDGE_LOCAL_FILESYSTEM_ERROR';
   // An internal CLI/download/filesystem failure is not a DingTalk access
   // decision. Its text can mention 403/404 or permission without any server
   // evidence that the employee lost source access.
@@ -75,7 +77,7 @@ export class KnowledgeSync {
         await this.refresh(job.data,current);
       }catch(error){
         const code=knowledgeErrorCode(error);knowledgeFailures.inc({code});
-        await this.store.failure(job.data,resource.nodeId,code);
+        await this.store.failure(job.data,resource.nodeId,code,diagnosticForStorage(error));
         if(code==='auth_required')await this.store.pool.query('UPDATE knowledge_users SET paused=true WHERE corp_id=$1 AND user_id=$2',[job.data.corpId,job.data.userId]);
       }finally{await client.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[key]).catch(()=>undefined);client.release();}
     },{connection:this.workerConnection,concurrency:1});
@@ -165,7 +167,7 @@ export class KnowledgeSync {
         catch (error) {
           const code = knowledgeErrorCode(error);counts.failed!++;
           knowledgeFailures.inc({code});
-          await this.store.failure(user,resource.nodeId,code);
+          await this.store.failure(user,resource.nodeId,code,diagnosticForStorage(error));
           if (code === 'auth_required') throw error;
         }
       }
@@ -224,4 +226,13 @@ export class KnowledgeSync {
     const version = await this.store.activate(user,resource,read.content,vectors,read.hash);
     return {version,content:read.content};
   }
+}
+
+function diagnosticForStorage(error: unknown): Record<string, unknown> {
+  const e = (error ?? {}) as Record<string, unknown>;
+  const allow = ['dwsCode','dwsCategory','dwsReason','dwsCauseCode','dwsServerCode','dwsRequestId','dwsOperation','dwsTransportKind','dwsRaw'];
+  const out: Record<string, unknown> = { capturedAt: new Date().toISOString() };
+  for (const key of allow) if (typeof e[key] === 'string') out[key] = redactDwsErrorText(String(e[key])).slice(0,key==='dwsRaw'?16020:2000);
+  if (error instanceof Error && !out.dwsRaw) out.message = redactDwsErrorText(error.message).slice(0,2000);
+  return out;
 }

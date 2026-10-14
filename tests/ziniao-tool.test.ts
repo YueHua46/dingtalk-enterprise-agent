@@ -54,9 +54,9 @@ describe('Ziniao effect-based confirmation', () => {
     for (const input of [
       { capability: 'store.open', args: ['--name', 'BAGWAT-US'] },
       { capability: 'page.visit', args: ['--store-id', '123', '--url', 'https://sellercentral.amazon.co.uk/home'] },
-      { capability: 'page.click', args: ['--selector', '#signInSubmit'], purpose: '登录店铺' },
-      { capability: 'page.click', args: ['--selector', '#marketplace-selector'], purpose: '切换英国站点' },
-      { capability: 'page.click', args: ['--selector', '#language-zh'], purpose: '切换界面语言为中文' },
+      { capability: 'page.click', args: ['--selector', '#signInSubmit'], purpose: '登录店铺', effect: 'session', effectReason: '只建立登录会话' },
+      { capability: 'page.click', args: ['--selector', '#marketplace-selector'], purpose: '切换英国站点', effect: 'session', effectReason: '只切换当前站点' },
+      { capability: 'page.click', args: ['--selector', '#language-zh'], purpose: '切换界面语言为中文', effect: 'session', effectReason: '只切换界面语言' },
       { capability: 'page.screenshot', args: ['--store-id', '123'] },
       { capability: 'store.close', args: ['--id', '123'] }
     ]) {
@@ -69,16 +69,22 @@ describe('Ziniao effect-based confirmation', () => {
 
   it('requires approval for business changes, ambiguous clicks and mixed automation', () => {
     expect(impact('account.update', ['--id', '123'])).toBe('business');
-    expect(impact('page.click', ['--selector', '#save-product'], '切换语言为中文')).toBe('business');
+    expect(impact('page.click', ['--selector', '#save-product'], '切换语言为中文')).toBe('uncertain');
     expect(impact('page.click', ['--selector', '#button'])).toBe('uncertain');
     expect(impact('page.click', ['--selector', '#button'], '切换语言为中文')).toBe('uncertain');
-    expect(impact('store.open', ['--name', 'BAGWAT-US', '--url', 'https://example.com/orders/delete'])).toBe('uncertain');
+    expect(classifyZiniaoImpact({ capability: 'page.click', args: ['--selector', '#campaigns'], effect: 'session', effectReason: '仅打开广告活动查看页' }, task).kind).toBe('session');
+    expect(classifyZiniaoImpact({ capability: 'page.click', args: ['--selector', '#save'], effect: 'session', effectReason: '仅打开页面' }, '修改商品').kind).toBe('session');
+    expect(classifyZiniaoImpact({ capability: 'page.click', args: ['--selector', '#save'], effect: 'business', effectReason: '会提交商品修改' }, '查看页面').kind).toBe('business');
+    expect(impact('store.open', ['--name', 'BAGWAT-US', '--url', 'https://example.com/orders/delete'])).toBe('session');
+    expect(impact('page.visit', ['--url', 'javascript:alert(1)'])).toBe('uncertain');
+    expect(impact('page.visit', ['--url', 'https://sellercentral.amazon.com/advertising/campaigns'])).toBe('session');
     expect(impact('page.exec', ['--script', 'fetch("/orders/ship")'])).toBe('uncertain');
     expect(impact('page.exec', ['--script', 'document.title'])).toBe('observe');
     expect(impact('page.exec', ['--script', 'location.href'])).toBe('observe');
+    expect(impact('page.exec', ['--script', 'document.location.href'])).toBe('observe');
     expect(impact('page.exec', ['--script', 'document.title = "changed"'])).toBe('uncertain');
     const steps = JSON.stringify([{ type: 'screenshot' }, { type: 'click', selector: '#save-product' }]);
-    expect(impact('automation.run', ['--steps', steps], '切换英国站点')).toBe('business');
+    expect(impact('automation.run', ['--steps', steps], '切换英国站点')).toBe('uncertain');
     expect(impact('zclaw.invoke', ['list_opened_stores'])).toBe('observe');
     expect(impact('zclaw.invoke', ['list_stores'])).toBe('observe');
   });
@@ -90,12 +96,24 @@ describe('Ziniao effect-based confirmation', () => {
       { type: 'click', selector: '#language-zh' },
       { type: 'screenshot' }
     ]);
-    expect(impact('automation.run', ['--steps', steps], '切换英国站点和中文界面')).toBe('session');
+    expect(classifyZiniaoImpact({ capability: 'automation.run', args: ['--steps', steps], purpose: '切换英国站点和中文界面', effect: 'session', effectReason: '只进行站点和语言切换' }, task).kind).toBe('session');
     expect(impact('automation.run', ['--steps', steps])).toBe('uncertain');
   });
 
   it('classifies safe and unsafe raw API paths by the endpoint effect', () => {
     expect(impact('api.call', ['/superbrowser/rest/v1/erp/security/access_rule/list'])).toBe('observe');
     expect(impact('api.call', ['/superbrowser/rest/v1/erp/security/access_rule/edit'])).toBe('uncertain');
+  });
+
+  it('treats composed page observations as reads without relying on field names', () => {
+    expect(impact('page.exec', ['--script', 'JSON.stringify({url: window.location.href, title: document.title})'])).toBe('observe');
+    expect(impact('page.exec', ['--script', 'JSON.stringify([document.title, location.href])'])).toBe('observe');
+    expect(impact('page.exec', ['--script', 'JSON.stringify({value: document.title, changed: true})'])).toBe('observe');
+    expect(impact('page.exec', ['--script', 'JSON.stringify({value: document.title = "x"})'])).toBe('uncertain');
+    expect(impact('page.exec', ['--script', 'JSON.stringify({value: doSomething(document.title)})'])).toBe('uncertain');
+    expect(classifyZiniaoImpact({ capability: 'page.exec', args: ['--script', 'readCurrentState()'], effect: 'observe', effectReason: 'Agent 已确认只读取页面状态' }, task).kind).toBe('observe');
+    expect(classifyZiniaoImpact({ capability: 'page.exec', args: ['--script', 'document.title = "x"'], effect: 'observe', effectReason: 'Agent 判断该脚本只读取页面状态' }, task).kind).toBe('observe');
+    expect(classifyZiniaoImpact({ capability: 'page.exec', args: ['--script', 'window.location.href = "https://example.test/next"'], effect: 'session', effectReason: '仅导航到页面，不修改业务数据' }, task).kind).toBe('session');
+    expect(classifyZiniaoImpact({ capability: 'page.exec', args: ['--script', 'window.location.href = "https://example.test/next"'] }, task).kind).toBe('uncertain');
   });
 });

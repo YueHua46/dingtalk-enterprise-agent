@@ -48,9 +48,13 @@ export class HybridCodexClient implements CodexClientLike {
     this.threadRoutes.set(threadId, client);
     return client.turn(threadId, input, onEvent, onApproval, attachments, taskId);
   }
-  public async inspectOutput(taskId: string, path: string): Promise<{ name: string; path: string; size: number; sha256: string }> {
+  public async inspectOutput(taskId: string, path: string): Promise<{ name: string; path: string; size: number; sha256: string; reviewText?: string }> {
     if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
     return this.remote.inspectOutput(taskId, path);
+  }
+  public async renderReport(taskId: string, payload: import('./report-render.js').ReportRender): Promise<{path: string}> {
+    if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
+    return this.remote.renderReport(taskId, payload);
   }
   public async downloadOutput(taskId: string, name: string): Promise<Buffer> {
     if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');

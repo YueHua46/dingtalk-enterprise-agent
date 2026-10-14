@@ -1,3 +1,5 @@
+import type { ExecutionBudgetState } from './execution-budget.js';
+import type { EvidenceFileEntry } from './evidence-manifest.js';
 import { randomUUID } from 'node:crypto';
 import { capabilityById, capabilityCatalog } from './capability-catalog.js';
 
@@ -9,6 +11,19 @@ export interface TaskContract {
   assumptions: string[];
   openQuestions: string[];
   completionCriteria: string[];
+  steps?: WorkflowPlanStep[];
+}
+
+export type WorkflowEvidenceMode = 'url' | 'title' | 'content' | 'query' | 'element' | 'screenshot' | 'api_state' | 'file_readback';
+export interface WorkflowPlanStep {
+  stepId: string;
+  purpose: string;
+  action: string;
+  acceptanceCriteria: string;
+  preferredEvidence: WorkflowEvidenceMode[];
+  fallbackEvidence: WorkflowEvidenceMode[];
+  recoveryStrategy: string;
+  critical: boolean;
 }
 
 export interface EvidenceRecord {
@@ -22,6 +37,8 @@ export interface EvidenceRecord {
   freshness?: string;
   errorCode?: string;
   requestSignature?: string;
+  /** Host-normalized result coverage. This describes what was observed, not what the model inferred. */
+  coverage?: { mode?: string; basis?: string; total?: number; offset?: number; returned?: number; limit?: number; has_more?: boolean; next_offset?: number | null };
   pagination?: { groupKey: string; total: number; offset: number; returned: number; dimensions?: string[]; fixedDimensions?: string[] };
   members?: Array<{ key: string; country?: string }>;
   filterSite?: string;
@@ -70,6 +87,10 @@ export interface ScreenshotDeliveryReceipt {
 }
 
 export interface WorkflowState {
+  /** Host-owned execution ledger. Transport success is never goal verification. */
+  steps?: Array<{ id: string; capabilityId: string; evidenceId: string; state: 'executed' | 'observed' | 'verified' | 'failed'; observedAt: string }>;
+  checkpoints?: Array<{ id: string; stepId: string; criterion: string; observationMethod: string[]; evidenceIds: string[]; status: 'satisfied' | 'not_satisfied' | 'unknown'; reason: string; nextAction: 'continue' | 'retry' | 'change_strategy' | 'report_failure'; verdict: 'pass' | 'revise' | 'unavailable'; checkedAt: string }>;
+  plannedSteps?: WorkflowPlanStep[];
   contract?: TaskContract;
   evidence: EvidenceRecord[];
   /** Bounded tool-result excerpts kept with the task so a resumed task can still be verified. */
@@ -78,9 +99,16 @@ export interface WorkflowState {
   clarificationCount?: number;
   completion?: TaskCompletion;
   /** Sandbox files holding full tool results, in call order. */
-  evidenceFiles?: Array<{ file: string; evidenceId: string; capabilityId: string; arguments: string }>;
+  evidenceFiles?: EvidenceFileEntry[];
+  executionBudget?: ExecutionBudgetState;
+  recoveryCount?: number;
+  toolCheckpoints?: Record<string, {capabilityId: string; evidenceId?: string; result: string; completedAt: string}>;
   /** Verifier rounds spent on this task (bounded by the orchestrator). */
   reviewRounds?: number;
+  /** Re-submitting unchanged content must not restart an exhausted transport budget. */
+  reviewedDeliveryAnswer?: {answer: string; evidenceKey: string; artifactSha256: string; deliveryEvidenceId: string};
+  artifactReviews?: Record<string, {status: 'pass'|'revise'|'unavailable'; reason: string; evidenceKey: string; answerKey?: string;
+    issues: Array<{severity: 'blocking'|'advisory';category: string;location: string;problem: string;fix: string}>}>;
   revision: number;
   planCount?: number;
   budgetExhausted?: boolean;
@@ -108,14 +136,24 @@ export const workflowDynamicTools = [{
   }, {
     type: 'function', name: 'workflow',
     description: [
-      'operation=plan：可选。多步骤任务可登记工作计划 contract={goal, deliverables[], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；登记后宿主会在提交时核对每项事实是否有对应来源的成功证据，需要列全的事实（enumeration=all）还会核对分页完整性。计划可随进展修订。',
+      'operation=verify：强制步骤验收。每个关键步骤执行后，先观察实际结果，再提交 checkpoint={stepId, criterion, evidenceIds, observationMethod, status, reason, nextAction}。observationMethod 由 Agent 根据目标选择 url/title/content/query/element/screenshot/api_state/file_readback，可组合使用。独立核验器用宿主保存的实际结果核对，不接受自述成功替代证据。失败后只能有限恢复，不自动重放写入。',
+      'operation=plan：多步骤任务必须登记工作计划 contract={goal, deliverables[], steps:[{stepId,purpose,action,acceptanceCriteria,preferredEvidence[],fallbackEvidence[],recoveryStrategy,critical}], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；每个步骤的验收条件由 Agent 根据用户目标生成，宿主不按页面名称或关键词推断。',
       'operation=clarify：仅当缺少只有发起人能决定、且会改变查询对象、跨越权限或影响真实写入目标的条件时使用，提供 question（给发起人的一个最小问题）与 reason。',
       'operation=complete：提交最终答复 completion={status: answered|partial|blocked, answer: 给用户的完整回答, factEvidence: {事实ID: 单个证据ID或证据ID数组}（可为空对象，宿主会自动关联已有成功查询，不需要为填写引用重复查资料）, missingFacts: [未满足的事实ID]}。宿主会核验答复是否被证据支持；未通过时一次性返回所有问题，逐条修正后重新提交。'
     ].join('\n'),
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
-        operation: { type: 'string', enum: ['plan', 'clarify', 'complete'] },
+        operation: { type: 'string', enum: ['plan', 'clarify', 'verify', 'complete'] },
+        checkpoint: { type: 'object', additionalProperties: false, properties: {
+          stepId: { type: 'string', minLength: 1, maxLength: 100 },
+          criterion: { type: 'string', minLength: 1, maxLength: 1000 },
+          evidenceIds: { type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: { type: 'string' } },
+          observationMethod: { type: 'array', minItems: 1, maxItems: 8, uniqueItems: true, items: { type: 'string', enum: ['url', 'title', 'content', 'query', 'element', 'screenshot', 'api_state', 'file_readback'] } },
+          status: { type: 'string', enum: ['satisfied', 'not_satisfied', 'unknown'] },
+          reason: { type: 'string', minLength: 1, maxLength: 2000 },
+          nextAction: { type: 'string', enum: ['continue', 'retry', 'change_strategy', 'report_failure'] }
+        }, required: ['stepId', 'criterion', 'evidenceIds', 'observationMethod', 'status', 'reason', 'nextAction'] },
         contract: { type: 'object' },
         question: { type: 'string' }, reason: { type: 'string' },
         completion: {
@@ -176,13 +214,35 @@ export class TaskWorkflow {
         ...(grain ? { grain: [...new Set((grain as string[]).map((part) => part.trim().toLowerCase()))] } : {}) };
     });
     if (new Set(facts.map((fact) => fact.id)).size !== facts.length) throw new Error('WORKFLOW_FACT_DUPLICATE');
+    const evidenceModes = new Set<WorkflowEvidenceMode>(['url', 'title', 'content', 'query', 'element', 'screenshot', 'api_state', 'file_readback']);
+    const rawSteps = value.steps ?? [];
+    if (!Array.isArray(rawSteps) || rawSteps.length > 30) throw new Error('WORKFLOW_PLAN_INVALID: steps 最多 30 项');
+    const steps = rawSteps.map((rawStep) => {
+      if (!rawStep || typeof rawStep !== 'object' || Array.isArray(rawStep)) throw new Error('WORKFLOW_PLAN_INVALID: steps 项必须是对象');
+      const step = rawStep as Record<string, unknown>;
+      const requiredString = (key: string, max: number): string => {
+        if (typeof step[key] !== 'string' || !(step[key] as string).trim() || (step[key] as string).length > max) throw new Error(`WORKFLOW_PLAN_INVALID: ${key} 必填`);
+        return (step[key] as string).trim();
+      };
+      if (typeof step.stepId !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,99}$/.test(step.stepId)) throw new Error('WORKFLOW_PLAN_INVALID: stepId 无效');
+      const modes = (key: string): WorkflowEvidenceMode[] => {
+        if (!Array.isArray(step[key]) || !(step[key] as unknown[]).length || (step[key] as unknown[]).length > 8 || (step[key] as unknown[]).some((item) => typeof item !== 'string' || !evidenceModes.has(item as WorkflowEvidenceMode))) throw new Error(`WORKFLOW_PLAN_INVALID: ${key} 无效`);
+        return [...new Set(step[key] as WorkflowEvidenceMode[])];
+      };
+      return { stepId: step.stepId, purpose: requiredString('purpose', 500), action: requiredString('action', 1000),
+        acceptanceCriteria: requiredString('acceptanceCriteria', 1500), preferredEvidence: modes('preferredEvidence'), fallbackEvidence: modes('fallbackEvidence'),
+        recoveryStrategy: requiredString('recoveryStrategy', 1000), critical: step.critical !== false };
+    });
+    if (new Set(steps.map((step) => step.stepId)).size !== steps.length) throw new Error('WORKFLOW_PLAN_INVALID: stepId 重复');
     const contract: TaskContract = {
       ...(value.mode ? { mode: value.mode as 'conversation' | 'read' | 'write' } : {}),
       goal: value.goal.trim(), deliverables: strings(value.deliverables, 20, 'deliverables'), requiredFacts: facts,
       assumptions: strings(value.assumptions, 20, 'assumptions'), openQuestions: strings(value.openQuestions, 10, 'openQuestions'),
-      completionCriteria: strings(value.completionCriteria, 20, 'completionCriteria')
+      completionCriteria: strings(value.completionCriteria, 20, 'completionCriteria'), ...(steps.length ? { steps } : {})
     };
     this.state.contract = contract;
+    if (steps.length) this.state.plannedSteps = steps;
+    else delete this.state.plannedSteps;
     this.state.planCount = (this.state.planCount ?? 0) + 1;
     delete this.state.completion;
     this.state.revision += 1;
@@ -201,6 +261,7 @@ export class TaskWorkflow {
       ...(details.scope ? { scope: details.scope } : {}),
       ...(details.period ? { period: details.period } : {}),
       ...(details.freshness ? { freshness: details.freshness } : {}),
+      ...(details.coverage ? { coverage: structuredClone(details.coverage) } : {}),
       ...(details.errorCode ? { errorCode: details.errorCode } : {}),
       ...(details.requestSignature ? { requestSignature: details.requestSignature } : {}),
       ...(details.pagination ? { pagination: details.pagination } : {}),
@@ -208,12 +269,48 @@ export class TaskWorkflow {
       ...(details.filterSite ? { filterSite: details.filterSite } : {})
     };
     this.state.evidence.push(record);
+    const steps = this.state.steps ?? (this.state.steps = []);
+    steps.push({ id: randomUUID(), capabilityId, evidenceId: record.id, state: success ? 'observed' : 'failed', observedAt: record.observedAt });
+    if (steps.length > 100) steps.shift();
     if (this.state.evidence.length > 100) {
       const dropped = this.state.evidence.shift();
       if (dropped) delete this.state.excerpts?.[dropped.id];
     }
     this.state.revision += 1;
     return record;
+  }
+
+  public parseCheckpoint(raw: unknown): NonNullable<WorkflowState['checkpoints']>[number] {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('WORKFLOW_CHECKPOINT_INVALID');
+    const v = raw as Record<string, unknown>;
+    const stepId = typeof v.stepId === 'string' ? v.stepId : (!this.state.plannedSteps?.length ? 'legacy' : '');
+    const observationMethod = Array.isArray(v.observationMethod) ? v.observationMethod : (!this.state.plannedSteps?.length ? ['content'] : []);
+    if (!stepId || (this.state.plannedSteps?.length ? !this.state.plannedSteps.some((step) => step.stepId === stepId) : false)
+      || typeof v.criterion !== 'string' || !v.criterion.trim() || v.criterion.length > 1000
+      || typeof v.reason !== 'string' || !v.reason.trim() || v.reason.length > 2000
+      || !['satisfied', 'not_satisfied', 'unknown'].includes(String(v.status))
+      || !['continue', 'retry', 'change_strategy', 'report_failure'].includes(String(v.nextAction))
+      || !observationMethod.length || observationMethod.some((method) => !['url', 'title', 'content', 'query', 'element', 'screenshot', 'api_state', 'file_readback'].includes(String(method)))
+      || !Array.isArray(v.evidenceIds) || !v.evidenceIds.length || v.evidenceIds.length > 20
+      || v.evidenceIds.some(id => typeof id !== 'string' || !this.state.evidence.some(e => e.id === id))) throw new Error('WORKFLOW_CHECKPOINT_INVALID');
+    if (v.status !== 'satisfied' && v.nextAction === 'continue') throw new Error('WORKFLOW_CHECKPOINT_UNRESOLVED');
+    const evidenceIds = [...new Set(v.evidenceIds as string[])];
+    if (evidenceIds.some(id => !this.state.excerpts?.[id]?.trim())) throw new Error('WORKFLOW_CHECKPOINT_EVIDENCE_MISSING');
+    if ((this.state.checkpoints ?? []).filter(c => c.criterion === v.criterion).length >= 3) throw new Error('WORKFLOW_CHECKPOINT_BUDGET_EXHAUSTED: 停止重复尝试；如实报告未完成和证据缺口。');
+    return { id: randomUUID(), stepId, criterion: v.criterion.trim(), observationMethod: [...new Set(observationMethod as string[])], reason: v.reason.trim(), evidenceIds,
+      status: v.status as 'satisfied' | 'not_satisfied' | 'unknown', nextAction: v.nextAction as 'continue' | 'retry' | 'change_strategy' | 'report_failure',
+      verdict: 'unavailable', checkedAt: new Date().toISOString() };
+  }
+
+  public storeCheckpoint(checkpoint: NonNullable<WorkflowState['checkpoints']>[number]): void {
+    const ledger = this.state.checkpoints ?? (this.state.checkpoints = []);
+    ledger.push(checkpoint);
+    if (ledger.length > 60) ledger.shift();
+    if (checkpoint.verdict === 'pass' && checkpoint.status === 'satisfied') {
+      for (const step of this.state.steps ?? []) if (step.state !== 'failed' && checkpoint.evidenceIds.includes(step.evidenceId)) step.state = 'verified';
+    }
+    delete this.state.completion;
+    this.state.revision += 1;
   }
 
 

@@ -18,24 +18,15 @@ import { workflowDynamicTools } from './task-workflow.js';
 import { mcpReadDynamicTools } from './mcp-read-tool.js';
 import { analysisDynamicTools } from './analysis-tool.js';
 import { nativeReadOnlyMcpTools } from './mcp-tool-list.js';
+import { reportRenderTool } from './report-render.js';
 
-const uiDynamicTools = { type: 'namespace', name: 'agent', description: '由宿主校验并渲染语义 UI。', tools: [
-  // Keep the child name Responses-safe. The host restores it to the legacy
-  // dotted identity when a provider supports namespaced tool calls.
-  { type: 'function', name: 'ui_render', description: '按任务内容选择任意已验证的 A2UI 组件树、数据和真实交互。不要伪造工具状态或输出隐藏思维链；简单回答无需调用。', inputSchema: {
-    type: 'object', properties: {
-      title: { type: 'string' }, description: { type: 'string' }, data: { type: 'object' },
-      root: { type: 'object', description: '语义 UI 根节点：id、component、props、children、dataPath、visibleWhen' },
-      actions: { type: 'array', items: { type: 'object' } }
-    }, required: ['root'], additionalProperties: false
-  } }
-] };
-const agentTools = [{ ...memoryDynamicTools[0], tools: [...memoryDynamicTools[0]!.tools, ...workflowDynamicTools[0]!.tools, ...uiDynamicTools.tools] }];
+const agentTools = [{ ...memoryDynamicTools[0], tools: [...memoryDynamicTools[0]!.tools, ...workflowDynamicTools[0]!.tools] }];
 const execFileAsync = promisify(execFile);
 export const enterpriseTools = [...listingDynamicTools, ...knowledgeDynamicTools, ...dwsDynamicTools, ...agentTools, ...guideDynamicTools, ...analysisDynamicTools, ...nativeWebDynamicTools, ...amazonDynamicTools, ...imageDynamicTools, ...crossBorderOpsDynamicTools, ...ziniaoDynamicTools, ...mcpReadDynamicTools, {
   type: 'namespace', name: 'artifact', description: '登记文件任务的最终成果。',
   tools: [
-    { type: 'function', name: 'submit', description: '登记 output 目录中的最终文件，宿主验证后发送到发起任务的原会话。每个文件调用一次。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' } }, required: ['path'], additionalProperties: false } },
+    reportRenderTool,
+    { type: 'function', name: 'submit', description: '提交 output 目录中的最终文件。推荐同时提供 final_answer（准备发给用户的完整最终摘要），宿主将文件正文和摘要一次性联合核验，通过后发送文件；再用完全相同的摘要完成任务可复用审核，新增结论或证据会重新审核。未通过时按反馈修改后再提交。仅真实 delivered 回执代表发送完成。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' }, final_answer: {type: 'string', description: '待联合审核的完整最终回复；文件成功交付后原样作为最终答复'} }, required: ['path'], additionalProperties: false } },
     { type: 'function', name: 'overwrite_drive', description: '仅在发起人明确要求覆盖钉盘普通文件时，将 output 成果经宿主确认卡覆盖指定 nodeId。在线文档不适用。', inputSchema: { type: 'object', properties: { path: { type: 'string' }, nodeId: { type: 'string' } }, required: ['path', 'nodeId'], additionalProperties: false } },
     { type: 'function', name: 'import_drive', description: '以当前钉钉用户身份将指定钉盘普通文件下载并导入当前文件工作区，返回可读取的任务内路径。', inputSchema: { type: 'object', properties: { nodeId: { type: 'string' } }, required: ['nodeId'], additionalProperties: false } },
     { type: 'function', name: 'import_chat', description: '将当前群或私聊中的文件消息按真实 messageId、fileId 和文件名下载并导入当前任务工作区。先用 dingtalk.chat.chat-messages 读取 resourceRefs；仅限发起任务的原会话。', inputSchema: { type: 'object', properties: { messageId: { type: 'string' }, fileId: { type: 'string' }, name: { type: 'string' } }, required: ['messageId', 'fileId', 'name'], additionalProperties: false } },
@@ -51,13 +42,14 @@ export const enterpriseInstructions = [
   '1. 理解目标：以用户原话、引用消息和澄清回答为准，识别用户要的对象、时间含义、指标、分析动作和交付物。对可逆的只读任务采用合理默认值（例如最近完整周期、当前用户的全部授权范围），并在答复中说明所作假设。只有缺少只有发起人能决定、且会改变查询对象、跨越权限或影响真实写入目标的条件时，才调用 agent.workflow 的 clarify 提一个最小问题。',
   '2. 先用 Skill：任务提示附有已安装 Skill 的索引。任务落在某个 Skill 的领域时，先用 reference.read_guide 读取它的 SKILL.md，再按其中指引读取需要的参考文档，并遵循它的方法、口径和输出结构；多个 Skill 相关时组合使用。Skill 提供方法，不证明实时事实。',
   '3. 规划：多步骤任务可以调用 agent.workflow 的 plan 登记工作计划，随进展修订；简单任务直接执行。',
-  '4. 取证：当前用户或组织的实时业务事实必须来自本任务的工具调用，不能凭记忆、旧会话摘要或推测。优先选择一次就能直接回答问题的能力（服务端聚合、批量或多对象查询），避免逐个对象重复调用同一能力。某个来源失败或受限时，判断是否有同等可信且有权使用的其他来源；不要把一个来源受限说成整个任务无法完成。查询条件正确且结果完整时，零结果就是该来源内的有效结论；如果用户所指的对象可能存在于另一类产品或数据源，先核对那个来源再下结论。检查列表类结果的 complete、hasMore、total、offset 等字段，未翻完不宣称全量。',
+  '4. 取证：当前用户或组织的实时业务事实必须来自本任务的工具调用，不能凭记忆、旧会话摘要或推测。优先选择一次就能直接回答问题的能力（服务端聚合、批量或多对象查询），避免逐个对象重复调用同一能力。某个来源失败或受限时，判断是否有同等可信且有权使用的其他来源；不要把一个来源受限说成整个任务无法完成。查询条件正确且结果完整时，零结果就是该来源内的有效结论；如果用户所指的对象可能存在于另一类产品或数据源，先核对那个来源再下结论。工具返回成功只表示传输成功，不表示业务范围、时间范围、分页或计算已经满足问题；优先读取工具返回的 coverage、scope、freshness、total、offset、hasMore 等结构化元数据，缺少关键元数据时先补足数据契约或改用能明确给出范围的能力，再作范围性结论。',
   '知识库工具返回 answerReady=true 时，先使用返回的全部事实、来源、位置和 nextAction 作答，不要为了换参数名称或再次确认同一结论重复调用。只有 nextAction 明确指出缺口，或用户问题中的另一项事实尚未覆盖时才补查。answerReady 不等于跳过交付前核验，资料冲突仍须分别说明。',
-  '5. 计算：凡是由多行数据派生的数字（求和、均值、比率、环比、排名），都用 analysis.python 对证据文件计算，不要心算。业务查询成功后返回提示中会给出完整结果文件路径。',
-  '6. 交付：调用 agent.workflow 的 complete 提交最终答复（直接输出最终答复也会被同样核验）。宿主会核验答复是否被证据支持；未通过时会一次性列出全部问题，逐条修正后重新提交，只改有问题的部分。',
+  '5. 计算：凡是由多行数据派生的数字（求和、均值、比率、环比、排名），优先用 analysis.table 对保存的证据表计算，复杂逻辑用 analysis.python，不要心算。服务端已返回的指标直接引用，无需重复计算。业务查询成功后返回提示中会给出完整结果文件路径。',
+  '6. 交付：调用 agent.workflow 的 complete 提交最终答复（直接输出最终答复也会被同样核验）。数值表可用 artifact.render_report 的 evidence_tables 直接绑定计算或查询结果，避免手工抄数。宿主会核验答复是否被证据支持；未通过时会一次性列出全部问题，逐条修正后重新提交，只改有问题的部分。',
   '',
   '## 答复标准',
-  '- 复杂任务可调用 agent.ui.render 生成语义 UI；宿主会按当前 Catalog 校验并转换为 A2UI。组件不限于表格、图表或进度条，可组合容器、文本、媒体、输入、Tabs、折叠区、列表和宿主动作。简单回答直接用文本。',
+  '结论的依据类型必须一致：观测事实、计算结果、规则基准、实际配置、原因推断和行动建议分别注明来源与成立条件。已取得一个指标不代表取得与其相关的其他变量；应用规则前检查其站点、对象和阶段。对缺少前提的结论保留不确定性，并继续提供已有证据支持的诊断。不要用行业常识补造具体对象的配置、成本或状态。',
+  '- 复杂任务使用普通钉钉消息或已启用的原生卡片交付；简单回答直接用文本。当前部署不提供 A2UI 语义卡片 API。',
   '- 统一执行面板会自动记录可公开的阶段和工具活动；不要伪造工具状态，不输出隐藏思维链、原始参数、凭证或未经脱敏的工具返回值。交互按钮必须对应真实动作，高危写操作仍由宿主确认。',
   '- 回答用户实际问的问题，篇幅与问题相称：只问一个数值就直接给数值、范围和口径；要求分析或报告时再展开结构。',
   '- 区分数据事实、计算结果、推断和待验证假设。用户要求分析原因、给建议或运用经验判断时，基于证据的推断和建议正是交付物：每一条原因都标明可信度（已证实 / 高可信推断 / 待验证），写清依据和验证方法；数据只显示同期变化时，用“可能”“推测”表述因果，不要写成“导致”“抑制了”等已证实的因果。数据中没有的对象属性（主图、评价内容、竞品、促销活动等）只能作为待核查方向。',
@@ -75,7 +67,7 @@ export const enterpriseInstructions = [
   '- Amazon 自有店铺：授权范围用 crossborderops.scope，经营数据（日报、广告、库存、评论、排名及内部分析）用 crossborderops.query。宿主按当前 corpId + userId 在服务端计算有效店铺范围。不得用管理员、姓名、部门、站点标签或历史会话推算权限；范围为空、查询失败或服务不可用时，只能说明无权限或服务不可用，不得返回未裁剪的内部数据。',
   '- SIF（sif.read）是公开 ASIN、关键词、竞品数据，按用户提供的条件直接查询，不需要店铺授权；答复中区分 SIF 公开数据与自有店铺数据，不要把公开估算当成内部销量。领星只开放工具目录（lingxing.catalog），共享密钥的业务 action 不可用。',
   '- 紫鸟操作只通过 ziniao.cli，宿主按当前钉钉用户检查独立授权。',
-  '- 紫鸟打开/关闭店铺、登录、切换站点或界面语言、导航和截图属于会话准备与观察，可以直接调用；但任何 page/automation 操作都必须先完成本任务的 store.open，并用 page.extract --mode running 确认运行中的店铺与目标一致，宿主会阻止跳过这一步的操作。读取 document.title、当前 URL、页面文本等纯读取 page.exec 也属于观察，可以直接调用。用户明确要求截图时，截图生成后立即交付截图，不要为了补充标题或其他无关信息再执行额外页面操作。page.click、page.input、automation.run 要用 purpose 写明当前步骤的真实目的，宿主会结合原请求和具体参数判断实际影响。修改商品、订单、店铺业务配置或权限等需要宿主确认。',
+  '- 紫鸟打开/关闭店铺、登录、切换站点或界面语言、导航和页面观察属于会话准备与观察，可以直接调用；但任何 page/automation 操作都必须先完成本任务的 store.open，并用 page.extract --mode running 确认运行中的店铺与目标一致，宿主会阻止跳过这一步的操作。读取 document.title、当前 URL、页面文本等纯读取 page.exec 也属于观察，可以直接调用。导航必须使用 page.visit、page.click 或 automation 中的 visit/click；不要用 page.exec 给 location/window.location.href 赋值，也不要用 page.exec 发请求或修改页面状态。对每个有意义的步骤都提交 purpose、effect、effectReason、goalStatus 和 evidence；凡是包含两个及以上动作或交付物的任务，必须先用 agent.workflow plan 为每一步定义 acceptanceCriteria、preferredEvidence、fallbackEvidence 和 recoveryStrategy，执行后必须用 agent.workflow verify 提交 stepId、observationMethod 和实际证据。page.screenshot 的投递成功不等于目标页面正确；若工具提示视觉证据不可直接消费，必须回退 page.content、page.query 或 page.exec 验收。只有每个关键步骤验收通过，才能调用 complete；工具成功、请求接受、网络空闲或产物非空都不能替代验收。验收失败且仍有可行路径时，必须执行 recoveryStrategy：回到最近的稳定入口读取真实页面结构，重新规划并选择不同入口/观察方式，再执行和验收；记忆中的 URL 只能作为候选，不能在 404 后重复猜测或直接报告失败。只有确认无合理恢复路径、权限阻断或重试预算耗尽时，才提交 partial/blocked。宿主会保留高危写入硬门。修改商品、订单、店铺业务配置或权限等需要宿主确认。',
   '- 资源权限由服务端最终裁决，不得通过猜测、复制链接或借用他人身份绕过。',
   '',
   '## 写操作',
@@ -123,7 +115,7 @@ export interface CodexClientLike {
   ensureThread?(threadId: string, user: UserIdentity, taskId: string): Promise<string>;
   turn(threadId: string, input: string, onEvent?: (event: CodexEvent) => void, onApproval?: (request: CodexApprovalRequest) => Promise<unknown>, attachments?: Attachment[], taskId?: string): Promise<CodexTurnResult>;
   interrupt(threadId: string): Promise<void>;
-  inspectOutput?(taskId: string, path: string): Promise<{ name: string; path: string; size: number; sha256: string }>;
+  inspectOutput?(taskId: string, path: string): Promise<{ name: string; path: string; size: number; sha256: string; reviewText?: string }>;
   downloadOutput?(taskId: string, name: string): Promise<Buffer>;
   importFile?(taskId: string, attachment: Attachment): Promise<Attachment>;
   inspectInput?(taskId: string, name: string, excerpt: string, pages?: number[]): Promise<{ name: string; size: number; sha256: string; pageCount?: number }>;
@@ -132,6 +124,7 @@ export interface CodexClientLike {
   /** Runs Python in the task sandbox and returns its outcome. */
   runPython?(taskId: string, code: string): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }>;
   renderListing?(taskId: string, payload: import('./listing-export.js').ListingExport, signal?: AbortSignal): Promise<{ docx: string; xlsx: string }>;
+  renderReport?(taskId: string, payload: import('./report-render.js').ReportRender): Promise<{ path: string }>;
 }
 
 export class CodexClient {
@@ -368,7 +361,7 @@ export class CodexClient {
         const index = state.waiters.findIndex((item) => item.resolve === wrappedResolve);
         if (index >= 0) state.waiters.splice(index, 1);
         reject(new Error('Codex turn timed out: ' + turnId));
-      }, 20 * 60 * 1000);
+      }, Math.max(20 * 60_000, this.config.MODEL_REQUEST_RETRY_BUDGET_MS + this.config.TASK_GENERAL_QUERY_BUDGET_MS));
       const wrappedResolve = (value: string) => {
         clearTimeout(timer);
         resolve(value);

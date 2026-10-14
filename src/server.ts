@@ -122,19 +122,31 @@ export async function createServer(
       if (workerTaskId && config.MODEL_API_KEY) headers.authorization = `Bearer ${config.MODEL_API_KEY}`;
       else if (typeof request.headers.authorization === 'string') headers.authorization = request.headers.authorization;
       let response: Response;
+      const upstreamStartedAt = Date.now();
       const cancellation=new AbortController();
       reply.raw.once('close',()=>{if(!reply.raw.writableFinished)cancellation.abort();});
+      // Keep the transport-level guard above the retry budget. A fixed
+      // ten-minute timeout used to abort the request after only three
+      // three-minute attempts, defeating the configured five retries.
+      const modelRequestTimeoutMs = Math.max(10 * 60 * 1000, config.MODEL_REQUEST_RETRY_BUDGET_MS + 30_000);
       try {
         const result=await requestModelWithRetry(upstream,{
           method:'POST',headers,body:JSON.stringify(adapted.body),
-          signal:AbortSignal.any([AbortSignal.timeout(10*60*1000),cancellation.signal])
+          signal:AbortSignal.any([AbortSignal.timeout(modelRequestTimeoutMs),cancellation.signal])
         },{maxAttempts:config.MODEL_REQUEST_MAX_ATTEMPTS,budgetMs:config.MODEL_REQUEST_RETRY_BUDGET_MS,
+          attemptTimeoutMs:config.MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
           onRetry:event=>request.log.warn(event,'model request retry scheduled')});
         response=result.response;
         reply.header('x-model-request-attempts',String(result.attempts));
+        if ([429,502,503,504].includes(response.status)) {
+          await response.body?.cancel().catch(() => undefined);
+          return reply.code(response.status).send({error: {code: 'MODEL_REQUEST_RETRY_EXHAUSTED',
+            message: 'MODEL_REQUEST_RETRY_EXHAUSTED: upstream retries exhausted or retry-after exceeds budget'}});
+        }
       } catch (error) {
         request.log.error({ error: error instanceof Error ? error.name : 'UnknownError' }, 'model upstream unavailable');
-        return reply.code(502).send({ error: 'model_upstream_unavailable' });
+        return reply.code(502).send({ error: {code: 'MODEL_REQUEST_RETRY_EXHAUSTED',
+          message: 'MODEL_REQUEST_RETRY_EXHAUSTED: model_upstream_unavailable'} });
       }
       const contentType = response.headers.get('content-type') ?? 'application/json';
       reply.code(response.status).header('content-type', contentType);
@@ -150,8 +162,11 @@ export async function createServer(
       reply.raw.writeHead(response.status, { 'content-type': contentType, 'cache-control': 'no-cache' });
       const decoder = new TextDecoder();
       let pending = '';
+      let receivedBytes = 0;
+      const headersMs = Date.now() - upstreamStartedAt;
       try {
         for await (const part of Readable.fromWeb(response.body as any)) {
+          receivedBytes += (part as Uint8Array).byteLength;
           pending += decoder.decode(part as Uint8Array, { stream: true });
           if (pending.length > 2_000_000) throw new Error('model SSE event too large');
           let match: RegExpExecArray | null;
@@ -160,6 +175,8 @@ export async function createServer(
             pending = pending.slice(match.index + match[0].length);
             reply.raw.write(restoreSseChunk(event, adapted.toolNames) + '\n\n');
             if (isTerminalSseEvent(event)) {
+              request.log.info({taskId: workerTaskId, durationMs: Date.now()-upstreamStartedAt, headersMs, receivedBytes,
+                requestChars: JSON.stringify(adapted.body).length, completed: event.includes('response.completed')}, 'model stream terminal');
               reply.raw.end();
               return;
             }
@@ -167,6 +184,8 @@ export async function createServer(
         }
         pending += decoder.decode();
         if (pending) reply.raw.write(restoreSseChunk(pending, adapted.toolNames));
+        request.log.warn({taskId: workerTaskId, durationMs: Date.now()-upstreamStartedAt, headersMs, receivedBytes,
+          requestChars: JSON.stringify(adapted.body).length}, 'model stream ended without terminal');
         reply.raw.end();
       } catch (error) {
         request.log.error({ error: error instanceof Error ? error.name : 'UnknownError' }, 'model stream interrupted');

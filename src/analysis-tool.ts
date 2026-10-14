@@ -1,3 +1,4 @@
+import { tableAnalysisTool } from './analysis-table.js';
 export const ANALYSIS_CODE_MAX_CHARS = 20_000;
 export const ANALYSIS_STDOUT_MAX_CHARS = 64_000;
 
@@ -5,7 +6,7 @@ export const analysisDynamicTools = [{
   type: 'namespace',
   name: 'analysis',
   description: '在当前任务的隔离沙箱中做可复核的精确计算。',
-  tools: [{
+  tools: [tableAnalysisTool, {
     type: 'function',
     name: 'python',
     description: [

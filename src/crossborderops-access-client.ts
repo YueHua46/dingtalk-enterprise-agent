@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import type { UserIdentity } from './types.js';
+import {requestReadWithRetry} from './read-request-retry.js';
 
 export interface EffectiveStoreScope {
   corp_id: string;
@@ -33,11 +34,10 @@ export class CrossBorderOpsAccessClient {
     if (cached && cached.expiresAt > Date.now()) return cached.scope;
     const base = this.config.CROSSBORDEROPS_API_URL!.replace(/\/+$/, '');
     const url = `${base}/agent-access/effective-scope/${encodeURIComponent(user.corpId)}/${encodeURIComponent(user.userId)}`;
-    const response = await this.http(url, {
+    const response = await requestReadWithRetry(url, {
       method: 'GET',
       headers: { accept: 'application/json', 'X-CrossBorderOps-Internal-Token': this.token()! },
-      signal: AbortSignal.timeout(15_000)
-    });
+    }, this.http);
     const body = await response.json() as { success?: boolean; data?: EffectiveStoreScope; message?: string };
     if (!response.ok || !body.success || !body.data) throw new Error(`CROSSBORDEROPS_ACCESS_HTTP_${response.status}`);
     if (body.data.corp_id !== user.corpId || body.data.dingtalk_user_id !== user.userId) throw new Error('CROSSBORDEROPS_ACCESS_IDENTITY_MISMATCH');

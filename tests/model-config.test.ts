@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 
 describe('text model provider configuration', () => {
+  it('routes review to a separately configured model without changing the analysis model', () => {
+    const config = loadConfig({NODE_ENV: 'test', DINGTALK_ROBOT_CODE: 'robot', FILE_WORKER_MODE: 'off',
+      MODEL_PROVIDER: 'gemini', GEMINI_MODEL_BASE_URL: 'https://gemini.example/v1', GEMINI_MODEL_API_KEY: 'analysis-key', GEMINI_MODEL_NAME: 'analysis',
+      MODEL_REVIEW_PROVIDER: 'tokenshop', TOKENSHOP_MODEL_BASE_URL: 'https://review.example/v1', TOKENSHOP_MODEL_API_KEY: 'review-key', TOKENSHOP_MODEL_NAME: 'review'});
+    expect(config.MODEL_NAME).toBe('analysis');
+    expect(config.MODEL_REVIEW_NAME).toBe('review');
+    expect(config.MODEL_REVIEW_API_KEY).toBe('review-key');
+    expect(config.MODEL_API_KEY).toBe('analysis-key');
+    expect(() => loadConfig({NODE_ENV: 'test', DINGTALK_ROBOT_CODE: 'robot', FILE_WORKER_MODE: 'off', MODEL_REVIEW_PROVIDER: 'gemini'}))
+      .toThrow('MODEL_REVIEW_PROVIDER');
+  });
   it('keeps legacy MODEL_* settings as the Tokenshop-compatible default', () => {
     const config = loadConfig({
       NODE_ENV: 'test', DINGTALK_ROBOT_CODE: 'robot', FILE_WORKER_MODE: 'off',

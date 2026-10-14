@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DwsBroker, buildDeviceAuthorizationArgs, buildDwsEnvironment, isConfirmationGateError } from '../src/dws-broker.js';
+import { DwsBroker, asCliCommandError, buildDeviceAuthorizationArgs, buildDwsEnvironment, isConfirmationGateError } from '../src/dws-broker.js';
 
 describe('DwsBroker device authorization', () => {
   it('classifies wrapper startup stderr without retaining its private paths', async () => {
@@ -145,7 +145,18 @@ describe('DwsBroker device authorization', () => {
     vi.spyOn(broker as any,'run').mockRejectedValue({stdout:'',stderr:JSON.stringify({error:{code:1,category:'api',message:'export download failed',reason:'doc_export_download_failed',retryable:false,details:{jobId:'pdf_fixture123'},cause:'<Code>NoSuchKey</Code> secret signed URL'}})});
     const error=await broker.runCommand({corpId:'corp-1',userId:'user-1'},['doc','+export']).catch(e=>e);
     expect(error.dwsJobId).toBe('pdf_fixture123');expect(error.dwsCauseCode).toBe('NoSuchKey');expect(error.dwsRetryable).toBe(false);
-    expect(JSON.stringify(error)).not.toContain('secret');
+    expect(error.dwsRaw).toContain('NoSuchKey');
+    expect(error.dwsRaw).not.toContain('signed URL');
+  });
+
+  it('retains nested upstream error text while redacting credentials and signed URLs',()=>{
+    const error=asCliCommandError([{text:JSON.stringify({error:{category:'api',code:403,message:'Forbidden: missing permission X',cause:'Bearer bearer-value https://example.com/private?token=url-token',details:{accessToken:'access-value',refresh_token:'refresh-value',appSecret:{value:'app-value'},user_code:'device-value',requestId:'request-123'}}})}]) as any;
+    expect(error.dwsRaw).toContain('missing permission X');
+    expect(error.dwsRaw).toContain('request-123');
+    for(const secret of ['bearer-value','url-token','access-value','refresh-value','app-value','device-value'])expect(error.dwsRaw).not.toContain(secret);
+    const large=asCliCommandError([{text:JSON.stringify({error:{message:'a'.repeat(20000)}})}]) as any;
+    expect(large.dwsRaw.length).toBeLessThanOrEqual(16020);
+    expect(large.dwsRaw).toContain('[truncated]');
   });
 
   it('retains normalized shortcut error type and exit code on non-zero exit',async()=>{
