@@ -22,6 +22,37 @@ function setup(turn:any, overrides: Record<string,string> = {}) {
   return {files,repo,codex,orchestrator,query};
 }
 describe('execution reserves and recovery',()=>{
+  it('resolves report and summary from the same facts and rejects references after PDF bytes change',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    const oldHash='a'.repeat(64);
+    let currentHash=oldHash;
+    const facts=[{id:'ctr',evidenceId:'metrics',sourceSha256:'b'.repeat(64),rowsPath:'data.rows',rowIndex:0,
+      selector:{scope:'overall'},field:'ctr',value:0.58,display:'0.58%',rowDimensions:{scope:'overall'},lineage:{}}];
+    Object.assign(h.codex,{
+      runPython:vi.fn(async()=>({exitCode:0,timedOut:false,stdout:JSON.stringify(facts),stderr:''})),
+      inspectOutput:async()=>({name:'report.pdf',size:20,sha256:currentHash,reviewText:'整体CTR 0.58%'})});
+    const deliver=vi.spyOn(h.orchestrator as any,'submitGeneratedArtifact').mockResolvedValue({name:'report.pdf',size:20,sha256:oldHash});
+    const workflow=new TaskWorkflow({revision:0,evidence:[],evidenceFiles:[{file:'metrics.json',evidenceId:'metrics',
+      capabilityId:'analysis.table',arguments:'{}',kind:'calculation',sha256:'b'.repeat(64),tables:[{path:'data.rows',rows:1,fields:{scope:['string'],ctr:['number']}}]}]});
+    const task={id:'fact-pdf-binding',request};
+    const invoke=(tool:string,args:any)=>(h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact',tool,args),workflow,new Map());
+    const rendered=await invoke('render_report',{...report,report:{...report.report,executive_summary:'整体CTR {{fact:ctr}}'},
+      fact_bindings:[{id:'ctr',evidenceId:'metrics',where:{scope:'overall'},field:'ctr',decimals:2,suffix:'%'}]});
+    expect(rendered.success).toBe(true);
+    expect(h.codex.renderReport.mock.calls[0]?.[1]).toMatchObject({report:{executive_summary:'整体CTR 0.58%'}});
+    expect(workflow.state.artifactFacts?.[oldHash]?.facts).toEqual(facts);
+    expect((await invoke('submit',{path:'report.pdf',final_answer:'整体CTR {{fact:ctr}}，详见报告。'})).success).toBe(true);
+    const review=(h.orchestrator as any).evidenceReviewer.review;
+    expect(review.mock.calls[0][0]).toMatchObject({verifiedFacts:{artifactSha256:oldHash,facts}});
+    expect(review.mock.calls[0][0].completion.answer).toContain('整体CTR 0.58%');
+    currentHash='c'.repeat(64);
+    const changed=await invoke('submit',{path:'report.pdf',final_answer:'整体CTR {{fact:ctr}}，详见报告。'});
+    expect(changed.success).toBe(false);
+    expect(changed.contentItems[0].text).toContain('FACT_REFERENCE_UNKNOWN');
+    expect(deliver).toHaveBeenCalledOnce();
+    await h.orchestrator.stop();
+  });
   it('preserves an accepted partial result instead of retrying unresolved artifacts at finalization',async()=>{
     const h=setup(async(_id:string,_p:string,_e:any,onTool:any)=>{
       await onTool(call('agent','workflow',{operation:'complete',completion:{status:'partial',answer:'分析已保存，文件投递结果未知，未重发。',factEvidence:{},missingFacts:[]}}));
@@ -61,6 +92,92 @@ describe('execution reserves and recovery',()=>{
       await (h.orchestrator as any).submitCompletion(task,undefined,workflow,excerpts,{status:'answered',answer:mode==='changed-answer'?'另一个结论':'已发送。花费 10 元。',factEvidence:{},missingFacts:[]},true);
       expect(review).toHaveBeenCalledTimes(mode==='same'?1:2);
     }
+    await h.orchestrator.stop();
+  });
+  it('charges only uncached content reviews and reserves delivery until a file passes',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    let hash='a'.repeat(64);
+    Object.assign(h.codex,{inspectOutput:async()=>({name:'report.pdf',size:20,sha256:hash,reviewText:'body'})});
+    const delivery=vi.spyOn(h.orchestrator as any,'submitGeneratedArtifact').mockImplementation(async()=>({name:'report.pdf',size:20,sha256:hash}));
+    const review=(h.orchestrator as any).evidenceReviewer.review;
+    review.mockResolvedValueOnce({status:'revise',issues:[{severity:'blocking',category:'fact',location:'report',problem:'wrong',fix:'correct'}],reason:'wrong'})
+      .mockResolvedValue({status:'pass',issues:[],reason:'ok'});
+    const workflow=new TaskWorkflow({evidence:[],revision:0,executionBudget:{version:2,used:{rendering:12},exhausted:['rendering']}});
+    const task={id:'phase-review',request};
+    const submit=()=> (h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact','submit',{path:'report.pdf',final_answer:'报告已发送，详见附件。'}),workflow,new Map());
+    expect((await submit()).success).toBe(false);
+    expect((await submit()).success).toBe(false);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(delivery).not.toHaveBeenCalled();
+    expect(workflow.state.executionBudget?.used).toEqual({rendering:12,review:1});
+    hash='b'.repeat(64);
+    expect((await submit()).success).toBe(true);
+    expect(review).toHaveBeenCalledTimes(2);
+    expect(delivery).toHaveBeenCalledOnce();
+    expect(workflow.state.executionBudget?.used).toEqual({rendering:12,review:2});
+    await h.orchestrator.stop();
+  });
+  it.each(['review','delivery'] as const)('blocks publication when the %s phase is exhausted without skipping review',async(lane)=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    Object.assign(h.codex,{inspectOutput:async()=>({name:'report.pdf',size:20,sha256:'a'.repeat(64),reviewText:'body'})});
+    const publish=vi.fn(async()=>({delivered:true}));
+    (h.orchestrator as any).sender.sendFile=publish;
+    (h.orchestrator as any).dws.status=async()=>({profileKey:'corp:employee'});
+    vi.spyOn(h.orchestrator as any,'stageArtifact').mockResolvedValue('report.pdf');
+    Object.assign(h.codex,{downloadOutput:async()=>Buffer.from('content')});
+    const workflow=new TaskWorkflow({evidence:[],revision:0,executionBudget:{version:2,used:{[lane]:12},exhausted:[lane]}});
+    const result=await (h.orchestrator as any).handleCodexRequest({id:'exhausted-'+lane,request},'thread',call('artifact','submit',{path:'report.pdf'}),workflow,new Map());
+    expect(result.success).toBe(false);
+    expect(result.contentItems[0].text).toContain('EXECUTION_LANE_EXHAUSTED');
+    expect(publish).not.toHaveBeenCalled();
+    expect((h.orchestrator as any).evidenceReviewer.review).toHaveBeenCalledTimes(lane==='review'?0:1);
+    await h.orchestrator.stop();
+  });
+  it('reuses an exact passing review after review exhaustion and does not recharge an already delivered file',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    const hash='a'.repeat(64);
+    Object.assign(h.codex,{inspectOutput:async()=>({name:'report.pdf',size:20,sha256:hash,reviewText:'body'})});
+    vi.spyOn(h.orchestrator as any,'submitGeneratedArtifact').mockResolvedValue({name:'report.pdf',size:20,sha256:hash});
+    const workflow=new TaskWorkflow({evidence:[],revision:0,executionBudget:{version:2,used:{review:11},exhausted:[]}});
+    const task={id:'cache-after-budget',request};
+    const submit=()=> (h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact','submit',{path:'report.pdf',final_answer:'报告已发送，详见附件。'}),workflow,new Map());
+    expect((await submit()).success).toBe(true);
+    expect(workflow.state.executionBudget?.used.review).toBe(12);
+    vi.spyOn(h.repo,'getToolInvocation').mockResolvedValue({idempotencyKey:'existing',taskId:task.id,actionHash:hash,status:'completed'});
+    expect((await submit()).success).toBe(true);
+    expect((h.orchestrator as any).evidenceReviewer.review).toHaveBeenCalledOnce();
+    expect(workflow.state.executionBudget?.used.delivery).toBeUndefined();
+    await h.orchestrator.stop();
+  });
+  it.each(['finalization','listing'] as const)('enforces delivery budget on the shared %s path',async(path)=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const task={id:'delivery-budget-'+path,request};
+    const file={name:'report.txt',size:10,sha256:'a'.repeat(64)};
+    await h.repo.saveWorkflow(task.id,{evidence:[],revision:0,executionBudget:{version:2,used:{delivery:12},exhausted:['delivery']}});
+    await h.repo.saveTaskArtifact(task.id,file);
+    Object.assign(h.codex,{inspectOutput:async()=>file,downloadOutput:async()=>Buffer.from('1234567890')});
+    const send=vi.fn(async()=>({delivered:true}));
+    (h.orchestrator as any).sender.sendFile=send;
+    (h.orchestrator as any).dws.status=async()=>({profileKey:'corp:employee'});
+    vi.spyOn(h.orchestrator as any,'stageArtifact').mockResolvedValue('task-local/report.txt');
+    const dispatch=()=>path==='finalization'
+      ? (h.orchestrator as any).deliverArtifacts(task,'thread')
+      : (h.orchestrator as any).submitGeneratedArtifact(task,'thread','report.txt');
+    await expect(dispatch()).rejects.toThrow('EXECUTION_LANE_EXHAUSTED');
+    expect(send).not.toHaveBeenCalled();
+    await h.orchestrator.stop();
+  });
+  it('does not charge delivery when staging fails before dispatch',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const task={id:'failed-stage-budget',request};
+    await h.repo.saveTaskArtifact(task.id,{name:'report.txt',size:10,sha256:'a'.repeat(64)});
+    (h.orchestrator as any).sender.sendFile=vi.fn();
+    vi.spyOn(h.orchestrator as any,'stageArtifact').mockRejectedValue(new Error('OUTPUT_HASH_MISMATCH'));
+    await expect((h.orchestrator as any).deliverArtifacts(task,'thread')).rejects.toThrow('OUTPUT_HASH_MISMATCH');
+    expect((await h.repo.getWorkflow(task.id))?.executionBudget?.used.delivery).toBeUndefined();
     await h.orchestrator.stop();
   });
   it('retains calculation and delivery reserves after collection exhaustion, including after reload',()=>{
@@ -146,7 +263,7 @@ describe('execution reserves and recovery',()=>{
     await vi.waitFor(async()=>expect((await h.repo.findTask(task!.id))?.status).toBe('completed'));
     expect(h.query).toHaveBeenCalledTimes(40);
     expect(h.codex.renderReport).toHaveBeenCalledOnce();
-    expect((await h.repo.getWorkflow(task!.id))?.executionBudget?.used.delivery).toBe(1);
+    expect((await h.repo.getWorkflow(task!.id))?.executionBudget?.used.rendering).toBe(1);
     await h.orchestrator.stop();
   });
   it.each([false,true])('does not send an artifact twice when the previous outcome is unknown=%s',async(unknown)=>{
@@ -161,6 +278,7 @@ describe('execution reserves and recovery',()=>{
     if(unknown){await expect(submit()).rejects.toThrow('timeout');await expect(submit()).rejects.toThrow('FILE_DELIVERY_OUTCOME_UNKNOWN');}
     else {await submit();await submit();}
     expect(sendFile).toHaveBeenCalledOnce();
+    expect((await h.repo.getWorkflow(task.id))?.executionBudget?.used.delivery).toBe(1);
     expect(sendFile.mock.calls[0]?.slice(0,2)).toEqual([request.user,request.surface]);
     await h.orchestrator.stop();
   });

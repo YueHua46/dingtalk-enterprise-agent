@@ -1,5 +1,7 @@
 import type { Config } from './config.js';
 import type { TaskContract, TaskCompletion, EvidenceRecord, WorkflowState } from './task-workflow.js';
+import type { EvidenceFileEntry } from './evidence-manifest.js';
+import type { ResolvedFact } from './evidence-facts.js';
 import {requestModelWithRetry,type ModelRetryState} from './model-request-retry.js';
 import {structuredEvidenceExcerpt} from './evidence-excerpt.js';
 import {readModelResponseBody,ModelIncompleteResponseError} from './model-response-body.js';
@@ -47,6 +49,8 @@ export interface ReviewInput {
   contract?: TaskContract;
   completion: TaskCompletion;
   evidence: EvidenceRecord[];
+  evidenceFiles?: EvidenceFileEntry[] | undefined;
+  verifiedFacts?: {artifactSha256: string; facts: ResolvedFact[]};
   excerpts: Record<string, string>;
   computeAvailable: boolean;
   round: number;
@@ -258,6 +262,10 @@ function buildPayload(input: ReviewInput): Record<string, unknown> {
     maxRounds: input.maxRounds,
     reviewProfile: profile,
     evidence: input.evidence,
+    ...(input.evidenceFiles ? {evidenceManifest: input.evidenceFiles.map(({evidenceId,sha256,kind,query,context,tables}) =>
+      ({evidenceId,sha256,kind,query,context,tables}))} : {}),
+    ...(input.verifiedFacts ? {verifiedFacts: input.verifiedFacts,
+      factVerificationBoundary:'Host checks exact saved value, digest, unique row, and formatting. It does not prove correct statistical population, completeness, joins, inference or causal claims; verify these against the source query and dimensions.'} : {}),
     dataQuality: dataQuality(input.excerpts),
     excerpts,
     ...(missingExcerpts.length ? { excerptsUnavailable: missingExcerpts } : {})

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { factBindingSchema } from './evidence-facts.js';
 
 const cell = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 const columns = {
@@ -23,6 +24,7 @@ const tables = Object.fromEntries(Object.entries(columns).map(([key, fields]) =>
 }));
 export const reportRenderSchema = z.strictObject({
   template: z.literal('amazon-advertising'),
+  fact_bindings: z.array(factBindingSchema).max(150).optional(),
   evidence_tables: z.array(z.strictObject({title: z.string().min(1), evidenceId: z.string().min(1),
     rows_path: z.string().default('data.rows'),
     columns: z.array(z.strictObject({field: z.string().min(1), label: z.string().min(1)})).min(1).max(30),
@@ -51,6 +53,6 @@ export const reportRenderSchema = z.strictObject({
 export type ReportRender = z.infer<typeof reportRenderSchema>;
 export const reportRenderTool = {
   type: 'function', name: 'render_report',
-  description: '用结构化内容生成广告 PDF，自动处理中文字体、排版和分页。数值表优先通过 evidence_tables 指定 evidenceId、rows_path、columns(field/label)，宿主直接读取保存结果填入表格，无需抄数字。sections 承载解释和建议。内容须包含证据口径与缺口。只生成文件，随后用 artifact.submit 审核并发送。',
+  description: '用结构化内容生成广告 PDF。观测与计算数字优先使用 evidence_tables，正文用 fact_bindings={id,evidenceId,rows_path,where,field,decimals?,suffix?} 并写 {{fact:id}} 引用；宿主校验哈希、唯一行、原字段后填值，保存真实查询/对象/计算血缘。where 必须准确指定对象；空 where 仅用于单行结果。百分号仅附加，不缩放；派生指标先 analysis.table 计算。同一行出现的维度才可证明对象关联，不能把同店铺的独立汇总表拼成所属关系。建议数字可自行提出但须标为建议。事实引用不能代替范围、因果和完整性审核。只生成文件，随后 submit 审核并发送；摘要可复用相同 {{fact:id}}，无需抄算。',
   inputSchema: z.toJSONSchema(reportRenderSchema)
 };

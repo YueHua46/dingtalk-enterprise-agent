@@ -26,7 +26,7 @@ export const enterpriseTools = [...listingDynamicTools, ...knowledgeDynamicTools
   type: 'namespace', name: 'artifact', description: '登记文件任务的最终成果。',
   tools: [
     reportRenderTool,
-    { type: 'function', name: 'submit', description: '提交 output 目录中的最终文件。推荐同时提供 final_answer（准备发给用户的完整最终摘要），宿主将文件正文和摘要一次性联合核验，通过后发送文件；再用完全相同的摘要完成任务可复用审核，新增结论或证据会重新审核。未通过时按反馈修改后再提交。仅真实 delivered 回执代表发送完成。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' }, final_answer: {type: 'string', description: '待联合审核的完整最终回复；文件成功交付后原样作为最终答复'} }, required: ['path'], additionalProperties: false } },
+    { type: 'function', name: 'submit', description: '提交 output 目录中的最终文件。推荐同时提供 final_answer（简短文件交付说明及最多三项要点；完整数据、论证和操作建议留在文件中，不要在摘要重复整份报告或增加新结论），宿主将文件正文和摘要一次性联合核验，通过后发送文件；再用完全相同的摘要完成任务可复用审核，新增结论或证据会重新审核。未通过时按反馈修改后再提交。仅真实 delivered 回执代表发送完成。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' }, final_answer: {type: 'string', description: '待联合审核的简短最终回复：文件名及最多三项要点，详细指标与建议见文件；成功交付后原样答复'} }, required: ['path'], additionalProperties: false } },
     { type: 'function', name: 'overwrite_drive', description: '仅在发起人明确要求覆盖钉盘普通文件时，将 output 成果经宿主确认卡覆盖指定 nodeId。在线文档不适用。', inputSchema: { type: 'object', properties: { path: { type: 'string' }, nodeId: { type: 'string' } }, required: ['path', 'nodeId'], additionalProperties: false } },
     { type: 'function', name: 'import_drive', description: '以当前钉钉用户身份将指定钉盘普通文件下载并导入当前文件工作区，返回可读取的任务内路径。', inputSchema: { type: 'object', properties: { nodeId: { type: 'string' } }, required: ['nodeId'], additionalProperties: false } },
     { type: 'function', name: 'import_chat', description: '将当前群或私聊中的文件消息按真实 messageId、fileId 和文件名下载并导入当前任务工作区。先用 dingtalk.chat.chat-messages 读取 resourceRefs；仅限发起任务的原会话。', inputSchema: { type: 'object', properties: { messageId: { type: 'string' }, fileId: { type: 'string' }, name: { type: 'string' } }, required: ['messageId', 'fileId', 'name'], additionalProperties: false } },
@@ -355,7 +355,10 @@ export class CodexClient {
 
   private waitForTurn(threadId: string, turnId: string): Promise<string> {
     const state = this.getTurn(threadId, turnId);
-    if (state.completed) return Promise.resolve(finalTurnText(state));
+    if (state.completed) {
+      const error = state.completed.error;
+      return error ? Promise.reject(new Error(String(error.message ?? error))) : Promise.resolve(finalTurnText(state));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const index = state.waiters.findIndex((item) => item.resolve === wrappedResolve);

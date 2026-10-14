@@ -1,3 +1,4 @@
+import type { ArtifactBudgetHistory } from './execution-budget.js';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { AgentRequest, ApprovalChallenge, ConversationSurface, StoredApproval, TaskRecord, TaskStatus, ToolInvocationRecord, UserIdentity, UserMemory } from './types.js';
@@ -40,6 +41,7 @@ export interface Repository {
   audit(event: { requestId: string; taskId?: string; user: UserIdentity; surfaceId?: string; eventType: string; riskLevel?: string; toolName?: string; payload?: unknown }): Promise<void>;
   saveWorkflow(taskId: string, state: WorkflowState): Promise<void>;
   getWorkflow(taskId: string): Promise<WorkflowState | undefined>;
+  getArtifactBudgetHistory(taskId: string): Promise<ArtifactBudgetHistory>;
   bindTaskExecutionMode(taskId: string, desired: 'local' | 'worker'): Promise<'local' | 'worker'>;
   saveTaskArtifact(taskId: string, artifact: { name: string; size: number; sha256: string }): Promise<void>;
   listTaskArtifacts(taskId: string): Promise<Array<{ name: string; size: number; sha256: string }>>;
@@ -54,7 +56,7 @@ export class InMemoryRepository implements Repository {
   private events = new Map<string, number>();
   private approvals = new Map<string, StoredApproval>();
   private approvalHistory = new Map<string, StoredApproval[]>();
-  private invocations = new Map<string, ToolInvocationRecord>();
+  private invocations = new Map<string, ToolInvocationRecord & {toolName: string}>();
   private memories = new Map<string, Map<string, UserMemory>>();
   private workflows = new Map<string, WorkflowState>();
   private artifacts = new Map<string, Array<{ name: string; size: number; sha256: string }>>();
@@ -236,6 +238,13 @@ export class InMemoryRepository implements Repository {
     return (this.artifacts.get(taskId) ?? []).map((entry) => ({ ...entry }));
   }
   public async getWorkflow(taskId: string): Promise<WorkflowState | undefined> { return structuredClone(this.workflows.get(taskId)); }
+  public async getArtifactBudgetHistory(taskId: string): Promise<ArtifactBudgetHistory> {
+    return {calls: (this.audits as Array<ArtifactBudgetHistory['calls'][number] & {taskId?:string}>)
+      .filter(event => event.taskId === taskId && ['tool.call_started','tool.call_finished'].includes(event.eventType)
+        && event.payload?.namespace === 'artifact' && ['render_report','submit'].includes(event.payload?.tool ?? '')),
+      deliveryAttempts: [...this.invocations.values()].filter(item => item.taskId === taskId && item.toolName === 'artifact.send').length};
+  }
+
   public async findPendingClarification(user: UserIdentity, surface: ConversationSurface): Promise<TaskRecord | undefined> {
     return [...this.tasks.values()].find((task) => task.status === 'waiting_clarification' && task.request.user.corpId === user.corpId && task.request.user.userId === user.userId && task.request.surface.type === surface.type && task.request.surface.id === surface.id);
   }
@@ -577,6 +586,16 @@ export class PgRepository implements Repository {
   public async getWorkflow(taskId: string): Promise<WorkflowState | undefined> {
     const result = await this.pool.query<{ state: WorkflowState }>('SELECT state FROM task_workflows WHERE task_id=$1', [taskId]);
     return result.rows[0]?.state;
+  }
+
+  public async getArtifactBudgetHistory(taskId: string): Promise<ArtifactBudgetHistory> {
+    const result = await this.pool.query<{event_type:string; payload: NonNullable<ArtifactBudgetHistory['calls'][number]['payload']>}>(
+      `SELECT event_type, json_build_object('namespace',payload->>'namespace','tool',payload->>'tool','argumentHash',payload->>'argumentHash') AS payload
+       FROM audit_events WHERE task_id=$1 AND event_type IN ('tool.call_started','tool.call_finished')
+       AND payload->>'namespace'='artifact' AND payload->>'tool' IN ('render_report','submit') ORDER BY id`, [taskId]);
+    const attempts = await this.pool.query<{count:string}>(
+      "SELECT count(*)::text AS count FROM tool_invocations WHERE task_id=$1 AND tool_name='artifact.send'", [taskId]);
+    return {calls:result.rows.map(row => ({eventType:row.event_type,payload:row.payload})), deliveryAttempts:Number(attempts.rows[0]!.count)};
   }
 
   public async findPendingClarification(user: UserIdentity, surface: ConversationSurface): Promise<TaskRecord | undefined> {

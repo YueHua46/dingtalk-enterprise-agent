@@ -10,6 +10,14 @@ describe('dynamic tool response boundary', () => {
 });
 
 describe('CodexClient startup configuration', () => {
+  it('preserves a failed stream when turn completion arrives before its waiter', async () => {
+    const client = new CodexClient({ CODEX_WORKDIR: '/app', MODEL_NAME: 'test' } as any);
+    (client as any).trackTurnEvent({method:'turn/completed',params:{threadId:'thread',turn:{id:'failed-turn',
+      error:{message:'stream disconnected before completion: stream closed before response.completed'},
+      items:[{type:'agentMessage',id:'partial',text:'partial answer',phase:'final_answer'}]}}});
+    await expect((client as any).waitForTurn('thread','failed-turn')).rejects.toThrow('stream closed before response.completed');
+  });
+
   it('does not expose unscoped Lingxing business actions to the model', async () => {
     const client = new CodexClient({ CODEX_WORKDIR: '/app', MODEL_NAME: 'test' } as any);
     vi.spyOn(client, 'start').mockResolvedValue();

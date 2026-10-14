@@ -1,5 +1,6 @@
 import type { ExecutionBudgetState } from './execution-budget.js';
 import type { EvidenceFileEntry } from './evidence-manifest.js';
+import type { ResolvedFact } from './evidence-facts.js';
 import { randomUUID } from 'node:crypto';
 import { capabilityById, capabilityCatalog } from './capability-catalog.js';
 
@@ -111,6 +112,8 @@ export interface WorkflowState {
   reviewedDeliveryAnswer?: {answer: string; evidenceKey: string; artifactSha256: string; deliveryEvidenceId: string};
   artifactReviews?: Record<string, {status: 'pass'|'revise'|'unavailable'; reason: string; evidenceKey: string; answerKey?: string;
     issues: Array<{severity: 'blocking'|'advisory';category: string;location: string;problem: string;fix: string}>}>;
+  /** Host-resolved facts bound to the bytes actually rendered, not a model-written citation list. */
+  artifactFacts?: Record<string, {facts: ResolvedFact[]; report: Record<string, unknown>}>;
   revision: number;
   planCount?: number;
   budgetExhausted?: boolean;

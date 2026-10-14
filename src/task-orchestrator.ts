@@ -1,8 +1,9 @@
 import type { Config } from './config.js';
-import { executionLane, takeExecutionBudget, budgetFeedback } from './execution-budget.js';
+import { executionLane, takeExecutionBudget, budgetFeedback, migrateArtifactBudget } from './execution-budget.js';
 import { describeEvidence } from './evidence-manifest.js';
 import { tableAnalysisSchema, tableAnalysisCode } from './analysis-table.js';
 import { reportRenderSchema } from './report-render.js';
+import { prepareFactBindings, factResolutionCode, interpolateFacts, type ResolvedFact } from './evidence-facts.js';
 import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
 import { DwsTool } from './dws-tool.js';
@@ -22,6 +23,7 @@ import { McpReadTool } from './mcp-read-tool.js';
 import { TaskWorkflow, listCapabilities, type ScreenshotDeliveryReceipt, type TaskCompletion } from './task-workflow.js';
 import { capabilityById } from './capability-catalog.js';
 import { recoveryToolAllowed, taskRecoveryPrompt, type TaskRecoveryRequest } from './task-recovery.js';
+import { toolCheckpointKey, legacyObservationCheckpoint } from './tool-checkpoint.js';
 import { EvidenceReviewer, formatIssues, type ReviewProfile } from './evidence-reviewer.js';
 import { structuredEvidenceExcerpt } from './evidence-excerpt.js';
 import { parseAnalysisInput } from './analysis-tool.js';
@@ -959,7 +961,7 @@ export class TaskOrchestrator {
           deadlineAt: new Date(taskDeadlineAt).toISOString() } });
       let deliveredImageFastPath = false;
       const skillIndex = await this.guideTool.index();
-      const executionBudget = workflow.state.executionBudget ??= {used: {}, exhausted: []};
+      const executionBudget = await this.prepareExecutionBudget(task, workflow);
       workflow.state.toolCheckpoints ??= {};
       let recoveryMode = manualRecovery;
       let recoveryUnsafe = false;
@@ -1002,6 +1004,7 @@ export class TaskOrchestrator {
         ].join('\\n') : '',
         skillIndex ? '已安装 Skill 索引（按需用 reference.read_guide 读取）：\n' + skillIndex : '',
         computeAvailable ? '证据与计算：完整结果保存在 evidence/。evidence/index.json 是 JSON 数组，每项含 file、evidenceId、capabilityId、query（完整查询参数对象）、sha256、kind、rootKeys、tables（path、rows、fields 类型）及 context。路径相对任务根目录，结果通常在 data.rows，以 tables 为准。服务端已有指标直接引用；常规聚合/比率/排序优先 analysis.table，复杂分析用 analysis.python。计算输出也保存为证据文件。先一次性明确所需维度和计算，复用已得结果，避免每个对象一轮试算。报告和聊天引用同一组计算结果，不重新抄算。工具额度按阶段独立，接近额度时收敛；收尾和文件交付保留独立额度。' : '精确计算：本任务没有计算沙箱，派生数值需逐项核对后再写入答复。',
+        computeAvailable ? '报告数字：观测值及计算结果必须通过 evidence_tables 直接放入附表，正文中的数字通过 fact_bindings 与 {{fact:id}} 填入，避免重新抄写。先按明确筛选条件计算各类对象数、金额和比率，再绑定单行结果。where 要包含正确对象及必要维度，整体值不能选单个对象行；百分号只附加不换算。建议阈值可自行提出但须标明建议；没有成本或跨期数据，不能把效率较好写成已盈利或稳定。ASIN与活动等关联必须来自有两者ID的真实记录，不能凭同店铺推定。' : '',
         workflow.state.clarification ? '本任务此前向发起人提出的澄清问题：' + workflow.state.clarification.question : '',
         workflow.state.clarification?.answer ? '发起人对澄清问题的回答：' + workflow.state.clarification.answer : '',
         workflow.state.contract ? '已登记的工作计划（继续原任务，不重复执行已完成的写操作）：' + JSON.stringify(workflow.state.contract) : '',
@@ -1055,9 +1058,12 @@ export class TaskOrchestrator {
           if (approval.method === 'item/tool/call') {
             const namespace = String(approval.params.namespace ?? '');
             const tool = String(approval.params.tool ?? '');
-            const checkpointKey = sha256({namespace, tool, args: approval.params.arguments,
-              ...(namespace === 'analysis' ? {inputs: workflow.state.evidenceFiles?.filter(f => f.kind === 'observation').map(f => f.sha256)} : {})});
-            const checkpoint = workflow.state.toolCheckpoints![checkpointKey];
+            const checkpointRequest = {namespace, tool, args: approval.params.arguments,
+              ...(namespace === 'analysis' ? {inputs: workflow.state.evidenceFiles?.filter(f => f.kind === 'observation').map(f => f.sha256)} : {})};
+            const checkpointKey = toolCheckpointKey(checkpointRequest);
+            const checkpoint = workflow.state.toolCheckpoints![checkpointKey]
+              ?? workflow.state.toolCheckpoints![sha256(checkpointRequest)]
+              ?? (recoveryMode ? legacyObservationCheckpoint(workflow.state, capabilityIdForTool(approval), approval.params.arguments) : undefined);
             // Only reuse task-local observations during recovery. Normal live reads still run.
             if (checkpoint && !(namespace === 'artifact' && tool === 'submit') && (recoveryMode || (namespace === 'analysis' && tool === 'table') || namespace === 'reference')) {
               await this.repo.audit({requestId: task.request.requestId, taskId: task.id, user: task.request.user,
@@ -1066,16 +1072,19 @@ export class TaskOrchestrator {
                 {type: 'inputText', text: '恢复时复用本任务已完成步骤，不是重新查询。完整文件与取得时间见 evidence/index.json。'}]};
             }
             const lane = executionLane(namespace, tool);
-            const budget = takeExecutionBudget(executionBudget, lane, namespace === 'agent' && tool === 'workflow' && approval.params.arguments?.operation === 'complete');
+            // submit has separate review and delivery gates; charge only the phase actually reached.
+            const budget = namespace === 'artifact' && tool === 'submit'
+              ? {allowed:true, remaining:0, converging:false}
+              : takeExecutionBudget(executionBudget, lane, namespace === 'agent' && tool === 'workflow' && approval.params.arguments?.operation === 'complete');
             if (!budget.allowed) {
               workflow.state.budgetExhausted = true;
               await this.repo.saveWorkflow(task.id, workflow.state);
               await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
                 eventType: 'workflow.tool_budget_exhausted', payload: { lane, used: executionBudget.used, exhausted: executionBudget.exhausted } });
-              return { contentItems: [{ type: 'inputText', text: budgetFeedback(lane, false) }], success: false };
+              return { contentItems: [{ type: 'inputText', text: executionBudget.migrationBlocked ?? budgetFeedback(lane, false) }], success: false };
             }
             const resumable = lane === 'discovery' || lane === 'preparation' || lane === 'computation'
-              || lane === 'delivery' || (namespace === 'agent' && tool === 'workflow')
+              || lane === 'rendering' || lane === 'review' || lane === 'delivery' || (namespace === 'agent' && tool === 'workflow')
               || capabilityById(capabilityIdForTool(approval) ?? '')?.risk === 'read';
             // Unknown or externally mutating operations retain the existing safety barrier.
             if (!resumable) recoveryUnsafe = true;
@@ -1115,8 +1124,9 @@ export class TaskOrchestrator {
                         const fileName = evidenceFileName(workflow, evidence.id, capabilityId);
                         const saved = capabilityId === 'analysis.python'
                           ? JSON.stringify({dataset: 'calculation.python', evidence: {code: approval.params.arguments?.code, purpose: approval.params.arguments?.purpose,
-                            inputEvidenceIds: workflow.state.evidenceFiles?.filter(f => f.kind === 'observation').map(f => f.evidenceId)}, data: JSON.parse(raw)})
-                          : capabilityId === 'artifact.render_report' ? JSON.stringify({dataset: 'report', data: {report: approval.params.arguments?.report, output: JSON.parse(raw)}}) : raw;
+                            candidateInputEvidenceIds: workflow.state.evidenceFiles?.filter(f => f.kind === 'observation').map(f => f.evidenceId),
+                            dependencyVerification: 'Candidate sources only; actual file reads and calculation dependencies are not verified.'}, data: JSON.parse(raw)})
+                          : capabilityId === 'artifact.render_report' ? JSON.stringify({dataset: 'report', data: {report: JSON.parse(raw).resolved_report ?? approval.params.arguments?.report, output: JSON.parse(raw)}}) : raw;
                         const path = await this.codex.writeEvidence(task.id, fileName, saved);
                         await this.codex.writeEvidence(task.id, 'index.json', JSON.stringify(evidenceIndex(workflow, approval, fileName, evidence.id, capabilityId, saved), null, 1));
                         fileNote = `；完整结果文件：${path}（全部文件清单见 evidence/index.json）`;
@@ -1339,7 +1349,7 @@ export class TaskOrchestrator {
       // A reviewed partial/blocked result may explain an unresolved delivery.
       // Do not turn that accepted explanation back into a task failure by
       // implicitly submitting the same pending artifacts during finalization.
-      if (!workflow.state.completion || workflow.state.completion.status === 'answered') await this.deliverArtifacts(task, threadId);
+      if (!workflow.state.completion || workflow.state.completion.status === 'answered') await this.deliverArtifacts(task, threadId, undefined, workflow);
       await this.repo.updateTask(task.id, 'completed', { threadId, resultSummary: result.text, resultVisibility: 'surface' });
       await this.finishApprovalCard(task.id, 'done');
       await cardWrites.catch(() => undefined);
@@ -1476,6 +1486,33 @@ export class TaskOrchestrator {
     await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId, eventType: 'a2ui.fallback_native' });
   }
 
+  private async prepareExecutionBudget(task: TaskRecord, workflow: TaskWorkflow) {
+    const state = workflow.state.executionBudget ??= {used: {}, exhausted: []};
+    if (state.version === 2 || state.migrationBlocked) return state;
+    const legacy = (state.used.delivery ?? 0) > 0 || state.exhausted.includes('delivery');
+    try {
+      migrateArtifactBudget(state, legacy ? await this.repo.getArtifactBudgetHistory(task.id) : undefined);
+    } catch {
+      state.migrationBlocked = 'EXECUTION_BUDGET_MIGRATION_UNVERIFIED';
+    }
+    await this.repo.saveWorkflow(task.id, workflow.state);
+    if (legacy) await this.repo.audit({requestId:task.request.requestId, taskId:task.id, user:task.request.user,
+      eventType: state.migrationBlocked ? 'workflow.artifact_budget_migration_blocked' : 'workflow.artifact_budget_migrated',
+      payload: {legacy:state.legacyArtifactBudget, used:state.used, reason:state.migrationBlocked}});
+    return state;
+  }
+
+  private async chargeArtifactBudget(task: TaskRecord, workflow: TaskWorkflow, lane: 'review'|'delivery') {
+    const state = await this.prepareExecutionBudget(task, workflow);
+    const result = takeExecutionBudget(state, lane);
+    if (!result.allowed) workflow.state.budgetExhausted = true;
+    await this.repo.saveWorkflow(task.id, workflow.state);
+    await this.repo.audit({requestId:task.request.requestId, taskId:task.id, user:task.request.user,
+      eventType:result.allowed ? 'workflow.artifact_budget_charged' : 'workflow.tool_budget_exhausted',
+      payload:{lane,used:state.used,exhausted:state.exhausted}});
+    if (!result.allowed) throw new Error(state.migrationBlocked ?? budgetFeedback(lane,false));
+  }
+
   private async handleCodexRequest(task: TaskRecord, threadId: string, request: CodexApprovalRequest, workflow: TaskWorkflow,
     evidenceExcerpts: Map<string, string>, onKnowledgeProgress?: (stage: string) => void,
     taskDeadlineAt?: number, queryIntent?: QueryIntent): Promise<unknown> {
@@ -1505,6 +1542,16 @@ export class TaskOrchestrator {
         delete workflow.state.reviewedDeliveryAnswer;
         if (!this.codex.renderReport) throw new Error('FILE_WORKER_NOT_ENABLED');
         const payload = reportRenderSchema.parse(request.params.arguments);
+        let facts: ResolvedFact[] = [];
+        if (payload.fact_bindings?.length) {
+          if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE');
+          const bindings = prepareFactBindings(payload.fact_bindings, workflow.state.evidenceFiles ?? []);
+          const resolved = await this.codex.runPython(task.id, factResolutionCode(bindings));
+          if (resolved.exitCode !== 0 || resolved.timedOut) throw new Error('FACT_RESOLUTION_FAILED: ' + resolved.stderr);
+          facts = JSON.parse(resolved.stdout);
+        }
+        payload.report = interpolateFacts(payload.report, facts, true);
+        delete payload.fact_bindings;
         if (payload.evidence_tables?.length) {
           if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE');
           const bindings = payload.evidence_tables.map(binding => {
@@ -1543,8 +1590,18 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           delete payload.evidence_tables;
         }
         const output = await this.codex.renderReport(task.id, payload);
+        if (facts.length) {
+          const inspected = await this.codex.inspectOutput?.(task.id, output.path);
+          if (!inspected) throw new Error('FACT_REPORT_HASH_UNAVAILABLE');
+          workflow.state.artifactFacts ??= {};
+          workflow.state.artifactFacts[inspected.sha256] = {facts, report: payload.report};
+          await this.repo.saveWorkflow(task.id, workflow.state);
+          await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,
+            eventType:'artifact.facts_bound',payload:{sha256:inspected.sha256,facts:facts.map(f => ({id:f.id,evidenceId:f.evidenceId,sourceSha256:f.sourceSha256,field:f.field,rowIndex:f.rowIndex}))}});
+        }
         return {contentItems: [{type: 'inputText', text: JSON.stringify({...output, delivered: false,
-          next: '调用 artifact.submit 提交生成的 PDF；修改内容时再次 render_report，无需改写排版程序。'})}], success: true};
+          ...(facts.length ? {resolved_report:payload.report,fact_manifest:facts} : {}),
+          next: '调用 artifact.submit 提交生成的 PDF，final_answer 只写简短文件说明与最多三项要点，详细数字和建议留在文件中；修改内容时再次 render_report。'})}], success: true};
       } catch (error) {
         return {contentItems: [{type: 'inputText', text: error instanceof Error ? error.message : String(error)}], success: false};
       }
@@ -1555,18 +1612,21 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         const path = (request.params.arguments as { path?: unknown } | undefined)?.path;
         const finalAnswerInput = request.params.arguments?.final_answer;
         if (finalAnswerInput !== undefined && (typeof finalAnswerInput !== 'string' || !finalAnswerInput.trim() || finalAnswerInput.length > 16000)) throw new Error('FINAL_ANSWER_INVALID');
-        const finalAnswer = typeof finalAnswerInput === 'string' ? finalAnswerInput.trim() : undefined;
-        const answerKey = finalAnswer ? sha256(finalAnswer) : undefined;
         let jointReviewKey: string | undefined;
         if (typeof path !== 'string') throw new Error('OUTPUT_PATH_REQUIRED');
         const inspected = await this.codex.inspectOutput?.(task.id, path);
         if (!inspected) throw new Error('FILE_WORKER_NOT_ENABLED');
+        const factManifest = workflow.state.artifactFacts?.[inspected.sha256];
+        const finalAnswer = typeof finalAnswerInput === 'string'
+          ? interpolateFacts(finalAnswerInput.trim(), factManifest?.facts ?? []) : undefined;
+        const answerKey = finalAnswer ? sha256(finalAnswer) : undefined;
         if (this.enforcing() && inspected.reviewText !== undefined) {
           const evidenceKey = sha256(workflow.state.evidence.filter(item => item.status === 'success' && !item.capabilityId.startsWith('artifact.')));
           const previous = workflow.state.artifactReviews?.[inspected.sha256];
           const cached = previous?.status === 'unavailable' || (previous?.answerKey === answerKey && previous?.evidenceKey === evidenceKey) ? previous : undefined;
           if (cached?.status === 'unavailable') throw new Error(`ARTIFACT_REVIEW_UNAVAILABLE: 本文件已用完本次审核请求的重试预算。不要重复提交未变化的文件；如实说明审核不可用且文件未发送。${cached.reason}`);
           if (cached?.status === 'revise') throw new Error(`ARTIFACT_REVIEW_REVISE: 文件内容未变化，请先按反馈修正再提交。\n${formatIssues(cached.issues)}`);
+          if (!cached) await this.chargeArtifactBudget(task, workflow, 'review');
           const startedAt = Date.now();
           const review = cached ?? await this.evidenceReviewer.review({
             request: task.request.text,
@@ -1574,10 +1634,12 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             ...(workflow.state.clarification?.answer ? {clarificationAnswer: workflow.state.clarification.answer} : {}),
             ...(workflow.state.contract ? {contract: workflow.state.contract} : {}),
             completion: {status: 'answered', answer: finalAnswer ? JSON.stringify({artifactBody: inspected.reviewText, finalAnswer}) : inspected.reviewText, factEvidence: {}, missingFacts: []},
-            evidence: workflow.state.evidence, excerpts: Object.fromEntries(evidenceExcerpts),
+            evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles,
+            ...(factManifest ? {verifiedFacts:{artifactSha256:inspected.sha256,facts:factManifest.facts}} : {}),
+            excerpts: Object.fromEntries(evidenceExcerpts),
             computeAvailable: Boolean(this.codex.runPython), round: 1, maxRounds: MAX_REVIEW_ROUNDS,
             profile: reviewProfileFor(workflow), criterion: finalAnswer
-              ? '联合核验待发布文件完整正文 artifactBody 与最终回复 finalAnswer：二者整体满足用户完整目标、彼此一致且受证据支持。最终回复将仅在文件成功发送后使用，因此文件尚未发送是预期状态。检查摘要中的每项结论；不得只审文件。'
+              ? '联合核验待发布文件完整正文 artifactBody 与简短最终回复 finalAnswer：二者整体满足用户完整目标、彼此一致且受证据支持；详细指标与分析可仅在文件中提供，摘要无需重复，但摘要实际提出的结论仍须核验。最终回复将仅在文件成功发送后使用，因此文件尚未发送是预期状态。检查摘要中的每项结论；不得只审文件。'
               : '待发布文件的完整正文；文件尚未发送是预期状态，请核验内容是否满足用户要求并受证据支持。'
           });
           workflow.state.artifactReviews ??= {};
@@ -1593,7 +1655,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           if (current.sha256 !== inspected.sha256) throw new Error('OUTPUT_CHANGED_AFTER_REVIEW');
           if (finalAnswer) jointReviewKey = evidenceKey;
         }
-        const output = await this.submitGeneratedArtifact(task, threadId, path, undefined, inspected.sha256);
+        const output = await this.submitGeneratedArtifact(task, threadId, path, undefined, inspected.sha256, workflow);
         const evidence = workflow.record('artifact.submit', true, { scope: `task:${task.id}/output:${output.sha256}` });
         keepExcerpt(workflow, evidenceExcerpts, evidence.id, JSON.stringify({ delivered: true, name: output.name, size: output.size,
           sha256: output.sha256, surface: task.request.surface }));
@@ -1753,7 +1815,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           const checkpoint = workflow.parseCheckpoint(args.checkpoint);
           const review = await this.evidenceReviewer.review({
             stage: 'step', criterion: checkpoint.criterion, steps: workflow.state.steps, checkpoints: workflow.state.checkpoints,
-            request: task.request.text, evidence: workflow.state.evidence, excerpts: Object.fromEntries(evidenceExcerpts),
+            request: task.request.text, evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles, excerpts: Object.fromEntries(evidenceExcerpts),
             completion: { status: 'partial', answer: checkpoint.reason, factEvidence: {}, missingFacts: [] },
             computeAvailable: Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id)), round: 1, maxRounds: 1,
             profile: reviewProfileFor(workflow)
@@ -2307,7 +2369,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         ...(task.request.quotedText ? { quotedText: task.request.quotedText } : {}),
         ...(workflow.state.clarification?.answer ? { clarificationAnswer: workflow.state.clarification.answer } : {}),
         ...(workflow.state.contract ? { contract: workflow.state.contract } : {}),
-        completion, evidence: workflow.state.evidence, excerpts: Object.fromEntries(evidenceExcerpts),
+        completion, evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles, excerpts: Object.fromEntries(evidenceExcerpts),
         computeAvailable, round, maxRounds: maxReviewRounds, profile: reviewProfile
       });
       await audit('workflow.review', { round, status: review.status, durationMs: Date.now() - startedAt,
@@ -2580,7 +2642,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
     }, signal);
   }
 
-  private async submitGeneratedArtifact(task: TaskRecord, threadId: string, path: string, signal?: AbortSignal, reviewedHash?: string) {
+  private async submitGeneratedArtifact(task: TaskRecord, threadId: string, path: string, signal?: AbortSignal, reviewedHash?: string, workflow?: TaskWorkflow) {
     if (signal?.aborted) throw new Error('LISTING_EXPORT_CANCELLED');
     if (!this.codex.inspectOutput || !this.codex.downloadOutput) throw new Error('FILE_WORKER_NOT_ENABLED');
     const output = await this.codex.inspectOutput(task.id, path);
@@ -2589,7 +2651,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
     if (!['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.csv', '.json', '.html', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) throw new Error('OUTPUT_TYPE_UNSUPPORTED');
     if (output.size <= 0 || output.size > this.config.MEDIA_MAX_BYTES) throw new Error('OUTPUT_SIZE_INVALID');
     await this.repo.saveTaskArtifact(task.id, output);
-    await this.deliverArtifacts(task, threadId, signal);
+    await this.deliverArtifacts(task, threadId, signal, workflow);
     return output;
   }
 
@@ -2614,7 +2676,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       return target;
   }
 
-  private async deliverArtifacts(task: TaskRecord, threadId: string, signal?: AbortSignal): Promise<void> {
+  private async deliverArtifacts(task: TaskRecord, threadId: string, signal?: AbortSignal, workflow?: TaskWorkflow): Promise<void> {
     const files = await this.repo.listTaskArtifacts(task.id);
     if (!files.length) return;
     if (!this.sender.sendFile) throw new Error('FILE_DELIVERY_UNAVAILABLE');
@@ -2628,6 +2690,10 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       const existing = await this.repo.getToolInvocation(idempotencyKey);
       if (existing?.status === 'completed') continue;
       if (existing) throw new Error('FILE_DELIVERY_OUTCOME_UNKNOWN: 已存在未确认的投递记录，请人工核对原会话。');
+      // Every artifact path, including listing exports and finalization, shares this gate.
+      // Validate, stage and resolve idempotency before consuming a dispatch attempt.
+      workflow ??= new TaskWorkflow(await this.repo.getWorkflow(task.id));
+      await this.chargeArtifactBudget(task, workflow, 'delivery');
       const started = await this.repo.beginToolInvocation({ idempotencyKey, taskId: task.id, actionHash: file.sha256, toolName: 'artifact.send' });
       if (!started) throw new Error('FILE_DELIVERY_OUTCOME_UNKNOWN');
       try {
