@@ -1,16 +1,18 @@
 import {setTimeout as delay} from 'node:timers/promises';
+import { EmptyModelStreamError, primeModelStream } from './model-stream-preface.js';
 
 export type ModelRetryState = {attempts:number;deadlineAt:number};
 type RetryOptions = {
   errorPrefix?: string;
   maxAttempts:number;
   budgetMs:number;
-  /** Maximum time to wait for response headers on one upstream attempt. */
+  /** Maximum wait for headers (and, when enabled, the first SSE data event). */
   attemptTimeoutMs?:number;
+  retryEmptySse?:boolean;
   state?:ModelRetryState;
   http?:typeof fetch;
   retryDelayMs?:(attempt:number)=>number;
-  onRetry?:(event:{attempt:number;status?:number;reason:'http'|'transport';waitMs:number})=>void;
+  onRetry?:(event:{attempt:number;status?:number;reason:'http'|'transport'|'empty_stream';waitMs:number})=>void;
 };
 
 function retryAfter(value:string|null):number|undefined {
@@ -40,12 +42,15 @@ export async function requestModelWithRetry(url:string,init:RequestInit,options:
     const signal=init.signal?AbortSignal.any([init.signal,headersTimeout.signal]):headersTimeout.signal;
     state.attempts++;
     let response:Response|undefined,error:unknown;
-    try{response=await (options.http??fetch)(url,{...init,signal});}catch(cause){error=cause;}finally{clearTimeout(timer);}
+    try{
+      response=await (options.http??fetch)(url,{...init,signal});
+      if(options.retryEmptySse)response=await primeModelStream(response,signal);
+    }catch(cause){response=undefined;error=cause;}finally{clearTimeout(timer);}
     if(response&&!([429,502,503,504].includes(response.status)))return {response,attempts:state.attempts};
     // An attempt-local timeout is retryable. A caller cancellation remains
     // terminal. Retrying here is safe because no response (and therefore no
     // tool call or side effect) has been returned to the model client.
-    if(error&&(init.signal?.aborted||(!attemptTimedOut&&!transientTransport(error))))throw error;
+    if(error&&(init.signal?.aborted||(!attemptTimedOut&&!(error instanceof EmptyModelStreamError)&&!transientTransport(error))))throw error;
     if(state.attempts>=options.maxAttempts){
       if(response)return {response,attempts:state.attempts};
       throw new Error(`${errorPrefix}_RETRY_EXHAUSTED`);
@@ -57,7 +62,7 @@ export async function requestModelWithRetry(url:string,init:RequestInit,options:
       if(response)return {response,attempts:state.attempts};
       throw new Error(`${errorPrefix}_RETRY_BUDGET_EXCEEDED`);
     }
-    options.onRetry?.({attempt:state.attempts,...(response?{status:response.status}:{}),reason:response?'http':'transport',waitMs});
+    options.onRetry?.({attempt:state.attempts,...(response?{status:response.status}:{}),reason:response?'http':error instanceof EmptyModelStreamError?'empty_stream':'transport',waitMs});
     await response?.body?.cancel().catch(()=>undefined);
     await delay(waitMs,undefined,init.signal?{signal:init.signal}:undefined);
   }

@@ -133,7 +133,7 @@ export async function createServer(
         const result=await requestModelWithRetry(upstream,{
           method:'POST',headers,body:JSON.stringify(adapted.body),
           signal:AbortSignal.any([AbortSignal.timeout(modelRequestTimeoutMs),cancellation.signal])
-        },{maxAttempts:config.MODEL_REQUEST_MAX_ATTEMPTS,budgetMs:config.MODEL_REQUEST_RETRY_BUDGET_MS,
+        },{maxAttempts:config.MODEL_REQUEST_MAX_ATTEMPTS,budgetMs:config.MODEL_REQUEST_RETRY_BUDGET_MS,retryEmptySse:true,
           attemptTimeoutMs:config.MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
           onRetry:event=>request.log.warn(event,'model request retry scheduled')});
         response=result.response;
@@ -159,6 +159,9 @@ export async function createServer(
         catch { return reply.send(raw); }
       }
       reply.hijack();
+      for (const [name, value] of Object.entries(reply.getHeaders())) {
+        if (value !== undefined) reply.raw.setHeader(name, value);
+      }
       reply.raw.writeHead(response.status, { 'content-type': contentType, 'cache-control': 'no-cache' });
       const decoder = new TextDecoder();
       let pending = '';

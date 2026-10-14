@@ -1,0 +1,5 @@
+name: astrbot_plugin_gemini_native_search
+display_name: Gemini Native Search
+desc: Native web grounding exposed as an ordinary function tool
+version: v1.0.0
+author: local

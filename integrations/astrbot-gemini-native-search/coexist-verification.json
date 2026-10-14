@@ -1,0 +1,1 @@
+{"native_grounding_sources": 8, "first_tool": "gemini_web_search", "after_search_tool_calls": ["aiimg_task_status"], "http_statuses": [200, 200], "note": "Existing status tool declaration accepted and callable after actual native search; no business tool executed."}

@@ -8,6 +8,23 @@ import { randomUUID } from 'node:crypto';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('HTTP server', () => {
+  it('recovers a real compatibility empty-stream envelope before exposing SSE to Codex', async () => {
+    let calls = 0;
+    const complete = 'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n';
+    const fetchMock = vi.fn(async () => new Response(++calls === 1
+      ? ': ping\n\nevent: error\ndata: {"type":"error","error":{"type":"upstream_error","message":"empty_stream"}}\n\n'
+      : complete, { headers: { 'content-type': 'text/event-stream' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const app = await createServer(loadConfig({ DINGTALK_ROBOT_CODE: 'robot', MODEL_BASE_URL: 'https://model.example/v1', MODEL_TOOL_COMPAT_PROXY: 'true' }), {} as TaskOrchestrator);
+    try {
+      const result = await app.inject({ method: 'POST', url: '/internal/model/v1/responses', payload: { input: ['already queried advertising evidence'] } });
+      expect(result.statusCode).toBe(200);
+      expect(result.body).toBe(complete);
+      expect(result.headers['x-model-request-attempts']).toBe('2');
+      expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body);
+    } finally { await app.close(); }
+  });
+
   it('returns search failures as tool results to prevent HTTP retry loops', async () => {
     const secret = 'w'.repeat(32);
     vi.stubGlobal('fetch', vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); }));

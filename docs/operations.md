@@ -137,7 +137,7 @@ Gateway 镜像内置 `vendor/amazon-skill` Python 包，通过宿主动态命名
 
 ### Gemini 原生联网
 
-当前 Sub2API 账号使用 Antigravity OAuth 路由。该路由不能在同一上游请求中混用 Google Search 内建工具与自定义函数工具。因此网关将 `internet.search` 作为 Codex 动态工具始终提供给模型：是否调用完全由模型决定，不做关键词分流；实际查询由单独的 Gemini Responses 请求携带 `tools: [{"type":"web_search"}]` 执行，并要求返回 grounding 来源后才算成功。它是同一 Agent 任务中的模型决策工具调用，**不是**同一个 Gemini 请求里同时声明 Google Search 和钉钉函数。
+当前 Sub2API 账号使用 Antigravity OAuth 路由。Google Search 内建工具与自定义函数工具的混用支持取决于模型、协议及中转版本；2026-10-14 的实际 Responses 混用探测已返回 HTTP 200，不能将 400 概括为所有请求都不支持混用。为兼容不同路由，网关将 `internet.search` 作为 Codex 动态工具始终提供给模型：是否调用完全由模型决定，不做关键词分流；实际查询由单独的 Gemini Responses 请求携带 `tools: [{"type":"web_search"}]` 执行，并要求返回 grounding 来源后才算成功。它是同一 Agent 任务中的模型决策工具调用，**不是**同一个 Gemini 请求里同时声明 Google Search 和钉钉函数。
 
 当前 Sub2API Antigravity Responses 桥还会丢失 Codex 命名空间子工具名。启用 `MODEL_TOOL_COMPAT_PROXY=true` 后，网关对所有命名空间工具统一执行可逆名称映射（例如 `dingtalk.dws` ↔ `dingtalk__dws`），只处理协议字段，不读取消息内容或按关键词决定工具。模型中转恢复可用后运行 `docker compose exec -T gateway npm run test:codex-native-web` 做真实联网验收；检查模型确实调用了工具、Gemini 返回 grounding、最终答案包含来源。
 
@@ -218,6 +218,8 @@ npm run test:codex-thread
 `test:queue` 会验证同用户串行、同时间任务顺序以及失败耗尽重试后自动放行后续任务。`test:clamav` 会验证正常数据为 `OK`，标准 EICAR 测试载荷为 `FOUND`。
 
 ## 8. 故障恢复
+
+模型兼容网关会在转发首个有意义的 SSE 数据帧前检查空流，仅暂存心跳及 output 为空的 response.created/response.in_progress 元数据。Sub2API Antigravity 在发送心跳后可能返回 `event: error` 和 `upstream_error/empty_stream`，即使 HTTP 状态已经是 200；网关也识别 output 为空且 error.code 为 empty_stream 的标准 response.failed 终止事件，只重试同一个模型请求，保留请求中的历史工具结果，不重跑整个业务任务。空流、HTTP 错误和请求超时共用 `MODEL_REQUEST_MAX_ATTEMPTS` 与 `MODEL_REQUEST_RETRY_BUDGET_MS`；等待首个有效数据帧也受 `MODEL_REQUEST_ATTEMPT_TIMEOUT_MS` 限制。日志中的 `model request retry scheduled` 会标注 `reason: empty_stream`。任何文本、工具、非空 output 或未知数据帧转发后禁止自动重放，未知错误帧也不按空流重试。该恢复不能证明上游空流的根因已经修复；完整验收仍需群聊真实任务与 PDF 交付通过。
 
 任务闭环上线时可先设置 `TASK_WORKFLOW_MODE=shadow`，观察审计事件 `workflow.plan`、`workflow.shadow_plan_failed`、`workflow.shadow_comparison`、`capability.observed` 与原任务结果的差异。`shadow` 不要求提交完成契约，也不会将澄清请求发给用户；完成验收后设为 `enforce`，宿主才会要求证据审查通过后结束任务。`off` 用于隔离闭环故障。上线时先部署 CrossBorderOps 的 `daily.performance_changes` 服务端聚合，再启用 Agent 的 `enforce`，避免能力目录先于数据接口生效。
 
