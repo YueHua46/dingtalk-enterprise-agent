@@ -28,13 +28,13 @@ try {
   const file={file:'facts.json',evidenceId:'facts',capabilityId:'analysis.table',arguments:'{}',kind:'calculation',
     sha256:createHash('sha256').update(JSON.stringify(result)).digest('hex'),...describeEvidence(JSON.stringify(result))};
   const workflow=new TaskWorkflow({evidence:[],revision:0,evidenceFiles:[file]});
-  const codex={usesWorker:()=>true,runPython:(_task,code)=>api('/python','POST',{code}),renderReport:(_task,payload)=>api('/report-render','POST',payload)};
+  const codex={usesWorker:()=>true,writeEvidence:(_task,name,content)=>api('/evidence/'+name,'PUT',JSON.parse(content)),runPython:(_task,code)=>api('/python','POST',{code}),renderReport:(_task,payload)=>api('/report-render','POST',payload)};
   const config=loadConfig({...process.env,NODE_ENV:'test',FILE_WORKER_MODE:'off'});
   const host=new TaskOrchestrator(config,new InMemoryRepository(),codex,{},{});
   const task={id,request:{text:'synthetic test',requestId:id,user:{corpId:'synthetic',userId:'synthetic'},surface:{type:'group',id:'synthetic'}}};
   const response=await host.handleCodexRequest(task,'synthetic',{method:'item/tool/call',params:{namespace:'artifact',tool:'render_report',arguments:{
-    template:'amazon-advertising',evidence_tables:[{title:'Saved facts',evidenceId:'facts',columns:[{field:'object',label:'Object'},{field:'spend',label:'Spend'},{field:'cpc',label:'CPC'}]}],
-    report:{report_title:'Binding test',marketplace:'DE',analysis_period:'synthetic',store_name:'synthetic',executive_summary:'Synthetic data only',data_quality:{source:'synthetic'}}
+    template:'amazon-advertising',fact_bindings:[{id:'saved_spend',evidenceId:'facts',where:{object:'A'},field:'spend',decimals:2}],evidence_tables:[{title:'Saved facts',evidenceId:'facts',columns:[{field:'object',label:'Object'},{field:'spend',label:'Spend'},{field:'cpc',label:'CPC'}]}],
+    report:{report_title:'Binding test',marketplace:'DE',analysis_period:'synthetic',store_name:'synthetic',executive_summary:'Synthetic spend {{fact:saved_spend}}',data_quality:{source:'synthetic'}}
   }}},workflow,new Map());
   assert.equal(response.success,true,JSON.stringify(response));
   const path=JSON.parse(response.contentItems[0].text).path;
