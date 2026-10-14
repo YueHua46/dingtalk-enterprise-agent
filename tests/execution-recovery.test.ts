@@ -5,6 +5,11 @@ import {loadConfig} from './test-config.js';
 import {executionLane, takeExecutionBudget} from '../src/execution-budget.js';
 import {describeEvidence} from '../src/evidence-manifest.js';
 import {TaskWorkflow} from '../src/task-workflow.js';
+import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 
 const config = loadConfig({DINGTALK_ROBOT_CODE:'robot', TASK_WORKFLOW_MODE:'enforce'});
 const call = (namespace:string, tool:string, args:any) => ({method:'item/tool/call',params:{namespace,tool,arguments:args}});
@@ -22,6 +27,38 @@ function setup(turn:any, overrides: Record<string,string> = {}) {
   return {files,repo,codex,orchestrator,query};
 }
 describe('execution reserves and recovery',()=>{
+  it('compiles a large fact report through the actual bounded interpreter transport',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const dir=await mkdtemp(join(tmpdir(),'report-transport-'));
+    try {
+      await mkdir(join(dir,'evidence'));
+      const raw=JSON.stringify({data:{rows:[{scope:'overall',amount:1.005}]}});
+      await writeFile(join(dir,'evidence','metrics.json'),raw);
+      const source={file:'metrics.json',evidenceId:'metrics',capabilityId:'analysis.table',arguments:'{}',kind:'calculation' as const,
+        sha256:createHash('sha256').update(raw).digest('hex'),query:{description:'来源元数据'.repeat(300)},...describeEvidence(raw)};
+      const workflow=new TaskWorkflow({revision:0,evidence:[],evidenceFiles:[source]});
+      Object.assign(h.codex,{
+        writeEvidence:vi.fn(async(_id:string,name:string,content:string)=>{
+          h.files.set(name,content);await writeFile(join(dir,'evidence',name),content);return `evidence/${name}`;
+        }),
+        runPython:vi.fn(async(_id:string,code:string)=>{
+          expect(code.length).toBeLessThanOrEqual(20000);
+          expect(Buffer.byteLength(JSON.stringify({code}))).toBeLessThanOrEqual(64*1024);
+          return {exitCode:0,timedOut:false,stderr:'',stdout:execFileSync('python',['-'],{cwd:dir,input:code,encoding:'utf8',maxBuffer:4*1024*1024})};
+        }),
+        inspectOutput:async()=>({name:'report.pdf',size:20,sha256:'a'.repeat(64),reviewText:'body'})});
+      const bindings=Array.from({length:100},(_,i)=>({id:`amount_${i}`,evidenceId:'metrics',where:{scope:'overall'},field:'amount',decimals:2}));
+      const rendered=await (h.orchestrator as any).handleCodexRequest({id:'large-fact-report',request},'thread',call('artifact','render_report',{
+        ...report,fact_bindings:bindings,report:{...report.report,executive_summary:bindings.map(b=>`{{fact:${b.id}}}`).join('，')}
+      }),workflow,new Map());
+      expect(rendered.success).toBe(true);
+      expect(h.codex.renderReport.mock.calls[0]![1].report.executive_summary).toBe(Array(100).fill('1.01').join('，'));
+      expect([...h.files.keys()]).toEqual([expect.stringMatching(/^report-facts-[a-f0-9]{64}\.json$/)]);
+      const facts=workflow.state.artifactFacts!['a'.repeat(64)]!.facts;
+      expect(facts).toHaveLength(100);
+      expect(facts.every(f=>JSON.stringify(f.query)===JSON.stringify(source.query))).toBe(true);
+    } finally {await h.orchestrator.stop();await rm(dir,{recursive:true,force:true});}
+  });
   it('rejects unbound numeric reports before resolution or rendering',async()=>{
     const h=setup(async()=>({text:'done',threadId:'thread'}));
     const resolve=vi.fn();
@@ -41,8 +78,16 @@ describe('execution reserves and recovery',()=>{
       expect(transcribed.contentItems[0].text).toContain('REPORT_LITERAL_FACT_REQUIRES_BINDING:report.executive_summary');
       expect(resolve).not.toHaveBeenCalled();
       expect(h.codex.renderReport).not.toHaveBeenCalled();
-      expect(workflow.state.reportDraft).toBeUndefined();
+      expect(workflow.state.reportDraft?.payload.report.executive_summary).toContain('点击5');
+      expect(transcribed.contentItems[0].text).toContain('draft_id=' + workflow.state.reportDraft!.id);
+      expect((await h.repo.getWorkflow('unbound-report'))?.reportDraft).toEqual(workflow.state.reportDraft);
       expect(workflow.state.artifactFacts).toBeUndefined();
+      Object.assign(h.codex,{inspectOutput:async()=>({name:'manual.pdf',size:20,sha256:'c'.repeat(64),reviewText:'手工报告'})});
+      const manual=await (h.orchestrator as any).handleCodexRequest({id:'unbound-report',request},'thread',
+        call('artifact','submit',{path:'manual.pdf',final_answer:'广告报告已发送，请查看附件。'}),workflow,new Map());
+      expect(manual.success).toBe(false);
+      expect(manual.contentItems[0].text).toContain('REPORT_COMPILED_ARTIFACT_REQUIRED');
+      expect((h.orchestrator as any).evidenceReviewer.review).not.toHaveBeenCalled();
     } finally {await h.orchestrator.stop();}
   });
   it('revises only the selected paragraph while preserving bindings, tables and the previous draft',async()=>{
@@ -136,7 +181,7 @@ describe('execution reserves and recovery',()=>{
       expect((await invoke('submit',{path:'report.pdf',final_answer:'广告报告已发送，请查看附件。'})).success).toBe(true);
       const reviewInput=(h.orchestrator as any).evidenceReviewer.review.mock.calls[0][0];
       expect(reviewInput.verifiedEvidenceTables).toEqual([expect.objectContaining({evidenceId:'metrics',sourceSha256:sourceHash,
-        rowsPath:'data.rows',selectedRows:1,sourceRows:1,selection:{offset:0,limit:1},
+        rowsPath:'data.rows',selectedRows:1,sourceRows:1,selectedRowValues:appendix.rows,selection:{offset:0,limit:1},
         valuesSha256:expect.stringMatching(/^[a-f0-9]{64}$/),verification:'host_read_exact_saved_rows_without_transcription'})]);
       expect(reviewInput.verifiedFacts).toEqual({artifactSha256:artifactHash,facts});
       const completion=JSON.parse(reviewInput.completion.answer);
@@ -176,7 +221,7 @@ describe('execution reserves and recovery',()=>{
     currentHash='c'.repeat(64);
     const changed=await invoke('submit',{path:'report.pdf',final_answer:'整体CTR {{fact:ctr}}，详见报告。'});
     expect(changed.success).toBe(false);
-    expect(changed.contentItems[0].text).toContain('FACT_REFERENCE_UNKNOWN');
+    expect(changed.contentItems[0].text).toContain('REPORT_COMPILED_ARTIFACT_REQUIRED');
     expect(deliver).toHaveBeenCalledOnce();
     await h.orchestrator.stop();
   });

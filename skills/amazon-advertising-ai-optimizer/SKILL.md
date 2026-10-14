@@ -28,7 +28,7 @@ description: 统一分析日本、德国和美国站 Amazon 广告数据，按�
 6. **分层诊断。** 先看账户/产品整体，再按 Campaign、Ad Group、Target、Search Term、Placement 和预算分层。样本不足时只给积累数据建议，不给调价动作。
 7. **生成建议。** 用单一 `action_plan` 记录对象、问题、证据、建议、成立条件、观察周期、验收、止损、回退和确认要求，宿主生成执行与复盘表；不在多个章节重复写行动规则。遵循 [输出模板](references/output-template.md) 的分析内容和 [风险与执行](references/risk-and-execution.md)，工具字段以 PDF 模板为准。
 8. **结束复盘。** 根据动作类型设置 7、14、30 天或德国站的 72 小时冷却后复查，并记录与上次调整的间隔。
-9. **生成最终报告。** 当用户要求完整分析、报告、导出、下载或“给运营查看”时，必须读取 [PDF 报告模板](references/report-template.md)。存在数值证据时必须提供 `fact_bindings`：正文观测数字、含数字的原始名称及 ID 均用 `{{fact:id}}` 引用，`sections` 表格同样禁止手抄；附表用 `evidence_tables`。建议只写 `action_plan`，不同时填写 `budget_bid`、`execution_plan`、`review_plan`、`risks`。调用 `artifact.render_report` 生成排版好的 PDF（模板 `amazon-advertising`）；反馈要求修正时用 `artifact.revise_report` 的 `draft_id` 与 `changes` 局部替换，勿重写全文。调用 `artifact.submit` 提交 PDF，`final_answer` 仅为文件交付说明，事实结论保留在 PDF；成功后原样使用宿主返回的已审核答复。用户后续追问默认直接在聊天中回答；只有明确要求重新导出或重新发送时才再次投递。
+9. **生成最终报告。** 当用户要求完整分析、报告、导出、下载或“给运营查看”时，必须读取 [PDF 报告模板](references/report-template.md)。存在数值证据时必须提供 `fact_bindings`：正文观测数字、含数字的原始名称及 ID 均用 `{{fact:id}}` 引用，`sections` 表格同样禁止手抄；附表用 `evidence_tables`。建议只写 `action_plan`，不同时填写 `budget_bid`、`execution_plan`、`review_plan`、`risks`。调用 `artifact.render_report` 生成排版好的 PDF（模板 `amazon-advertising`）；首次渲染成功后，审核反馈必须用返回的 `draft_id` 调用 `artifact.revise_report`，每次只提交不超过必要的 JSON pointer 局部变化，不能再次用 `render_report` 重写整份报告。调用 `artifact.submit` 提交 PDF，`final_answer` 仅为文件交付说明，事实结论保留在 PDF；成功后原样使用宿主返回的已审核答复。用户后续追问默认直接在聊天中回答；只有明确要求重新导出或重新发送时才再次投递。
 
 ## 站点路由
 

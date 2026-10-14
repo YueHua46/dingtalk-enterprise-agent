@@ -36,6 +36,28 @@ function input(overrides: Partial<ReviewInput> = {}): ReviewInput {
 }
 
 describe('EvidenceReviewer', () => {
+  it('does not start a review after the task deadline',async()=>{
+    const http=vi.fn();
+    const result=await new EvidenceReviewer(config,http as typeof fetch).review(input({deadlineAt:Date.now()-1}));
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('review_task_deadline_exceeded');
+    expect(http).not.toHaveBeenCalled();
+  });
+  it('cancels a stalled review at the shared task deadline without a fresh retry budget',async()=>{
+    vi.useFakeTimers();
+    try {
+      const http=vi.fn(async(_url:string,init:RequestInit)=>new Promise<Response>((_resolve,reject)=>{
+        init.signal?.addEventListener('abort',()=>reject(init.signal?.reason),{once:true});
+      }));
+      const pending=new EvidenceReviewer(config,http as typeof fetch).review(input({deadlineAt:Date.now()+1000}));
+      await vi.advanceTimersByTimeAsync(1100);
+      const result=await pending;
+      expect(result.status).toBe('unavailable');
+      expect(http).toHaveBeenCalledOnce();
+      expect(result.diagnostics?.attempts).toBe(1);
+      expect(result.diagnostics?.retries).toHaveLength(0);
+    } finally {vi.useRealTimers();}
+  });
   it('excludes generated report revisions from every source channel without crowding out observations or submit receipts', async () => {
     const sample = input();
     const workflow = new TaskWorkflow();

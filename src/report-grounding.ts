@@ -18,11 +18,27 @@ export function assertReportGrounding(payload: ReportRender, sources: EvidenceFi
     && source.tables?.some(table => table.rows > 0 && Object.values(table.fields).some(types => types.includes('number'))));
   // A no-data report or text-only evidence has no numeric binding contract.
   if (!numericSource) return;
-  if (!payload.fact_bindings?.length) throw new Error('REPORT_FACT_BINDINGS_REQUIRED');
+  const errors: {code: string; path: string; snippet: string}[] = [];
+  let total = 0;
+  let firstError = '';
+  const addError = (code: string, parts: string[], value: unknown, message = code): void => {
+    total++;
+    if (!firstError) firstError = message;
+    if (errors.length < 40) {
+      const original = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+      const offset = code === 'REPORT_LITERAL_FACT_REQUIRES_BINDING' ? Math.max(0, original.search(/\p{Number}/u) - 40) : 0;
+      errors.push({code, path: '/' + parts.map(part => part.replace(/~/g, '~0').replace(/\//g, '~1')).join('/'),
+        snippet: Array.from(original.slice(offset)).slice(0, 160).join('')});
+    }
+  };
+  if (!payload.fact_bindings?.length) addError('REPORT_FACT_BINDINGS_REQUIRED', ['fact_bindings'], payload.fact_bindings);
   const records = payload.report as Record<string, unknown>;
-  if (['budget_bid','execution_plan','review_plan','risks'].some(key => Array.isArray(records[key]) && (records[key] as unknown[]).length))
-    throw new Error('REPORT_ACTION_PLAN_REQUIRED: 建议、复盘、风险使用单一 action_plan，宿主生成重复表格；不要手写多套规则');
-  const ids = new Set(payload.fact_bindings.map(binding => binding.id));
+  for (const key of ['budget_bid','execution_plan','review_plan','risks']) {
+    if (Array.isArray(records[key]) && (records[key] as unknown[]).length)
+      addError('REPORT_ACTION_PLAN_REQUIRED', ['report', key], records[key],
+        'REPORT_ACTION_PLAN_REQUIRED: 建议、复盘、风险使用单一 action_plan，宿主生成重复表格；不要手写多套规则');
+  }
+  const ids = new Set(payload.fact_bindings?.map(binding => binding.id) ?? []);
   let used = false;
   const walk = (node: unknown, path: string, parts: string[]): void => {
     if (parts.length === 1 && metadata.has(parts[0]!)) return;
@@ -32,14 +48,17 @@ export function assertReportGrounding(payload: ReportRender, sources: EvidenceFi
       || (legacyTables.has(parts[0]!) && advice.has(parts[2]!)))) return;
     if (typeof node === 'string') {
       const literal = node.replace(/\{\{fact:([A-Za-z][A-Za-z0-9_-]{0,63})\}\}/g, (_, id: string) => {
-        if (!ids.has(id)) throw new Error(`FACT_REFERENCE_UNKNOWN: ${id}`);
-        used = true;
+        if (!ids.has(id)) addError('FACT_REFERENCE_UNKNOWN', ['report', ...parts], `{{fact:${id}}}`, `FACT_REFERENCE_UNKNOWN: ${id}`);
+        else used = true;
         return '';
       });
-      if (literal.includes('{{fact:')) throw new Error('FACT_REFERENCE_INVALID');
-      if (hasNumber(literal)) throw new Error(`REPORT_LITERAL_FACT_REQUIRES_BINDING:${path}`);
+      for (const invalid of literal.matchAll(/\{\{fact:[\s\S]*?(?:\}\}|$)/g))
+        addError('FACT_REFERENCE_INVALID', ['report', ...parts], invalid[0]);
+      if (hasNumber(literal)) addError('REPORT_LITERAL_FACT_REQUIRES_BINDING', ['report', ...parts], node,
+        `REPORT_LITERAL_FACT_REQUIRES_BINDING:${path}`);
     } else if (typeof node === 'number') {
-      throw new Error(`REPORT_LITERAL_FACT_REQUIRES_BINDING:${path}`);
+      addError('REPORT_LITERAL_FACT_REQUIRES_BINDING', ['report', ...parts], node,
+        `REPORT_LITERAL_FACT_REQUIRES_BINDING:${path}`);
     } else if (Array.isArray(node)) {
       node.forEach((value, index) => walk(value, `${path}.${index}`, [...parts, String(index)]));
     } else if (node && typeof node === 'object') {
@@ -47,5 +66,7 @@ export function assertReportGrounding(payload: ReportRender, sources: EvidenceFi
     }
   };
   walk(payload.report, 'report', []);
-  if (!payload.evidence_tables?.length && !used) throw new Error('REPORT_FACT_REFERENCE_REQUIRED');
+  if (!payload.evidence_tables?.length && !used) addError('REPORT_FACT_REFERENCE_REQUIRED', ['report'], '');
+  if (total) throw new Error(`${firstError}\n${JSON.stringify({errors, total,
+    next: '使用 artifact.revise_report，带 draft_id 与 changes=[{path,value}]，按上述 JSON pointer 局部修正全部错误；不要重发整份报告。'})}`);
 }

@@ -58,6 +58,8 @@ export interface ReviewInput {
   round: number;
   maxRounds: number;
   profile?: ReviewProfile;
+  /** Host deadline, shared with the running task rather than a new retry budget. */
+  deadlineAt?: number;
 }
 
 export type ReviewProfile = 'simple_product' | 'knowledge_general' | 'analysis';
@@ -107,8 +109,9 @@ export class EvidenceReviewer {
     catch (error) { return {status: 'unavailable', issues: [], reason: error instanceof Error ? error.message : 'review_evidence_budget_exceeded'}; }
     let lastError = 'review_failed';
     const budget = this.config.MODEL_REQUEST_RETRY_BUDGET_MS ?? 1_200_000;
-    const retryState={attempts:0,deadlineAt:Date.now()+budget};
+    const retryState={attempts:0,deadlineAt:Math.min(Date.now()+budget,input.deadlineAt ?? Infinity)};
     const diagnostics: ReviewDiagnostics = {model: this.config.MODEL_REVIEW_NAME ?? this.config.MODEL_NAME, requestChars: 0, attempts: 0, requests: [], retries: []};
+    if (Date.now() >= retryState.deadlineAt) return {status:'unavailable',issues:[],reason:'review_task_deadline_exceeded',diagnostics};
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const issues = await this.ask(payload,retryState,diagnostics);

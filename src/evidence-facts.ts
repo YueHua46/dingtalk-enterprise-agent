@@ -44,13 +44,36 @@ export function prepareFactBindings(bindings: FactBinding[], sources: EvidenceFi
 
 /** Fixed interpreter, not generated arithmetic. Selection must identify exactly one row.
  * Aggregation belongs in analysis.table, whose operation and input hash are persisted. */
-export function factResolutionCode(bindings: ReturnType<typeof prepareFactBindings>) {
-  const encoded = Buffer.from(JSON.stringify(bindings)).toString('base64');
+export function factResolutionConfig(bindings: ReturnType<typeof prepareFactBindings>) {
+  // Query/context can be much larger than a selector. Encode each distinct
+  // source once while keeping its complete provenance for every resolved fact.
+  const sources: Array<(typeof bindings)[number]['source']> = [];
+  const sourceIndexes = new Map<string, number>();
+  const compactBindings = bindings.map(({source, ...binding}) => {
+    const key = JSON.stringify(source);
+    let index = sourceIndexes.get(key);
+    if (index === undefined) {
+      index = sources.length;
+      sourceIndexes.set(key, index);
+      sources.push(source);
+    }
+    return {...binding, source: index};
+  });
+  return JSON.stringify({sources, bindings: compactBindings});
+}
+
+export function factResolutionCode(bindings: ReturnType<typeof prepareFactBindings>, configFile?: {file: string; sha256: string}) {
+  const encoded = Buffer.from(configFile ? JSON.stringify(configFile) : factResolutionConfig(bindings)).toString('base64');
+  const loadConfig = configFile ? `config_ref=json.loads(base64.b64decode('${encoded}'))
+config_raw=(pathlib.Path('evidence')/config_ref['file']).read_bytes()
+if hashlib.sha256(config_raw).hexdigest()!=config_ref['sha256']: raise ValueError('FACT_CONFIG_HASH_MISMATCH')
+cfg=json.loads(config_raw)` : `cfg=json.loads(base64.b64decode('${encoded}'))`;
   return `import json,base64,pathlib,hashlib
 from decimal import Decimal,ROUND_HALF_UP
-cfg=json.loads(base64.b64decode('${encoded}'))
+${loadConfig}
 facts=[]
-for b in cfg:
+for b in cfg['bindings']:
+ b={**b,'source':cfg['sources'][b['source']]}
  raw=(pathlib.Path('evidence')/b['source']['file']).read_bytes()
  if hashlib.sha256(raw).hexdigest()!=b['source']['sha256']: raise ValueError('EVIDENCE_HASH_MISMATCH')
  doc=json.loads(raw); rows=doc

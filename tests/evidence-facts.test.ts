@@ -4,11 +4,50 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {factBindingSchema,prepareFactBindings,factResolutionCode,interpolateFacts} from '../src/evidence-facts.js';
+import {factBindingSchema,prepareFactBindings,factResolutionConfig,factResolutionCode,interpolateFacts} from '../src/evidence-facts.js';
 import {describeEvidence} from '../src/evidence-manifest.js';
 import {reportRenderTool} from '../src/report-render.js';
 
 describe('host-resolved report facts',()=>{
+  it('deduplicates large repeated sources without losing per-fact provenance',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'agent-fact-transport-'));
+    try {
+      await mkdir(join(dir,'evidence'));
+      const raw=JSON.stringify({evidence:{source_evidence_id:'original'},data:{rows:[{scope:'all',amount:1.005}]}});
+      await writeFile(join(dir,'evidence/facts.json'),raw);
+      const base={file:'facts.json',evidenceId:'metrics',capabilityId:'analysis.table',kind:'calculation' as const,
+        arguments:'{}',sha256:createHash('sha256').update(raw).digest('hex'),...describeEvidence(raw)};
+      const query={description:'完整来源元数据'.repeat(200),group_by:['scope']};
+      const context={marketplace:'US',nested:{filters:[null,true,'all']}};
+      const sources=[{...base,query,context},{...base,evidenceId:'alternative',query,context:{...context,marketplace:'JP'}}];
+      const bindings=prepareFactBindings(Array.from({length:100},(_,i)=>factBindingSchema.parse({
+        id:'amount_'+i,evidenceId:i===99?'alternative':'metrics',where:{scope:'all'},field:'amount',decimals:2
+      })),sources);
+      const code=factResolutionCode(bindings);
+      const encoded=code.match(/base64\.b64decode\('([^']+)'\)/)![1];
+      const cfg=JSON.parse(Buffer.from(encoded,'base64').toString());
+      expect(cfg.sources).toHaveLength(2);
+      expect(cfg.bindings.map((b:any)=>({...b,source:cfg.sources[b.source]}))).toEqual(bindings);
+      expect(Buffer.byteLength(JSON.stringify({code}))).toBeLessThan(64*1024);
+      expect(Buffer.byteLength(JSON.stringify(bindings))).toBeGreaterThan(64*1024);
+      const config=factResolutionConfig(bindings);
+      await writeFile(join(dir,'evidence/fact-config.json'),config);
+      const driver=factResolutionCode(bindings,{file:'fact-config.json',sha256:createHash('sha256').update(config).digest('hex')});
+      expect(driver.length).toBeLessThan(20000);
+      const run=(script:string)=>JSON.parse(execFileSync('python',['-'],{cwd:dir,input:script,encoding:'utf8',maxBuffer:4*1024*1024,stdio:['pipe','pipe','pipe']}));
+      const facts=run(driver);
+      expect(run(code)).toEqual(facts);
+      expect(facts).toHaveLength(100);
+      facts.forEach((fact:any,i:number)=>expect(fact).toEqual({
+        id:'amount_'+i,evidenceId:bindings[i].evidenceId,sourceSha256:base.sha256,
+        rowsPath:'data.rows',rowIndex:0,selector:{scope:'all'},field:'amount',value:1.005,display:'1.01',
+        query,context:sources[i===99?1:0].context,rowDimensions:{scope:'all',amount:1.005},
+        lineage:{source_evidence_id:'original'}
+      }));
+      await writeFile(join(dir,'evidence/fact-config.json'),config+' ');
+      expect(()=>run(driver)).toThrow('FACT_CONFIG_HASH_MISMATCH');
+    } finally {await rm(dir,{recursive:true,force:true});}
+  });
   it('exports a nullable suffix without empty enum entries and preserves existing no-suffix inputs',()=>{
     const properties=(reportRenderTool.inputSchema as any).properties.fact_bindings.items.properties;
     expect(properties.suffix).toMatchObject({anyOf:[{type:'string',pattern:'^%?$'},{type:'null'}]});

@@ -10,6 +10,53 @@ const payload = (): ReportRender => ({template: 'amazon-advertising', fact_bindi
     executive_summary: '花费 {{fact:spend}}', data_quality: {}}});
 
 describe('report grounding compilation', () => {
+  const feedback = (input: ReportRender): {errors: {code: string; path: string; snippet: string}[]; total: number; next: string} => {
+    try { assertReportGrounding(input, [source]); } catch (error) {
+      return JSON.parse((error as Error).message.split('\n').slice(1).join('\n'));
+    }
+    throw new Error('Expected grounding failure');
+  };
+  it('collects numeric facts and reference failures in one pass with revision pointers', () => {
+    const input = payload();
+    input.report.executive_summary = '花费100，{{fact:missing}}，{{fact:bad!}}';
+    Object.assign(input.report, {sections: [{paragraphs: ['订单20', '销售30']}], 'a/b~c': 42});
+    const result = feedback(input);
+    expect(result.errors.map(error => [error.code, error.path])).toEqual([
+      ['FACT_REFERENCE_UNKNOWN', '/report/executive_summary'],
+      ['FACT_REFERENCE_INVALID', '/report/executive_summary'],
+      ['REPORT_LITERAL_FACT_REQUIRES_BINDING', '/report/executive_summary'],
+      ['REPORT_LITERAL_FACT_REQUIRES_BINDING', '/report/sections/0/paragraphs/0'],
+      ['REPORT_LITERAL_FACT_REQUIRES_BINDING', '/report/sections/0/paragraphs/1'],
+      ['REPORT_LITERAL_FACT_REQUIRES_BINDING', '/report/a~1b~0c'],
+      ['REPORT_FACT_REFERENCE_REQUIRED', '/report'],
+    ]);
+    expect(result.total).toBe(7);
+    expect(result.errors[0]!.snippet).toBe('{{fact:missing}}');
+    expect(result.next).toContain('artifact.revise_report');
+    expect(result.next).toContain('changes=[{path,value}]');
+  });
+  it('caps diagnostics at forty while counting all errors and retaining the original first message', () => {
+    const input = payload(); input.report.executive_summary = '{{fact:spend}}';
+    input.report.sections = [{paragraphs: Array.from({length: 55}, (_, index) => `金额${index}`)}];
+    expect(() => assertReportGrounding(input, [source])).toThrow('REPORT_LITERAL_FACT_REQUIRES_BINDING:report.sections.0.paragraphs.0');
+    const result = feedback(input);
+    expect(result.errors).toHaveLength(40);
+    expect(result.total).toBe(55);
+    expect(result.errors[39]!.path).toBe('/report/sections/0/paragraphs/39');
+  });
+  it('keeps snippets short and shows offending numbers at the end of long paragraphs', () => {
+    const input = payload(); input.report.executive_summary = '文字'.repeat(500) + '金额123' + '文字'.repeat(500);
+    const result = feedback(input);
+    expect(Array.from(result.errors[0]!.snippet).length).toBeLessThanOrEqual(160);
+    expect(result.errors[0]!.snippet).toContain('金额123');
+    expect(input.report.executive_summary).toHaveLength(2005);
+  });
+  it('collects multiple unknown and malformed references without accepting them as evidence', () => {
+    const input = payload(); input.report.executive_summary = '{{fact:missing}} {{fact:other}} {{fact:!}} {{fact:unfinished';
+    const result = feedback(input);
+    expect(result.errors.map(error => error.code)).toEqual(['FACT_REFERENCE_UNKNOWN', 'FACT_REFERENCE_UNKNOWN',
+      'FACT_REFERENCE_INVALID', 'FACT_REFERENCE_INVALID', 'REPORT_FACT_REFERENCE_REQUIRED']);
+  });
   it.each(['花费 12.50 USD', 'ID 9223372036854775807', '金额１２.５', '金额١٢', '指标Ⅻ', '比例²', '值𝟡', '产品B0ABC123'])('rejects literal numeric facts: %s', text => {
     const input = payload(); input.report.executive_summary = text;
     expect(() => assertReportGrounding(input, [source])).toThrow('REPORT_LITERAL_FACT_REQUIRES_BINDING:report.executive_summary');

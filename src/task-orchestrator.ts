@@ -6,7 +6,7 @@ import { reportRenderSchema } from './report-render.js';
 import { applyReportRevision, reportRevisionSchema } from './report-revision.js';
 import { assertReportGrounding } from './report-grounding.js';
 import { materializeReportActions } from './report-actions.js';
-import { prepareFactBindings, factResolutionCode, interpolateFacts, type ResolvedFact } from './evidence-facts.js';
+import { prepareFactBindings, factResolutionConfig, factResolutionCode, interpolateFacts, type ResolvedFact } from './evidence-facts.js';
 import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
 import { DwsTool } from './dws-tool.js';
@@ -1554,18 +1554,32 @@ export class TaskOrchestrator {
       }
     }
     if (request.params.namespace === 'artifact' && request.params.tool === 'render_report') {
+      let draftId: string | undefined;
       try {
         delete workflow.state.reviewedDeliveryAnswer;
         if (!this.codex.renderReport) throw new Error('FILE_WORKER_NOT_ENABLED');
         const payload = reportRenderSchema.parse(request.params.arguments);
-        assertReportGrounding(payload, workflow.state.evidenceFiles ?? []);
         const unresolvedDraft = structuredClone(payload);
-        const draftId = sha256(unresolvedDraft);
+        draftId = sha256(unresolvedDraft);
+        // Keep even a rejected draft so validation errors can be fixed locally.
+        workflow.state.reportDraft = {id:draftId,payload:unresolvedDraft};
+        await this.repo.saveWorkflow(task.id, workflow.state);
+        assertReportGrounding(payload, workflow.state.evidenceFiles ?? []);
         let facts: ResolvedFact[] = [];
         if (payload.fact_bindings?.length) {
           if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE');
           const bindings = prepareFactBindings(payload.fact_bindings, workflow.state.evidenceFiles ?? []);
-          const resolved = await this.codex.runPython(task.id, factResolutionCode(bindings));
+          // The Python endpoint accepts at most 20k characters of code. Keep
+          // complete source provenance in a hash-checked data file instead of
+          // embedding it once per fact inside the interpreter request.
+          let configRef: {file: string; sha256: string} | undefined;
+          if (this.codex.writeEvidence) {
+            const config = factResolutionConfig(bindings);
+            const digest = createHash('sha256').update(config).digest('hex');
+            configRef = {file:`report-facts-${digest}.json`, sha256:digest};
+            await this.codex.writeEvidence(task.id, configRef.file, config);
+          }
+          const resolved = await this.codex.runPython(task.id, factResolutionCode(bindings, configRef));
           if (resolved.exitCode !== 0 || resolved.timedOut) throw new Error('FACT_RESOLUTION_FAILED: ' + resolved.stderr);
           facts = JSON.parse(resolved.stdout);
         }
@@ -1614,6 +1628,11 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             return {title:binding.title, evidenceId:binding.evidenceId, sourceSha256:binding.sha256,
               rowsPath:binding.rows_path, columns:binding.columns, selectedRows:sections[index].rows.length,
               sourceRows:source.tables!.find(t => t.path === binding.rows_path)!.rows,
+              // Give the reviewer the exact bounded rows that were inserted into
+              // the PDF.  A hash proves identity, but without these cells the
+              // reviewer cannot check names, IDs, ordering, or row metrics and
+              // will repeatedly ask for evidence already read by the host.
+              selectedRowValues:sections[index].rows,
               selection:{offset:0,limit:binding.limit}, query:source.query, context:source.context,
               valuesSha256:sha256(sections[index].rows), verification:'host_read_exact_saved_rows_without_transcription'};
           });
@@ -1636,11 +1655,14 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           fact_manifest:facts.map(({id,evidenceId,field,display}) => ({id,evidenceId,field,display})),
           next: '调用 artifact.submit 提交生成的 PDF；final_answer 仅写文件交付说明，详细数字与建议留在文件中。需修正时调用 artifact.revise_report，带 draft_id 和变化字段的 JSON pointer，不重写整份报告。'})}], success: true};
       } catch (error) {
-        return {contentItems: [{type: 'inputText', text: error instanceof Error ? error.message : String(error)}], success: false};
+        const reason = error instanceof Error ? error.message : String(error);
+        return {contentItems: [{type: 'inputText', text: reason + (draftId
+          ? `\n草稿已保存，draft_id=${draftId}。用 artifact.revise_report 只修正上述字段和事实引用，不要重写全文；文件尚未生成或发送。` : '')}], success: false};
       }
     }
     if (request.params.namespace === 'artifact' && request.params.tool === 'submit') {
       try {
+        if (taskDeadlineAt !== undefined && Date.now() >= taskDeadlineAt) throw new Error('ARTIFACT_TASK_DEADLINE_EXCEEDED: 时间预算已结束，文件未发送');
         delete workflow.state.reviewedDeliveryAnswer;
         const path = (request.params.arguments as { path?: unknown } | undefined)?.path;
         const finalAnswerInput = request.params.arguments?.final_answer;
@@ -1650,6 +1672,9 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         const inspected = await this.codex.inspectOutput?.(task.id, path);
         if (!inspected) throw new Error('FILE_WORKER_NOT_ENABLED');
         const factManifest = workflow.state.artifactFacts?.[inspected.sha256];
+        if (workflow.state.reportDraft && !factManifest) {
+          throw new Error(`REPORT_COMPILED_ARTIFACT_REQUIRED: 广告报告必须使用宿主编译成功且文件哈希一致的 PDF；不能改用终端脚本绕过事实校验。用 artifact.revise_report 修正草稿，draft_id=${workflow.state.reportDraft.id}，然后提交宿主返回的最新路径。`);
+        }
         const finalAnswer = typeof finalAnswerInput === 'string'
           ? interpolateFacts(finalAnswerInput.trim(), factManifest?.facts ?? []) : undefined;
         const answerKey = finalAnswer ? sha256(finalAnswer) : undefined;
@@ -1674,6 +1699,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             ...(factManifest?.tables?.length ? {verifiedEvidenceTables:factManifest.tables} : {}),
             excerpts: Object.fromEntries(evidenceExcerpts),
             computeAvailable: Boolean(this.codex.runPython), round: workflow.state.executionBudget?.used.review ?? 1, maxRounds: 12,
+            ...(taskDeadlineAt !== undefined ? {deadlineAt:taskDeadlineAt} : {}),
             profile: reviewProfileFor(workflow), criterion: finalAnswer
               ? '联合核验待发布文件完整正文 artifactBody 与简短最终回复 finalAnswer：二者整体满足用户完整目标、彼此一致且受证据支持；详细指标与分析可仅在文件中提供，摘要无需重复，但摘要实际提出的结论仍须核验。最终回复将仅在文件成功发送后使用，因此文件尚未发送是预期状态。检查摘要中的每项结论；不得只审文件。'
               : '待发布文件的完整正文；文件尚未发送是预期状态，请核验内容是否满足用户要求并受证据支持。'
@@ -1687,10 +1713,12 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           if (review.status !== 'pass') throw new Error(review.status === 'revise'
             ? `ARTIFACT_REVIEW_REVISE: 文件尚未发送。${workflow.state.reportDraft ? `用 artifact.revise_report 局部修正，draft_id=${workflow.state.reportDraft.id}；字段路径与 render_report 的 report 结构一致。不要重新抄写未出错的事实或全文重写。` : '修正实际文件后再提交。'}\n${formatIssues(review.issues)}`
             : `ARTIFACT_REVIEW_UNAVAILABLE: 文件尚未发送，核验未完成：${review.reason}`);
+          if (taskDeadlineAt !== undefined && Date.now() >= taskDeadlineAt) throw new Error('ARTIFACT_TASK_DEADLINE_EXCEEDED: 时间预算已结束，文件未发送');
           const current = await this.codex.inspectOutput!(task.id, path);
           if (current.sha256 !== inspected.sha256) throw new Error('OUTPUT_CHANGED_AFTER_REVIEW');
           if (finalAnswer) jointReviewKey = evidenceKey;
         }
+        if (taskDeadlineAt !== undefined && Date.now() >= taskDeadlineAt) throw new Error('ARTIFACT_TASK_DEADLINE_EXCEEDED: 时间预算已结束，文件未发送');
         const output = await this.submitGeneratedArtifact(task, threadId, path, undefined, inspected.sha256, workflow);
         const evidence = workflow.record('artifact.submit', true, { scope: `task:${task.id}/output:${output.sha256}` });
         keepExcerpt(workflow, evidenceExcerpts, evidence.id, JSON.stringify({ delivered: true, name: output.name, size: output.size,
@@ -1854,7 +1882,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             request: task.request.text, evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles, excerpts: Object.fromEntries(evidenceExcerpts),
             completion: { status: 'partial', answer: checkpoint.reason, factEvidence: {}, missingFacts: [] },
             computeAvailable: Boolean(this.codex.runPython && this.codex.usesWorker?.(task.id)), round: 1, maxRounds: 1,
-            profile: reviewProfileFor(workflow)
+            profile: reviewProfileFor(workflow), ...(taskDeadlineAt !== undefined ? {deadlineAt:taskDeadlineAt} : {})
           });
           checkpoint.verdict = review.status === 'pass' ? 'pass' : review.status === 'revise' ? 'revise' : 'unavailable';
           workflow.storeCheckpoint(checkpoint);
@@ -2406,7 +2434,8 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         ...(workflow.state.clarification?.answer ? { clarificationAnswer: workflow.state.clarification.answer } : {}),
         ...(workflow.state.contract ? { contract: workflow.state.contract } : {}),
         completion, evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles, excerpts: Object.fromEntries(evidenceExcerpts),
-        computeAvailable, round, maxRounds: maxReviewRounds, profile: reviewProfile
+        computeAvailable, round, maxRounds: maxReviewRounds, profile: reviewProfile,
+        ...(taskDeadlineAt !== undefined ? {deadlineAt:taskDeadlineAt} : {})
       });
       await audit('workflow.review', { round, status: review.status, durationMs: Date.now() - startedAt,
         diagnostics: review.diagnostics,
