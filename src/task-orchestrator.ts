@@ -3,6 +3,9 @@ import { executionLane, takeExecutionBudget, budgetFeedback, migrateArtifactBudg
 import { describeEvidence } from './evidence-manifest.js';
 import { tableAnalysisSchema, tableAnalysisCode } from './analysis-table.js';
 import { reportRenderSchema } from './report-render.js';
+import { applyReportRevision, reportRevisionSchema } from './report-revision.js';
+import { assertReportGrounding } from './report-grounding.js';
+import { materializeReportActions } from './report-actions.js';
 import { prepareFactBindings, factResolutionCode, interpolateFacts, type ResolvedFact } from './evidence-facts.js';
 import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
@@ -1004,7 +1007,7 @@ export class TaskOrchestrator {
         ].join('\\n') : '',
         skillIndex ? '已安装 Skill 索引（按需用 reference.read_guide 读取）：\n' + skillIndex : '',
         computeAvailable ? '证据与计算：完整结果保存在 evidence/。evidence/index.json 是 JSON 数组，每项含 file、evidenceId、capabilityId、query（完整查询参数对象）、sha256、kind、rootKeys、tables（path、rows、fields 类型）及 context。路径相对任务根目录，结果通常在 data.rows，以 tables 为准。服务端已有指标直接引用；常规聚合/比率/排序优先 analysis.table，复杂分析用 analysis.python。计算输出也保存为证据文件。先一次性明确所需维度和计算，复用已得结果，避免每个对象一轮试算。报告和聊天引用同一组计算结果，不重新抄算。工具额度按阶段独立，接近额度时收敛；收尾和文件交付保留独立额度。' : '精确计算：本任务没有计算沙箱，派生数值需逐项核对后再写入答复。',
-        computeAvailable ? '报告数字：观测值及计算结果必须通过 evidence_tables 直接放入附表，正文中的数字通过 fact_bindings 与 {{fact:id}} 填入，避免重新抄写。先按明确筛选条件计算各类对象数、金额和比率，再绑定单行结果。where 要包含正确对象及必要维度，整体值不能选单个对象行；百分号只附加不换算。建议阈值可自行提出但须标明建议；没有成本或跨期数据，不能把效率较好写成已盈利或稳定。ASIN与活动等关联必须来自有两者ID的真实记录，不能凭同店铺推定。' : '',
+        computeAvailable ? '报告编译约束：正文所有观测数字、对象ID和含数字名称必须用fact_bindings与{{fact:id}}，禁止手抄；附表用evidence_tables。先一次计算需要的聚合/排名/筛选，再唯一行绑定。行动仅写一次report.action_plan（字段见工具），宿主生成建议、执行、复盘、风险四表；不得再手写这四表或其他段落中的重复行动/止损规则。只提供最重要且互不重叠的建议，缺失范围、成本、实际搜索词、配置或跨期数据明确披露。已有已保存证据不重查，不把同店独立汇总拼成对象关联；百分号只附加。修报告只用revise_report提交变化字段，不重写全文；最终摘要只写报告交付说明，完整结论在PDF。' : '',
         workflow.state.clarification ? '本任务此前向发起人提出的澄清问题：' + workflow.state.clarification.question : '',
         workflow.state.clarification?.answer ? '发起人对澄清问题的回答：' + workflow.state.clarification.answer : '',
         workflow.state.contract ? '已登记的工作计划（继续原任务，不重复执行已完成的写操作）：' + JSON.stringify(workflow.state.contract) : '',
@@ -1537,11 +1540,27 @@ export class TaskOrchestrator {
       });
       return approvalResponse(request.method, false);
     }
+    if (request.params.namespace === 'artifact' && request.params.tool === 'revise_report') {
+      try {
+        const args = reportRevisionSchema.parse(request.params.arguments);
+        const draft = workflow.state.reportDraft;
+        if (!draft || draft.id !== args.draft_id) throw new Error('REPORT_DRAFT_STALE: 使用最近 render_report 返回的 draft_id');
+        const revised = applyReportRevision(draft.payload, args);
+        if (sha256(revised) === draft.id) throw new Error('REPORT_REVISION_NO_CHANGE: 内容与事实引用未变化，不能重复生成');
+        return this.handleCodexRequest(task, threadId, {...request, params: {...request.params,
+          tool: 'render_report', arguments: revised}}, workflow, evidenceExcerpts, onKnowledgeProgress, taskDeadlineAt, queryIntent);
+      } catch (error) {
+        return {contentItems: [{type: 'inputText', text: error instanceof Error ? error.message : String(error)}], success: false};
+      }
+    }
     if (request.params.namespace === 'artifact' && request.params.tool === 'render_report') {
       try {
         delete workflow.state.reviewedDeliveryAnswer;
         if (!this.codex.renderReport) throw new Error('FILE_WORKER_NOT_ENABLED');
         const payload = reportRenderSchema.parse(request.params.arguments);
+        assertReportGrounding(payload, workflow.state.evidenceFiles ?? []);
+        const unresolvedDraft = structuredClone(payload);
+        const draftId = sha256(unresolvedDraft);
         let facts: ResolvedFact[] = [];
         if (payload.fact_bindings?.length) {
           if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE');
@@ -1551,12 +1570,15 @@ export class TaskOrchestrator {
           facts = JSON.parse(resolved.stdout);
         }
         payload.report = interpolateFacts(payload.report, facts, true);
+        const reviewReport = structuredClone(payload.report);
+        payload.report = materializeReportActions(payload.report);
+        let verifiedTables: unknown[] = [];
         delete payload.fact_bindings;
         if (payload.evidence_tables?.length) {
           if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE');
           const bindings = payload.evidence_tables.map(binding => {
             const source = workflow.state.evidenceFiles?.find(f => f.evidenceId === binding.evidenceId);
-            if (!source || !source.tables?.some(t => t.path === binding.rows_path)) {
+            if (!source?.sha256 || !['observation','calculation'].includes(source.kind ?? '') || !source.tables?.some(t => t.path === binding.rows_path)) {
               const available = source?.tables?.map(t => `${t.path} [${Object.keys(t.fields).join(', ')}]`).join('; ') ?? '证据不存在';
               throw new Error(`REPORT_EVIDENCE_TABLE_INVALID: 可用表：${available}`);
             }
@@ -1586,22 +1608,33 @@ for b in bindings:
  sections.append({'title':b['title'],'paragraphs':['本表列出 '+str(len(selected))+' 条；引用结果包含 '+str(len(rows))+' 条。统计范围与数据缺口见报告数据质量说明。'],'columns':[c['label'] for c in b['columns']],'rows':values})
 print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           if (result.exitCode !== 0 || result.timedOut) throw new Error(`REPORT_EVIDENCE_READ_FAILED: ${result.stderr}`);
-          payload.report.sections = [...(payload.report.sections ?? []), ...JSON.parse(result.stdout)];
+          const sections = JSON.parse(result.stdout);
+          verifiedTables = bindings.map((binding, index) => {
+            const source = workflow.state.evidenceFiles!.find(f => f.evidenceId === binding.evidenceId)!;
+            return {title:binding.title, evidenceId:binding.evidenceId, sourceSha256:binding.sha256,
+              rowsPath:binding.rows_path, columns:binding.columns, selectedRows:sections[index].rows.length,
+              sourceRows:source.tables!.find(t => t.path === binding.rows_path)!.rows,
+              selection:{offset:0,limit:binding.limit}, query:source.query, context:source.context,
+              valuesSha256:sha256(sections[index].rows), verification:'host_read_exact_saved_rows_without_transcription'};
+          });
+          payload.report.sections = [...(payload.report.sections ?? []), ...sections];
           delete payload.evidence_tables;
         }
         const output = await this.codex.renderReport(task.id, payload);
-        if (facts.length) {
+        {
           const inspected = await this.codex.inspectOutput?.(task.id, output.path);
           if (!inspected) throw new Error('FACT_REPORT_HASH_UNAVAILABLE');
           workflow.state.artifactFacts ??= {};
-          workflow.state.artifactFacts[inspected.sha256] = {facts, report: payload.report};
+          workflow.state.artifactFacts[inspected.sha256] = {facts, report: payload.report, reviewReport, tables:verifiedTables};
+          workflow.state.reportDraft = {id:draftId,payload:unresolvedDraft};
           await this.repo.saveWorkflow(task.id, workflow.state);
           await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,
             eventType:'artifact.facts_bound',payload:{sha256:inspected.sha256,facts:facts.map(f => ({id:f.id,evidenceId:f.evidenceId,sourceSha256:f.sourceSha256,field:f.field,rowIndex:f.rowIndex}))}});
         }
         return {contentItems: [{type: 'inputText', text: JSON.stringify({...output, delivered: false,
-          ...(facts.length ? {resolved_report:payload.report,fact_manifest:facts} : {}),
-          next: '调用 artifact.submit 提交生成的 PDF，final_answer 只写简短文件说明与最多三项要点，详细数字和建议留在文件中；修改内容时再次 render_report。'})}], success: true};
+          draft_id:draftId,
+          fact_manifest:facts.map(({id,evidenceId,field,display}) => ({id,evidenceId,field,display})),
+          next: '调用 artifact.submit 提交生成的 PDF；final_answer 仅写文件交付说明，详细数字与建议留在文件中。需修正时调用 artifact.revise_report，带 draft_id 和变化字段的 JSON pointer，不重写整份报告。'})}], success: true};
       } catch (error) {
         return {contentItems: [{type: 'inputText', text: error instanceof Error ? error.message : String(error)}], success: false};
       }
@@ -1633,11 +1666,14 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             ...(task.request.quotedText ? {quotedText: task.request.quotedText} : {}),
             ...(workflow.state.clarification?.answer ? {clarificationAnswer: workflow.state.clarification.answer} : {}),
             ...(workflow.state.contract ? {contract: workflow.state.contract} : {}),
-            completion: {status: 'answered', answer: finalAnswer ? JSON.stringify({artifactBody: inspected.reviewText, finalAnswer}) : inspected.reviewText, factEvidence: {}, missingFacts: []},
+            completion: {status: 'answered', answer: factManifest?.reviewReport
+              ? JSON.stringify({artifactBody:factManifest.reviewReport,...(finalAnswer ? {finalAnswer} : {})})
+              : finalAnswer ? JSON.stringify({artifactBody: inspected.reviewText, finalAnswer}) : inspected.reviewText, factEvidence: {}, missingFacts: []},
             evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles,
             ...(factManifest ? {verifiedFacts:{artifactSha256:inspected.sha256,facts:factManifest.facts}} : {}),
+            ...(factManifest?.tables?.length ? {verifiedEvidenceTables:factManifest.tables} : {}),
             excerpts: Object.fromEntries(evidenceExcerpts),
-            computeAvailable: Boolean(this.codex.runPython), round: 1, maxRounds: MAX_REVIEW_ROUNDS,
+            computeAvailable: Boolean(this.codex.runPython), round: workflow.state.executionBudget?.used.review ?? 1, maxRounds: 12,
             profile: reviewProfileFor(workflow), criterion: finalAnswer
               ? '联合核验待发布文件完整正文 artifactBody 与简短最终回复 finalAnswer：二者整体满足用户完整目标、彼此一致且受证据支持；详细指标与分析可仅在文件中提供，摘要无需重复，但摘要实际提出的结论仍须核验。最终回复将仅在文件成功发送后使用，因此文件尚未发送是预期状态。检查摘要中的每项结论；不得只审文件。'
               : '待发布文件的完整正文；文件尚未发送是预期状态，请核验内容是否满足用户要求并受证据支持。'
@@ -1649,7 +1685,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             eventType: 'artifact.review', payload: {name: inspected.name, sha256: inspected.sha256,
               status: review.status, durationMs: Date.now()-startedAt, diagnostics: 'diagnostics' in review ? review.diagnostics : undefined, reused: Boolean(cached), issues: review.issues}});
           if (review.status !== 'pass') throw new Error(review.status === 'revise'
-            ? `ARTIFACT_REVIEW_REVISE: 文件尚未发送。修正实际文件后再提交。\n${formatIssues(review.issues)}`
+            ? `ARTIFACT_REVIEW_REVISE: 文件尚未发送。${workflow.state.reportDraft ? `用 artifact.revise_report 局部修正，draft_id=${workflow.state.reportDraft.id}；字段路径与 render_report 的 report 结构一致。不要重新抄写未出错的事实或全文重写。` : '修正实际文件后再提交。'}\n${formatIssues(review.issues)}`
             : `ARTIFACT_REVIEW_UNAVAILABLE: 文件尚未发送，核验未完成：${review.reason}`);
           const current = await this.codex.inspectOutput!(task.id, path);
           if (current.sha256 !== inspected.sha256) throw new Error('OUTPUT_CHANGED_AFTER_REVIEW');
@@ -3288,6 +3324,7 @@ function capabilityIdForTool(request: CodexApprovalRequest): string | undefined 
   if (namespace === 'agent' && tool === 'memory') return 'agent.memory';
   if (namespace === 'analysis' && ['python', 'table'].includes(tool)) return `analysis.${tool}`;
   if (namespace === 'artifact' && tool === 'render_report') return 'artifact.render_report';
+  if (namespace === 'artifact' && tool === 'revise_report') return 'artifact.revise_report';
   if (namespace === 'artifact' && tool === 'submit') return 'artifact.submit';
   return undefined;
 }

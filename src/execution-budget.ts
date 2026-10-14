@@ -21,7 +21,7 @@ export function executionLane(namespace: string, tool: string): ExecutionLane {
     || (namespace === 'reference' && tool === 'list_guides') || (namespace === 'dingtalk' && tool === 'schema')) return 'discovery';
   if (namespace === 'reference') return 'preparation';
   if (namespace === 'analysis') return 'computation';
-  if (namespace === 'artifact' && tool === 'render_report') return 'rendering';
+  if (namespace === 'artifact' && ['render_report','revise_report'].includes(tool)) return 'rendering';
   if (namespace === 'artifact' && tool === 'submit') return 'review';
   if (namespace === 'agent' && tool === 'workflow') return 'control';
   return 'collection';

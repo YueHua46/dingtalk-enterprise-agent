@@ -22,6 +22,133 @@ function setup(turn:any, overrides: Record<string,string> = {}) {
   return {files,repo,codex,orchestrator,query};
 }
 describe('execution reserves and recovery',()=>{
+  it('rejects unbound numeric reports before resolution or rendering',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const resolve=vi.fn();
+    Object.assign(h.codex,{runPython:resolve});
+    const workflow=new TaskWorkflow({revision:0,evidence:[],evidenceFiles:[{file:'metrics.json',evidenceId:'metrics',
+      capabilityId:'analysis.table',arguments:'{}',kind:'calculation',sha256:'b'.repeat(64),
+      tables:[{path:'data.rows',rows:1,fields:{scope:['string'],ctr:['number']}}]}]});
+    const invoke=(args:any)=>(h.orchestrator as any).handleCodexRequest({id:'unbound-report',request},'thread',
+      call('artifact','render_report',args),workflow,new Map());
+    try {
+      const unbound=await invoke({...report,report:{...report.report,executive_summary:'整体CTR 0.58%'}});
+      expect(unbound.success).toBe(false);
+      expect(unbound.contentItems[0].text).toContain('REPORT_FACT_BINDINGS_REQUIRED');
+      const transcribed=await invoke({...report,report:{...report.report,executive_summary:'整体CTR {{fact:ctr}}，点击5'},
+        fact_bindings:[{id:'ctr',evidenceId:'metrics',where:{scope:'overall'},field:'ctr',suffix:'%'}]});
+      expect(transcribed.success).toBe(false);
+      expect(transcribed.contentItems[0].text).toContain('REPORT_LITERAL_FACT_REQUIRES_BINDING:report.executive_summary');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(h.codex.renderReport).not.toHaveBeenCalled();
+      expect(workflow.state.reportDraft).toBeUndefined();
+      expect(workflow.state.artifactFacts).toBeUndefined();
+    } finally {await h.orchestrator.stop();}
+  });
+  it('revises only the selected paragraph while preserving bindings, tables and the previous draft',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const facts=[{id:'ctr',evidenceId:'metrics',sourceSha256:'b'.repeat(64),rowsPath:'data.rows',rowIndex:0,
+      selector:{scope:'overall'},field:'ctr',value:0.58,display:'0.58%',rowDimensions:{scope:'overall'},lineage:{}}];
+    Object.assign(h.codex,{
+      runPython:vi.fn(async()=>({exitCode:0,timedOut:false,stdout:JSON.stringify(facts),stderr:''})),
+      inspectOutput:async()=>({name:'report.pdf',size:20,sha256:String(h.codex.renderReport.mock.calls.length).repeat(64),reviewText:'body'})});
+    const workflow=new TaskWorkflow({revision:0,evidence:[],evidenceFiles:[{file:'metrics.json',evidenceId:'metrics',
+      capabilityId:'analysis.table',arguments:'{}',kind:'calculation',sha256:'b'.repeat(64),
+      tables:[{path:'data.rows',rows:1,fields:{scope:['string'],ctr:['number']}}]}]});
+    const task={id:'report-local-revision',request};
+    const invoke=(tool:string,args:any)=>(h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact',tool,args),workflow,new Map());
+    const payload={...report,report:{...report.report,executive_summary:'整体CTR {{fact:ctr}}',
+      overall_metrics:[{metric:'CTR',value:'{{fact:ctr}}'}],
+      sections:[{title:'诊断',paragraphs:['原诊断','保留结论'],columns:['指标','值'],rows:[['CTR','{{fact:ctr}}']]}]},
+      fact_bindings:[{id:'ctr',evidenceId:'metrics',where:{scope:'overall'},field:'ctr',decimals:2,suffix:'%'}]};
+    try {
+      const rendered=await invoke('render_report',payload);
+      expect(rendered.success).toBe(true);
+      const firstId=JSON.parse(rendered.contentItems[0].text).draft_id;
+      expect(firstId).toMatch(/^[a-f0-9]{64}$/);
+      const previousDraft=workflow.state.reportDraft!;
+      const originalDraft=structuredClone(previousDraft);
+      const firstRendered=structuredClone(h.codex.renderReport.mock.calls[0]![1]);
+      const firstManifest=structuredClone(workflow.state.artifactFacts!['1'.repeat(64)]);
+      const revised=await invoke('revise_report',{draft_id:firstId,changes:[{path:'/report/sections/0/paragraphs/0',value:'修订诊断'}]});
+      expect(revised.success).toBe(true);
+      const secondId=JSON.parse(revised.contentItems[0].text).draft_id;
+      expect(secondId).not.toBe(firstId);
+      const expectedDraft=structuredClone(originalDraft.payload);
+      expectedDraft.report.sections![0]!.paragraphs![0]='修订诊断';
+      expect(workflow.state.reportDraft).toEqual({id:secondId,payload:expectedDraft});
+      expect(previousDraft).toEqual(originalDraft);
+      const expectedRendered=structuredClone(firstRendered);
+      expectedRendered.report.sections[0].paragraphs[0]='修订诊断';
+      expect(h.codex.renderReport.mock.calls[1]![1]).toEqual(expectedRendered);
+      expect(workflow.state.artifactFacts!['1'.repeat(64)]).toEqual(firstManifest);
+      expect(workflow.state.artifactFacts!['2'.repeat(64)]!.facts).toEqual(facts);
+      expect((await h.repo.getWorkflow(task.id))?.reportDraft).toEqual(workflow.state.reportDraft);
+      const stale=await invoke('revise_report',{draft_id:firstId,changes:[{path:'/report/sections/0/paragraphs/0',value:'过期修改'}]});
+      expect(stale.success).toBe(false);
+      expect(stale.contentItems[0].text).toContain('REPORT_DRAFT_STALE');
+      const unchanged=await invoke('revise_report',{draft_id:secondId,changes:[{path:'/report/sections/0/paragraphs/0',value:'修订诊断'}]});
+      expect(unchanged.success).toBe(false);
+      expect(unchanged.contentItems[0].text).toContain('REPORT_REVISION_NO_CHANGE');
+      expect(h.codex.renderReport).toHaveBeenCalledTimes(2);
+      expect(workflow.state.reportDraft).toEqual({id:secondId,payload:expectedDraft});
+    } finally {await h.orchestrator.stop();}
+  });
+  it('reviews trusted appendix provenance and one canonical action without repeating rendered tables',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    const sourceHash='b'.repeat(64), artifactHash='a'.repeat(64);
+    const facts=[{id:'ctr',evidenceId:'metrics',sourceSha256:sourceHash,rowsPath:'data.rows',rowIndex:0,
+      selector:{scope:'overall'},field:'ctr',value:0.58,display:'0.58%',rowDimensions:{scope:'overall'},lineage:{}}];
+    const appendix={title:'原始指标附表',paragraphs:['完整附表说明'],columns:['范围','CTR'],rows:[['APPENDIX_ONLY_SENTINEL',0.58]]};
+    Object.assign(h.codex,{
+      runPython:vi.fn(async(_id:string,code:string)=>({exitCode:0,timedOut:false,
+        stdout:JSON.stringify(code.includes('cfg=json.loads')?facts:[appendix]),stderr:''})),
+      inspectOutput:async()=>({name:'report.pdf',size:20,sha256:artifactHash,reviewText:'APPENDIX_ONLY_SENTINEL duplicated renderer body'})});
+    const deliver=vi.spyOn(h.orchestrator as any,'submitGeneratedArtifact').mockResolvedValue({name:'report.pdf',size:20,sha256:artifactHash});
+    const source={file:'metrics.json',evidenceId:'metrics',capabilityId:'analysis.table',arguments:'{}',kind:'calculation' as const,
+      sha256:sourceHash,tables:[{path:'data.rows',rows:1,fields:{scope:['string'],ctr:['number']}}]};
+    const workflow=new TaskWorkflow({revision:0,evidence:[],evidenceFiles:[source,
+      {...source,file:'unhashed.json',evidenceId:'unhashed',sha256:undefined},
+      {...source,file:'report.json',evidenceId:'report-only',kind:'report'}]});
+    const task={id:'report-canonical-review',request};
+    const invoke=(tool:string,args:any)=>(h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact',tool,args),workflow,new Map());
+    const action={id:'ctr_test',priority:'P1',object:'整体 {{fact:ctr}}',problem:'效率需进一步观察',evidence:'CTR {{fact:ctr}}',
+      proposal:'建议测试增加10%',conditions:'实施前确认配置',observation:'7天复查',acceptance:'增量收益满足目标',
+      stop_loss:'建议花费超过80美元且无订单时触发',rollback:'恢复原配置',confirmation:'修改须确认'};
+    const payload={...report,report:{...report.report,executive_summary:'整体CTR {{fact:ctr}}',action_plan:[action],
+      sections:[{title:'诊断',paragraphs:['当前窗口需要继续观察']}]},
+      fact_bindings:[{id:'ctr',evidenceId:'metrics',where:{scope:'overall'},field:'ctr',decimals:2,suffix:'%'}],
+      evidence_tables:[{title:appendix.title,evidenceId:'metrics',columns:[{field:'scope',label:'范围'},{field:'ctr',label:'CTR'}],limit:1}]};
+    try {
+      for(const evidenceId of ['unhashed','report-only']) {
+        const rejected=await invoke('render_report',{...payload,evidence_tables:[{...payload.evidence_tables[0],evidenceId}]});
+        expect(rejected.success).toBe(false);
+        expect(rejected.contentItems[0].text).toContain('REPORT_EVIDENCE_TABLE_INVALID');
+      }
+      expect(h.codex.renderReport).not.toHaveBeenCalled();
+      expect((await invoke('render_report',payload)).success).toBe(true);
+      const rendered=h.codex.renderReport.mock.calls[0]![1] as any;
+      expect(rendered.report.sections).toEqual([...payload.report.sections,appendix]);
+      expect(rendered.report.action_plan).toBeUndefined();
+      for(const table of ['budget_bid','execution_plan','review_plan','risks']) expect(rendered.report[table]).toHaveLength(1);
+      expect(workflow.state.reportDraft!.payload.evidence_tables![0]!.evidenceId).toBe('metrics');
+      expect((await invoke('submit',{path:'report.pdf',final_answer:'广告报告已发送，请查看附件。'})).success).toBe(true);
+      const reviewInput=(h.orchestrator as any).evidenceReviewer.review.mock.calls[0][0];
+      expect(reviewInput.verifiedEvidenceTables).toEqual([expect.objectContaining({evidenceId:'metrics',sourceSha256:sourceHash,
+        rowsPath:'data.rows',selectedRows:1,sourceRows:1,selection:{offset:0,limit:1},
+        valuesSha256:expect.stringMatching(/^[a-f0-9]{64}$/),verification:'host_read_exact_saved_rows_without_transcription'})]);
+      expect(reviewInput.verifiedFacts).toEqual({artifactSha256:artifactHash,facts});
+      const completion=JSON.parse(reviewInput.completion.answer);
+      expect(completion.artifactBody.action_plan).toEqual([{...action,object:'整体 0.58%',evidence:'CTR 0.58%'}]);
+      expect(completion.artifactBody.sections).toEqual(payload.report.sections);
+      expect(reviewInput.completion.answer).not.toContain('APPENDIX_ONLY_SENTINEL');
+      expect(reviewInput.completion.answer.split(action.proposal)).toHaveLength(2);
+      expect(reviewInput.completion.answer.split(action.stop_loss)).toHaveLength(2);
+      for(const table of ['budget_bid','execution_plan','review_plan','risks']) expect(completion.artifactBody[table]).toBeUndefined();
+      expect(deliver).toHaveBeenCalledOnce();
+    } finally {await h.orchestrator.stop();}
+  });
   it('resolves report and summary from the same facts and rejects references after PDF bytes change',async()=>{
     const h=setup(async()=>({text:'done',threadId:'thread'}));
     vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
@@ -251,14 +378,20 @@ describe('execution reserves and recovery',()=>{
     await h.orchestrator.stop();
   });
   it('still invokes report rendering after collection has used its independent reserve',async()=>{
+    let evidenceId='';
     const h=setup(async(_id:string,_p:string,_e:any,onTool:any)=>{
       for(let i=0;i<41;i++) {
         const r=await onTool(call('crossborderops','query',{dataset:'ads.metrics',params:{offset:i}}));
         expect(r.success).toBe(i<40);
+        if(i===0) evidenceId=/证据 ID：([^；]+)/.exec(r.contentItems.at(-1).text)![1]!;
       }
-      expect((await onTool(call('artifact','render_report',report))).success).toBe(true);
+      expect((await onTool(call('artifact','render_report',{...report,
+        fact_bindings:[{id:'spend',evidenceId,field:'spend',where:{}}],
+        report:{...report.report,executive_summary:'花费 {{fact:spend}}'}}))).success).toBe(true);
       return {text:'已完成计算，报告待发送。',threadId:'thread'};
     });
+    Object.assign(h.codex,{runPython:async()=>({exitCode:0,timedOut:false,stdout:JSON.stringify([{id:'spend',evidenceId,field:'spend',display:'10'}]),stderr:''}),
+      inspectOutput:async()=>({name:'report.pdf',size:20,sha256:'a'.repeat(64),reviewText:'花费10'})});
     const task=await h.orchestrator.accept(request);
     await vi.waitFor(async()=>expect((await h.repo.findTask(task!.id))?.status).toBe('completed'));
     expect(h.query).toHaveBeenCalledTimes(40);

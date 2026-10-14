@@ -51,6 +51,8 @@ export interface ReviewInput {
   evidence: EvidenceRecord[];
   evidenceFiles?: EvidenceFileEntry[] | undefined;
   verifiedFacts?: {artifactSha256: string; facts: ResolvedFact[]};
+  /** Host-resolved report table bindings, never model assertions. */
+  verifiedEvidenceTables?: unknown[];
   excerpts: Record<string, string>;
   computeAvailable: boolean;
   round: number;
@@ -81,6 +83,7 @@ const RUBRIC = [
   '建议验收边界：模型基于已核验数据提出具体调整幅度、目标值、观察周期、止损线和优先级，是正常的分析产出。只要其表达为建议或试验方案，就不要求每个建议数字都有历史观测、利润模型或规则逐字证明；不能仅因为审核器偏好另一幅度、样本较小、未来效果不确定或尚无实际配置而判为 blocking。将建议和它依赖的事实分开核对：建议可标为 qualified，缺少的是效果/利润验证条件时不等于建议错误。只有支撑建议的事实、对象、口径不正确，或建议被冒充成已配置值、官方标准、已证实因果、已验证利润或必然收益时，才对相应问题判 blocking。缺配置可列执行前核查，缺成本可提供效率优化建议；不能因此禁止建议。用户明确要求的规则约束和禁止动作仍须遵守。',
   '5. relevance：只有当额外内容替换了用户目标、淹没了答案、或披露与请求无关的业务明细或个人信息时才是问题。必要的口径说明、数据截至日、数据缺口、下一步建议不是问题。',
   '知识库证据专项：先依据用户原话确定问题是限定某份文档/图片/页/版本，还是允许跨资料综合。knowledge_evidence 中的 request、sources、entries.position 是宿主记录的真实查询与出处，必须逐条核对。不同来源中存在相同列名、型号、数值或相似标题，不能证明它们是同一截图、同一目标表格或同一版本；跨来源对应关系也需要直接证据。指定资料缺图或缺标注时，把别的资料中的值确定说成指定资料的值是 blocking；应明确无法确认，可将其他来源作为未确认参考，但不能替代所问事实。指定一张图时，不要混入另一张图的选型结论。资料中的读取错误只证明当前读取未取得内容，不能断言原文档没有图片。原始资料与参数表出现不同口径时必须分别说明，不能无依据选择其一。省略、截断的证据不能当成已核验的全文。',
+  '证据摘录边界：verifiedFacts 与 verifiedEvidenceTables 是宿主提供的完整来源绑定记录，优先据其原值、行维度、查询与血缘核对报告事实；它们不能代替统计范围、关联关系和解释前提的审核。excerptAvailability 标记的是审核输入可见性，truncated、budget_exhausted 或 input_missing 不证明源文件中不存在某行、字段或事实。若具体行已由宿主完整绑定，不得因为原始摘录未保留该行要求重新查询相同数据；若关键主张仍需未展示的证据，应准确指出缺少的审核上下文并要求读取已有完整证据，而非断言原数据缺失。不要因此放过已展示的冲突、错误对象或范围越界。',
   '6. safety：答复不得包含凭证、令牌、内部文件路径、证据 ID 或工具参数。',
   'completion.sourceRefs 是答案实际采用的知识库资料身份，宿主只校验身份和生成真实链接，不保证引用支持结论。若提供 sourceRefs，逐条检查是否覆盖答复采用的来源、冲突双方，是否把无关资料冒充依据；遗漏支持核心结论的来源或错误归属列为 blocking。没有提供 sourceRefs 时仍核验答复已有引用和事实，不要为补引用重复查资料。',
   '当 reviewProfile=simple_product 时，只核对用户所问型号的字段、单位、来源位置和型号候选匹配；不要因为未传入整份规格书而要求额外搜索。发现字段已由结构化 facts 完整支持且无冲突时，最多报告确定的事实或出处问题。',
@@ -99,7 +102,9 @@ export class EvidenceReviewer {
   public async review(input: ReviewInput): Promise<ReviewResult> {
     if (!(this.config.MODEL_REVIEW_BASE_URL ?? this.config.MODEL_BASE_URL) || !(this.config.MODEL_REVIEW_API_KEY ?? this.config.MODEL_API_KEY)) return { status: 'unavailable', issues: [], reason: 'reviewer_not_configured' };
     const profile = input.profile ?? 'knowledge_general';
-    const payload = buildPayload(input);
+    let payload: Record<string, unknown>;
+    try { payload = buildPayload(input); }
+    catch (error) { return {status: 'unavailable', issues: [], reason: error instanceof Error ? error.message : 'review_evidence_budget_exceeded'}; }
     let lastError = 'review_failed';
     const budget = this.config.MODEL_REQUEST_RETRY_BUDGET_MS ?? 1_200_000;
     const retryState={attempts:0,deadlineAt:Date.now()+budget};
@@ -224,25 +229,56 @@ export function formatIssues(issues: ReviewIssue[]): string {
 }
 
 function buildPayload(input: ReviewInput): Record<string, unknown> {
-  const successful = input.evidence.filter((item) => item.status === 'success');
-  const cited = [...new Set(Object.values(input.completion.factEvidence).flat())];
+  // Generated reports are the object being judged, never independent source
+  // observations. Earlier revisions must not re-enter the evidence channel.
+  const generatedIds = new Set(input.evidenceFiles?.filter(item => item.kind === 'report'
+    || isReportCapability(item.capabilityId)).map(item => item.evidenceId) ?? []);
+  for (const item of input.evidence) if (isReportCapability(item.capabilityId)) generatedIds.add(item.id);
+  const evidence = input.evidence.filter(item => !generatedIds.has(item.id));
+  const sourceExcerpts = Object.fromEntries(Object.entries(input.excerpts).filter(([id]) => !generatedIds.has(id)));
+  const successful = evidence.filter((item) => item.status === 'success');
+  const cited = [...new Set(Object.values(input.completion.factEvidence).flat())].filter(id => !generatedIds.has(id));
   // Computations first (they carry the derived numbers), then citations, then
   // the most recent remaining evidence, until the character budget is spent.
   const ordered = [
-    ...successful.filter((item) => item.capabilityId === 'analysis.python').map((item) => item.id).reverse(),
+    ...(input.verifiedFacts?.facts.map(fact => fact.evidenceId) ?? []),
+    ...(input.verifiedEvidenceTables ?? []).flatMap(table => table && typeof table === 'object' && 'evidenceId' in table && typeof table.evidenceId === 'string' ? [table.evidenceId] : []),
+    ...successful.filter((item) => ['analysis.python', 'analysis.table'].includes(item.capabilityId)).map((item) => item.id).reverse(),
     ...cited,
     ...successful.map((item) => item.id).reverse()
   ];
   const excerpts: Record<string, string> = {};
   const profile = input.profile ?? 'knowledge_general';
   let budget = profile === 'simple_product' ? 40_000 : EXCERPT_BUDGET_CHARS;
-  for (const id of new Set(ordered)) {
-    const text = input.excerpts[id];
-    if (!text || budget <= 0) continue;
+  // These records prove exact report values and selected rows. Never silently
+  // clip them: an oversized verification input is an infrastructure failure.
+  const verifiedFacts = compactVerifiedFacts(input.verifiedFacts);
+  const boundChars = JSON.stringify({verifiedFacts, verifiedEvidenceTables: input.verifiedEvidenceTables}).length;
+  if (boundChars > budget) throw new Error('review_bound_evidence_exceeds_budget');
+  budget -= boundChars;
+  const boundIds = new Set(input.verifiedFacts?.facts.map(fact => fact.evidenceId) ?? []);
+  for (const table of input.verifiedEvidenceTables ?? []) {
+    if (table && typeof table === 'object' && 'evidenceId' in table && typeof table.evidenceId === 'string') boundIds.add(table.evidenceId);
+  }
+  const availability: Record<string, {status: string; originalChars?: number; retainedChars?: number}> = {};
+  for (const id of new Set(ordered.filter(id => !generatedIds.has(id)))) {
+    const text = sourceExcerpts[id];
+    if (!text || budget <= 0) {
+      availability[id] = {status: !text ? 'input_missing' : 'budget_exhausted', ...(text ? {originalChars: text.length, retainedChars: 0} : {})};
+      continue;
+    }
     let limit=profile === 'simple_product' ? 8_000 : EXCERPT_MAX_CHARS;
     try{if(JSON.parse(text)?.kind==='knowledge_evidence')limit=profile === 'simple_product' ? 20_000 : 40000;}catch{/* Other formats retain their existing bounds. */}
-    const slice = structuredEvidenceExcerpt(text, Math.min(limit, budget));
+    // Bound sources carry the population/operation context for the selected
+    // facts. Use the shared budget, not a fixed 12k prefix that hides later rows.
+    const allowed = Math.min(boundIds.has(id) ? text.length : limit, budget);
+    const slice = text.length <= allowed ? text : structuredEvidenceExcerpt(text, allowed);
+    if (slice.length > budget) {
+      availability[id] = {status: 'budget_exhausted', originalChars: text.length, retainedChars: 0};
+      continue;
+    }
     excerpts[id] = slice;
+    availability[id] = {status: slice === text ? 'complete' : 'truncated', originalChars: text.length, retainedChars: slice.length};
     budget -= slice.length;
   }
   const missingExcerpts = successful.filter((item) => !excerpts[item.id]).map((item) => item.id);
@@ -261,15 +297,46 @@ function buildPayload(input: ReviewInput): Record<string, unknown> {
     round: input.round,
     maxRounds: input.maxRounds,
     reviewProfile: profile,
-    evidence: input.evidence,
-    ...(input.evidenceFiles ? {evidenceManifest: input.evidenceFiles.map(({evidenceId,sha256,kind,query,context,tables}) =>
+    evidence,
+    ...(input.evidenceFiles ? {evidenceManifest: input.evidenceFiles.filter(item => !generatedIds.has(item.evidenceId)).map(({evidenceId,sha256,kind,query,context,tables}) =>
       ({evidenceId,sha256,kind,query,context,tables}))} : {}),
-    ...(input.verifiedFacts ? {verifiedFacts: input.verifiedFacts,
+    ...(verifiedFacts ? {verifiedFacts,
       factVerificationBoundary:'Host checks exact saved value, digest, unique row, and formatting. It does not prove correct statistical population, completeness, joins, inference or causal claims; verify these against the source query and dimensions.'} : {}),
-    dataQuality: dataQuality(input.excerpts),
+    ...(input.verifiedEvidenceTables ? {verifiedEvidenceTables: input.verifiedEvidenceTables} : {}),
+    dataQuality: dataQuality(sourceExcerpts),
     excerpts,
+    excerptAvailability: availability,
     ...(missingExcerpts.length ? { excerptsUnavailable: missingExcerpts } : {})
   };
+}
+
+function isReportCapability(capability: string): boolean {
+  return capability === 'artifact.render_report' || capability === 'artifact.revise_report';
+}
+
+/** Deduplicate complete row context without reducing the facts being checked.
+ * Include the context itself in identity: inconsistent metadata for the same
+ * source row must remain visible, rather than silently taking the first copy. */
+function compactVerifiedFacts(input: ReviewInput['verifiedFacts']): unknown {
+  if (!input) return undefined;
+  const rows: Record<string, unknown> = {};
+  const identities = new Map<string, string>();
+  const facts = input.facts.map(fact => {
+    const {id, field, value, display, ...context} = fact;
+    const identity = JSON.stringify([fact.evidenceId, fact.sourceSha256, fact.rowIndex, context]);
+    let rowRef = identities.get(identity);
+    if (!rowRef) {
+      rowRef = `row_${identities.size}`;
+      identities.set(identity, rowRef);
+      rows[rowRef] = context;
+    }
+    return {id, field, value, display, rowRef};
+  });
+  // Single-use context gains nothing from indirection. Preserve the familiar
+  // representation unless its complete dictionary actually saves space.
+  const compact = {artifactSha256: input.artifactSha256, facts, rows,
+    rowReferenceBoundary: 'Resolve each fact.rowRef in rows for complete source identity, selector, dimensions, query and lineage.'};
+  return JSON.stringify(compact).length < JSON.stringify(input).length ? compact : input;
 }
 
 function dataQuality(excerpts: Record<string, string>): Record<string, unknown> {

@@ -36,6 +36,105 @@ function input(overrides: Partial<ReviewInput> = {}): ReviewInput {
 }
 
 describe('EvidenceReviewer', () => {
+  it('excludes generated report revisions from every source channel without crowding out observations or submit receipts', async () => {
+    const sample = input();
+    const workflow = new TaskWorkflow();
+    const old = workflow.record('artifact.render_report', true);
+    const revised = workflow.record('artifact.revise_report', true);
+    const submit = workflow.record('artifact.submit', true);
+    const source = sample.evidence[0]!;
+    const sourceText = JSON.stringify({data: {total: 1, rows: [{value: 42}]}});
+    const reportText = JSON.stringify({data: {total: 999, rows: [{wrong: 'x'.repeat(200000)}]}});
+    const http = vi.fn(async (_url: string, init: RequestInit) => {
+      const payload = JSON.parse(JSON.parse(String(init.body)).input[1].content);
+      expect(payload.evidence.map((item: {id: string}) => item.id)).toEqual([source.id, submit.id]);
+      expect(payload.evidenceManifest.map((item: {evidenceId: string}) => item.evidenceId)).toEqual([source.id]);
+      expect(Object.keys(payload.excerpts).sort()).toEqual([source.id, submit.id].sort());
+      expect(payload.excerpts[source.id]).toBe(sourceText);
+      expect(payload.excerpts[submit.id]).toContain('delivered');
+      expect(payload.dataQuality).toEqual({[source.id]: {total: 1, returnedRowCount: 1, currencies: []}});
+      expect(payload.excerptAvailability[old.id]).toBeUndefined();
+      expect(payload.excerptsUnavailable ?? []).not.toContain(old.id);
+      return modelReply([]);
+    });
+    expect((await new EvidenceReviewer(config, http as typeof fetch).review({...sample,
+      evidence: [source, old, revised, submit], completion: {...sample.completion, factEvidence: {old: [old.id]}},
+      evidenceFiles: [{file: 'old.json', evidenceId: old.id, capabilityId: old.capabilityId, arguments: '{}', kind: 'report'},
+        {file: 'data.json', evidenceId: source.id, capabilityId: source.capabilityId, arguments: '{}', kind: 'observation'}],
+      excerpts: {[old.id]: reportText, [revised.id]: reportText, [source.id]: sourceText, [submit.id]: '{"delivered":true}'}})).status).toBe('pass');
+  });
+
+  it('deduplicates repeated bound row context without losing any fact or its provenance', async () => {
+    const sample = input();
+    const context = {evidenceId: sample.evidence[0]!.id, sourceSha256: 'sha', rowsPath: 'data.rows', rowIndex: 399,
+      selector: {asin: 'ASIN-399'}, rowDimensions: {asin: 'ASIN-399', spend: 42, sales: 100},
+      query: {filters: ['source-context'.repeat(200)]}, context: {coverage: 'partial'}, lineage: {operation: 'sum'}};
+    const facts = [{...context, id: 'spend', field: 'spend', value: 42, display: '42'},
+      {...context, id: 'sales', field: 'sales', value: 100, display: '100'}];
+    const http = vi.fn(async (_url: string, init: RequestInit) => {
+      const payload = JSON.parse(JSON.parse(String(init.body)).input[1].content);
+      const compact = payload.verifiedFacts;
+      expect(compact.artifactSha256).toBe('pdf-sha');
+      expect(compact.facts).toHaveLength(2);
+      expect(Object.keys(compact.rows)).toHaveLength(1);
+      for (let index = 0; index < facts.length; index++) {
+        const {rowRef, ...fact} = compact.facts[index];
+        expect({...compact.rows[rowRef], ...fact}).toEqual(facts[index]);
+      }
+      expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify({artifactSha256: 'pdf-sha', facts}).length);
+      return modelReply([]);
+    });
+    expect((await new EvidenceReviewer(config, http as typeof fetch).review({...sample,
+      verifiedFacts: {artifactSha256: 'pdf-sha', facts}})).status).toBe('pass');
+  });
+
+  it('retains a bound source row beyond the former 12k prefix and its complete host fact', async () => {
+    const sample = input();
+    const sourceId = sample.evidence[0]!.id;
+    const rows = Array.from({length: 400}, (_, index) => ({asin: `ASIN-${index}`, spend: index, description: 'source context '.repeat(4)}));
+    const fact = {id: 'late_spend', evidenceId: sourceId, sourceSha256: 'sha', rowsPath: 'data.rows', rowIndex: 399,
+      selector: {asin: 'ASIN-399'}, field: 'spend', value: 399, display: '399', rowDimensions: rows[399]!, lineage: {}};
+    const http = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      const payload = JSON.parse(body.input[1].content);
+      expect(payload.verifiedFacts.facts).toEqual([fact]);
+      expect(JSON.parse(payload.excerpts[sourceId]).data.rows).toEqual(rows);
+      expect(payload.excerptAvailability[sourceId].status).toBe('complete');
+      expect(body.input[0].content).toContain('不得因为原始摘录未保留该行要求重新查询相同数据');
+      return modelReply([]);
+    });
+    expect((await new EvidenceReviewer(config, http as typeof fetch).review({...sample,
+      verifiedFacts: {artifactSha256: 'pdf-sha', facts: [fact]},
+      excerpts: {[sourceId]: JSON.stringify({data: {rows}})}})).status).toBe('pass');
+  });
+
+  it('keeps table bindings whole and labels bounded source omissions without declaring missing data', async () => {
+    const sample = input();
+    const sourceId = sample.evidence[0]!.id;
+    const table = {evidenceId: sourceId, sourceSha256: 'sha', rowsPath: 'data.rows', columns: ['asin', 'spend'], rows: [['late-row', 42]]};
+    const source = JSON.stringify({data: {total: 5000, rows: Array.from({length: 5000}, (_, index) => ({asin: `ASIN-${index}`, note: 'x'.repeat(100)}))}});
+    const http = vi.fn(async (_url: string, init: RequestInit) => {
+      const payload = JSON.parse(JSON.parse(String(init.body)).input[1].content);
+      expect(payload.verifiedEvidenceTables).toEqual([table]);
+      expect(payload.excerptAvailability[sourceId].status).toBe('truncated');
+      expect(payload.excerptsUnavailable ?? []).not.toContain(sourceId);
+      expect(JSON.stringify({verifiedEvidenceTables: payload.verifiedEvidenceTables}).length + Object.values(payload.excerpts).reduce((sum: number, text) => sum + String(text).length, 0)).toBeLessThanOrEqual(160000);
+      expect(payload.dataQuality[sourceId].returnedRowCount).toBe(5000);
+      return modelReply([]);
+    });
+    expect((await new EvidenceReviewer(config, http as typeof fetch).review({...sample, verifiedEvidenceTables: [table], excerpts: {[sourceId]: source}})).status).toBe('pass');
+  });
+
+  it('does not silently drop host bindings or call the model when they exceed the shared budget', async () => {
+    const http = vi.fn();
+    const result = await new EvidenceReviewer(config, http as typeof fetch).review(input({
+      verifiedEvidenceTables: [{evidenceId: 'source', rows: ['x'.repeat(160001)]}]
+    }));
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toBe('review_bound_evidence_exceeds_budget');
+    expect(http).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['gpt-5.6-sol','gemini-3.8-flash-high',64000,64000],
     ['gemini-3.8-flash-high','gpt-5.6-sol',64000,undefined],
