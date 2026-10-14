@@ -1,0 +1,420 @@
+--- a/backend/internal/pkg/antigravity/stream_transformer.go
++++ b/backend/internal/pkg/antigravity/stream_transformer.go
+@@ -41,6 +41,7 @@
+ 	cacheReadTokens   int
+ 	imageOutputTokens int
+ 	hasContent        bool
++	diagnostics       StreamDiagnostics
+ }
+ 
+ // NewStreamingProcessor 创建流式响应处理器
+@@ -85,17 +86,44 @@
+ 		return nil
+ 	}
+ 
+-	// 解包 v1internal 响应
++	// JSON unknown fields do not cause unmarshal errors: choose the shape explicitly.
++	p.diagnostics.DataFrames++
++	var envelope map[string]json.RawMessage
++	if err := json.Unmarshal([]byte(data), &envelope); err != nil || envelope == nil {
++		p.diagnostics.InvalidJSONFrames++
++		return nil
++	}
++	if upstreamError, exists := envelope["error"]; exists {
++		p.recordUpstreamError(upstreamError)
++		return nil
++	}
+ 	var v1Resp V1InternalResponse
+-	if err := json.Unmarshal([]byte(data), &v1Resp); err != nil {
+-		// 尝试直接解析为 GeminiResponse
+-		var directResp GeminiResponse
+-		if err2 := json.Unmarshal([]byte(data), &directResp); err2 != nil {
++	if response, wrapped := envelope["response"]; wrapped && string(response) != "null" {
++		p.diagnostics.WrappedFrames++
++		var nested map[string]json.RawMessage
++		if json.Unmarshal(response, &nested) == nil && nested["error"] != nil {
++			p.recordUpstreamError(nested["error"])
+ 			return nil
+ 		}
+-		v1Resp.Response = directResp
+-		v1Resp.ResponseID = directResp.ResponseID
+-		v1Resp.ModelVersion = directResp.ModelVersion
++		if err := json.Unmarshal([]byte(data), &v1Resp); err != nil {
++			p.diagnostics.InvalidJSONFrames++
++			return nil
++		}
++	} else if _, candidates := envelope["candidates"]; candidates || envelope["usageMetadata"] != nil || envelope["responseId"] != nil || envelope["modelVersion"] != nil {
++		p.diagnostics.DirectFrames++
++		if err := json.Unmarshal([]byte(data), &v1Resp.Response); err != nil {
++			p.diagnostics.InvalidJSONFrames++
++			return nil
++		}
++		v1Resp.ResponseID = v1Resp.Response.ResponseID
++		v1Resp.ModelVersion = v1Resp.Response.ModelVersion
++	} else {
++		p.diagnostics.UnknownShapeFrames++
++		return nil
++	}
++	p.diagnostics.Candidates += len(v1Resp.Response.Candidates)
++	for _, candidate := range v1Resp.Response.Candidates {
++		p.recordFinishReason(candidate.FinishReason)
+ 	}
+ 
+ 	geminiResp := &v1Resp.Response
+@@ -134,11 +162,7 @@
+ 		finishReason := geminiResp.Candidates[0].FinishReason
+ 		if finishReason == "MALFORMED_FUNCTION_CALL" {
+ 			log.Printf("[Antigravity] MALFORMED_FUNCTION_CALL detected in stream for model %s", p.originalModel)
+-			if geminiResp.Candidates[0].Content != nil {
+-				if b, err := json.Marshal(geminiResp.Candidates[0].Content); err == nil {
+-					log.Printf("[Antigravity] Malformed content: %s", string(b))
+-				}
+-			}
++
+ 		}
+ 		if finishReason != "" {
+ 			_, _ = result.Write(p.emitFinish(finishReason))
+--- /dev/null
++++ b/backend/internal/pkg/antigravity/stream_diagnostics.go
+@@ -0,0 +1,59 @@
++package antigravity
++
++import "encoding/json"
++
++// StreamDiagnostics never retains upstream payloads, messages, text, tool arguments,
++// arbitrary JSON keys, or provider-supplied strings; only counters and known enums.
++type StreamDiagnostics struct {
++	DataFrames         int            `json:"data_frames"`
++	WrappedFrames      int            `json:"wrapped_frames"`
++	DirectFrames       int            `json:"direct_frames"`
++	InvalidJSONFrames  int            `json:"invalid_json_frames"`
++	UnknownShapeFrames int            `json:"unknown_shape_frames"`
++	ErrorFrames        int            `json:"error_frames"`
++	Candidates         int            `json:"candidates"`
++	FinishReasons      map[string]int `json:"finish_reasons,omitempty"`
++	ErrorCodes         map[int]int    `json:"error_codes,omitempty"`
++	ErrorStatuses      map[string]int `json:"error_statuses,omitempty"`
++}
++
++func (p *StreamingProcessor) Diagnostics() StreamDiagnostics { return p.diagnostics }
++func (p *StreamingProcessor) recordFinishReason(reason string) {
++	if reason == "" {
++		return
++	}
++	switch reason {
++	case "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY", "UNEXPECTED_TOOL_CALL", "NO_IMAGE":
++	default:
++		reason = "UNKNOWN"
++	}
++	if p.diagnostics.FinishReasons == nil {
++		p.diagnostics.FinishReasons = map[string]int{}
++	}
++	p.diagnostics.FinishReasons[reason]++
++}
++func (p *StreamingProcessor) recordUpstreamError(raw json.RawMessage) {
++	p.diagnostics.ErrorFrames++
++	var e struct {
++		Code   int    `json:"code"`
++		Status string `json:"status"`
++	}
++	if json.Unmarshal(raw, &e) != nil {
++		return
++	}
++	if e.Code >= 100 && e.Code <= 599 {
++		if p.diagnostics.ErrorCodes == nil {
++			p.diagnostics.ErrorCodes = map[int]int{}
++		}
++		p.diagnostics.ErrorCodes[e.Code]++
++	}
++	switch e.Status {
++	case "INVALID_ARGUMENT", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "DEADLINE_EXCEEDED", "CANCELLED":
++	default:
++		e.Status = "UNKNOWN"
++	}
++	if p.diagnostics.ErrorStatuses == nil {
++		p.diagnostics.ErrorStatuses = map[string]int{}
++	}
++	p.diagnostics.ErrorStatuses[e.Status]++
++}
+--- /dev/null
++++ b/backend/internal/pkg/antigravity/stream_shape_regression_test.go
+@@ -0,0 +1,68 @@
++package antigravity
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++func TestStreamingProcessorDirectAndWrappedResponse(t *testing.T) {
++	payload := `{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}`
++	for _, wrapped := range []bool{false, true} {
++		p := NewStreamingProcessor("gemini-test")
++		line := payload
++		if wrapped {
++			line = `{"response":` + payload + `}`
++		}
++		events := string(p.ProcessLine("data: " + line))
++		if !p.HasContent() || !strings.Contains(events, "hello") {
++			t.Fatalf("wrapped=%v dropped output: %s", wrapped, events)
++		}
++		d := p.Diagnostics()
++		if d.Candidates != 1 || d.FinishReasons["STOP"] != 1 {
++			t.Fatalf("bad diagnostics: %+v", d)
++		}
++		if wrapped && d.WrappedFrames != 1 || !wrapped && d.DirectFrames != 1 {
++			t.Fatalf("bad shape: %+v", d)
++		}
++	}
++}
++func TestStreamingProcessorDiagnosticsNeverRetainPayload(t *testing.T) {
++	p := NewStreamingProcessor("gemini-test")
++	for _, line := range []string{
++		`data: {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"PRIVATE_SECRET"}}`,
++		`data: {"PRIVATE_SECRET":"PRIVATE_SECRET"}`,
++		`data: not-json-PRIVATE_SECRET`,
++		`data: {"candidates":[{"finishReason":"PRIVATE_SECRET"}]}`,
++	} {
++		p.ProcessLine(line)
++	}
++	b, _ := json.Marshal(p.Diagnostics())
++	if strings.Contains(string(b), "PRIVATE_SECRET") {
++		t.Fatal("private content retained")
++	}
++	d := p.Diagnostics()
++	if d.ErrorFrames != 1 || d.ErrorCodes[429] != 1 || d.InvalidJSONFrames != 1 || d.UnknownShapeFrames != 1 || d.FinishReasons["UNKNOWN"] != 1 {
++		t.Fatalf("bad diagnostics: %s", b)
++	}
++	if p.HasContent() {
++		t.Fatal("empty/error frames counted as content")
++	}
++}
++func TestStreamingProcessorDirectFunctionCall(t *testing.T) {
++	p := NewStreamingProcessor("gemini-test")
++	events := p.ProcessLine(`data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"id":"a"}}}]} }]}`)
++	if !p.HasContent() || !strings.Contains(string(events), "lookup") {
++		t.Fatalf("tool call dropped: %s", events)
++	}
++}
++
++func TestStreamingProcessorWrappedErrorAndUsageOnly(t *testing.T) {
++	p := NewStreamingProcessor("gemini-test")
++	p.ProcessLine(`data: {"response":{"error":{"code":503,"status":"UNAVAILABLE","message":"private"}}}`)
++	p.ProcessLine(`data: {"usageMetadata":{"promptTokenCount":42}}`)
++	_, usage := p.Finish()
++	if p.HasContent() || usage.InputTokens != 42 || p.Diagnostics().ErrorCodes[503] != 1 {
++		t.Fatalf("bad usage/error handling: %+v %+v", usage, p.Diagnostics())
++	}
++}
+--- a/backend/internal/service/antigravity_gateway_compat_stream.go
++++ b/backend/internal/service/antigravity_gateway_compat_stream.go
+@@ -92,7 +92,51 @@
+ }
+ 
+ func (a *antigravityResponsesStreamAdapter) WriteError(writer *antigravityClientWriter, reason string) {
+-	writer.Fprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\",\"message\":%q}}\n\n", reason)
++	state := a.anthropicState
++	if state.CompletedSent {
++		return
++	}
++	if !state.CreatedSent {
++		a.Emit(&apicompat.AnthropicStreamEvent{Type: "message_start", Message: &apicompat.AnthropicResponse{
++			ID: fmt.Sprintf("resp_error_%d", time.Now().UnixNano()), Model: state.Model, Role: "assistant", Type: "message",
++		}}, writer)
++	}
++	// Snapshot partial output without emitting function_call_arguments.done or
++	// declaring an unfinished item completed. Consumers must not execute a call
++	// merely because the upstream stopped while its JSON arguments were partial.
++	outputs := append([]apicompat.ResponsesOutput{}, state.Outputs...)
++	if state.CurrentItemType != "" {
++		item := apicompat.ResponsesOutput{Type: state.CurrentItemType, ID: state.CurrentItemID, Status: "incomplete"}
++		switch state.CurrentItemType {
++		case "message":
++			item.Role = "assistant"
++			item.Content = append([]apicompat.ResponsesContentPart{}, state.CurrentContent...)
++			if state.TextAccum != "" {
++				item.Content = append(item.Content, apicompat.ResponsesContentPart{Type: "output_text", Text: state.TextAccum})
++			}
++		case "function_call":
++			item.CallID, item.Name, item.Arguments = state.CurrentCallID, state.CurrentName, state.CurrentArgs
++		case "reasoning":
++			if state.CurrentSummary != "" {
++				item.Summary = []apicompat.ResponsesSummary{{Type: "summary_text", Text: state.CurrentSummary}}
++			}
++		}
++		outputs = append(outputs, item)
++	}
++	inputTokens := state.InputTokens + state.CacheReadInputTokens + state.CacheCreationInputTokens
++	errorCode := "upstream_error"
++	if reason == "empty_stream" {
++		errorCode = reason
++	}
++	event := apicompat.ResponsesStreamEvent{Type: "response.failed", SequenceNumber: state.SequenceNumber,
++		Response: &apicompat.ResponsesResponse{ID: state.ResponseID, Object: "response", CreatedAt: state.Created,
++			Model: state.Model, Status: "failed", Output: outputs,
++			Usage: &apicompat.ResponsesUsage{InputTokens: inputTokens, OutputTokens: state.OutputTokens, TotalTokens: inputTokens + state.OutputTokens},
++			Error: &apicompat.ResponsesError{Code: errorCode, Message: reason}},
++	}
++	state.SequenceNumber++
++	state.CompletedSent = true
++	a.emitResponseEvent(event, writer)
+ }
+ 
+ func (a *antigravityResponsesStreamAdapter) emitResponseEvent(event apicompat.ResponsesStreamEvent, writer *antigravityClientWriter) {
+@@ -169,6 +213,7 @@
+ 	mergeAntigravityCompatUsage(s.usage, usage)
+ 	s.consumeClaudeEvents(finalEvents)
+ 	if !s.hasMeaningfulData() && !s.writer.Disconnected() {
++		logAntigravityCompatEmptyDiagnostics(s)
+ 		if s.preContentKeepaliveSent {
+ 			s.adapter.WriteError(s.writer, "empty_stream")
+ 			return s.result(false), errors.New("empty Antigravity compatibility stream after keepalive")
+@@ -388,6 +433,7 @@
+ }
+ 
+ func handleAntigravityCompatEmptyStream(c *gin.Context, session *antigravityCompatStreamSession) (*antigravityStreamResult, error) {
++	logAntigravityCompatEmptyDiagnostics(session)
+ 	if session.preContentKeepaliveSent {
+ 		writeAntigravityCompatStreamError(c, session.adapter, session.writer, "empty_stream")
+ 		return session.collectResult(false), errors.New("empty Antigravity compatibility stream after keepalive")
+@@ -548,3 +594,8 @@
+ 		"antigravity responses stream",
+ 	)
+ }
++
++func logAntigravityCompatEmptyDiagnostics(session *antigravityCompatStreamSession) {
++	diagnostics, _ := json.Marshal(session.processor.Diagnostics())
++	logger.LegacyPrintf("service.antigravity_gateway", "Empty compatibility stream diagnostics: %s", diagnostics)
++}
+--- a/backend/internal/service/antigravity_gateway_compat_test.go
++++ b/backend/internal/service/antigravity_gateway_compat_test.go
+@@ -770,7 +770,7 @@
+ 	require.Error(t, err)
+ 	require.Nil(t, result)
+ 	require.True(t, IsResponseCommitted(c))
+-	require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: error"))
++	require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: response.failed"))
+ }
+ 
+ func TestAntigravityCompatKeepaliveAfterFirstEvent(t *testing.T) {
+@@ -848,7 +848,7 @@
+ 		want    string
+ 	}{
+ 		{"silent chat", func() antigravityCompatStreamAdapter { return newAntigravityChatStreamAdapter("gemini-3.1-pro", false) }, "", `"upstream_error"`},
+-		{"signature-only responses", func() antigravityCompatStreamAdapter { return newAntigravityResponsesStreamAdapter("gemini-3.1-pro") }, `data: {"response":{"candidates":[{"content":{"parts":[{"thoughtSignature":"sig","text":""}]}}]}}` + "\n\n", "event: error"},
++		{"signature-only responses", func() antigravityCompatStreamAdapter { return newAntigravityResponsesStreamAdapter("gemini-3.1-pro") }, `data: {"response":{"candidates":[{"content":{"parts":[{"thoughtSignature":"sig","text":""}]}}]}}` + "\n\n", "event: response.failed"},
+ 	} {
+ 		t.Run(tt.name, func(t *testing.T) {
+ 			svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize, StreamDataIntervalTimeout: 30}, nil)
+@@ -902,7 +902,7 @@
+ 	require.NoError(t, pipeWriter.Close())
+ 	require.Error(t, <-done)
+ 	require.GreaterOrEqual(t, strings.Count(recorder.Body.String(), ": ping\n\n"), 3)
+-	require.Contains(t, recorder.Body.String(), "event: error")
++	require.Contains(t, recorder.Body.String(), "event: response.failed")
+ 	require.True(t, IsResponseCommitted(c))
+ }
+ 
+@@ -942,7 +942,7 @@
+ 		t.Fatal("comment-only stream exceeded pre-content deadline")
+ 	}
+ 	require.Contains(t, recorder.Body.String(), ": ping\n\n")
+-	require.Contains(t, recorder.Body.String(), "event: error")
++	require.Contains(t, recorder.Body.String(), "event: response.failed")
+ 	require.True(t, IsResponseCommitted(c))
+ 	_ = pipeWriter.Close()
+ }
+@@ -1007,7 +1007,7 @@
+ 		want    string
+ 	}{
+ 		{"chat completions", newAntigravityChatStreamAdapter("gemini-3.1-pro", false), `"upstream_error"`},
+-		{"responses", newAntigravityResponsesStreamAdapter("gemini-3.1-pro"), "event: error"},
++		{"responses", newAntigravityResponsesStreamAdapter("gemini-3.1-pro"), "event: response.failed"},
+ 	} {
+ 		t.Run(tt.name, func(t *testing.T) {
+ 			c, recorder := newAntigravityCompatContext(http.MethodPost, "/", nil)
+@@ -1027,3 +1027,83 @@
+ 		})
+ 	}
+ }
++
++func TestAntigravityResponsesFailureHasProtocolTerminal(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	c, recorder := newAntigravityCompatContext(http.MethodPost, "/", nil)
++	writer := newAntigravityClientWriter(c.Writer, c.Writer, "test")
++	adapter := newAntigravityResponsesStreamAdapter("gemini-test")
++	adapter.WriteError(writer, "empty_stream")
++	adapter.WriteError(writer, "empty_stream")
++	body := recorder.Body.String()
++	require.Contains(t, body, "event: response.created")
++	require.Equal(t, 1, strings.Count(body, "event: response.failed"))
++	require.NotContains(t, body, "event: response.completed")
++	require.NotContains(t, body, "event: error")
++	var terminal, created map[string]any
++	for _, line := range strings.Split(body, "\n") {
++		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"response.created"`) {
++			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &created))
++		}
++		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"response.failed"`) {
++			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &terminal))
++		}
++	}
++	require.NotNil(t, terminal)
++	require.NotNil(t, created)
++	createdResponse := created["response"].(map[string]any)
++	require.Equal(t, []any{}, createdResponse["output"])
++	response := terminal["response"].(map[string]any)
++	require.Equal(t, []any{}, response["output"])
++	require.Equal(t, createdResponse["id"], response["id"])
++	require.Equal(t, createdResponse["created_at"], response["created_at"])
++	require.Equal(t, "failed", response["status"])
++	require.NotEmpty(t, response["id"])
++	require.Greater(t, response["created_at"].(float64), float64(0))
++	require.Equal(t, "empty_stream", response["error"].(map[string]any)["message"])
++	require.Equal(t, "empty_stream", response["error"].(map[string]any)["code"])
++	require.Greater(t, terminal["sequence_number"].(float64), float64(0))
++}
++
++func TestAntigravityResponsesFailurePreservesPartialOutput(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	c, recorder := newAntigravityCompatContext(http.MethodPost, "/", nil)
++	writer := newAntigravityClientWriter(c.Writer, c.Writer, "test")
++	adapter := newAntigravityResponsesStreamAdapter("gemini-test")
++	adapter.Emit(&apicompat.AnthropicStreamEvent{Type: "message_start", Message: &apicompat.AnthropicResponse{ID: "resp_partial", Model: "gemini-test"}}, writer)
++	index := 0
++	adapter.Emit(&apicompat.AnthropicStreamEvent{Type: "content_block_start", Index: &index, ContentBlock: &apicompat.AnthropicContentBlock{Type: "text", Text: ""}}, writer)
++	adapter.Emit(&apicompat.AnthropicStreamEvent{Type: "content_block_delta", Index: &index, Delta: &apicompat.AnthropicDelta{Type: "text_delta", Text: "partial answer"}}, writer)
++	adapter.WriteError(writer, "stream_read_error")
++	body := recorder.Body.String()
++	require.NotContains(t, body, "event: response.completed")
++	for _, line := range strings.Split(body, "\n") {
++		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"response.failed"`) {
++			require.Contains(t, line, "partial answer")
++			require.Contains(t, line, "resp_partial")
++			var terminal map[string]any
++			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &terminal))
++			require.Equal(t, "upstream_error", terminal["response"].(map[string]any)["error"].(map[string]any)["code"])
++			return
++		}
++	}
++	t.Fatal("missing response.failed")
++}
++
++func TestAntigravityResponsesFailureDoesNotCompletePartialToolCall(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	c, recorder := newAntigravityCompatContext(http.MethodPost, "/", nil)
++	writer := newAntigravityClientWriter(c.Writer, c.Writer, "test")
++	adapter := newAntigravityResponsesStreamAdapter("gemini-test")
++	adapter.Emit(&apicompat.AnthropicStreamEvent{Type: "message_start", Message: &apicompat.AnthropicResponse{ID: "resp_tool", Model: "gemini-test"}}, writer)
++	index := 0
++	adapter.Emit(&apicompat.AnthropicStreamEvent{Type: "content_block_start", Index: &index, ContentBlock: &apicompat.AnthropicContentBlock{Type: "tool_use", ID: "call1", Name: "lookup"}}, writer)
++	adapter.Emit(&apicompat.AnthropicStreamEvent{Type: "content_block_delta", Index: &index, Delta: &apicompat.AnthropicDelta{Type: "input_json_delta", PartialJSON: `{"id":`}}, writer)
++	adapter.WriteError(writer, "stream_read_error")
++	body := recorder.Body.String()
++	require.Contains(t, body, "event: response.failed")
++	require.Contains(t, body, `"status":"incomplete"`)
++	require.NotContains(t, body, "event: response.function_call_arguments.done")
++	require.NotContains(t, body, "event: response.output_item.done")
++	require.NotContains(t, body, "event: response.completed")
++}
