@@ -102,6 +102,8 @@ export interface WorkflowState {
   evidenceFiles?: EvidenceFileEntry[];
   executionBudget?: ExecutionBudgetState;
   recoveryCount?: number;
+  /** Explicit operator retries, bound to the original identity/surface and read-only history. */
+  manualRecoveries?: Array<{requestId:string; requestedAt:string; previousError:string}>;
   toolCheckpoints?: Record<string, {capabilityId: string; evidenceId?: string; result: string; completedAt: string}>;
   /** Verifier rounds spent on this task (bounded by the orchestrator). */
   reviewRounds?: number;

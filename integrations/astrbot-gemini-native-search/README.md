@@ -4,6 +4,8 @@ This plugin exposes gemini_web_search as a normal AstrBot function tool. It uses
 
 Installed and loaded 2026-10-14 (+08). Live tests: native grounding returned Google Vertex search redirect sources; Anthropic called gemini_web_search and, after actual search results were returned, successfully called the existing aiimg_task_status schema (HTTP 200 both steps). No business tool was executed during the probe.
 
+The same live path passed after the Sub2API stream patch was deployed: native search returned 15 grounding sources and the next model turn selected `aiimg_task_status`, with HTTP 200 on both model turns and 28.88 seconds overall. This verifies search and existing tool selection; QQ message delivery was not tested.
+
 The original AstrBot web_search setting stays false because this plugin implements native search separately. No provider configuration changes are required. All current personas have tools=null and plugin_set=[*], so the registered tool is included automatically.
 
 To disable: disable this plugin in AstrBot plugin management. To update: replace main.py and reload this plugin. A container restart was used for the initial install.

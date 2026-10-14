@@ -1,0 +1,14 @@
+{
+  "verified_at_local": "2026-10-14T13:11:55+08:00",
+  "upstream_build": "sub2api-local:0.2.16-streamfix.1",
+  "model": "gemini-3.8-flash-high",
+  "native_grounding_sources": 15,
+  "native_status": "ok",
+  "first_tool": "gemini_web_search",
+  "after_search_tool_calls": ["aiimg_task_status"],
+  "http_statuses": [200, 200],
+  "second_content_types": ["tool_use"],
+  "second_stop_reason": "tool_use",
+  "duration_seconds": 28.88,
+  "note": "Used the deployed plugin and existing AstrBot provider credential internally. Executed actual native web search, then accepted and produced an existing tool call. No business tool executed. QQ delivery channel not exercised."
+}

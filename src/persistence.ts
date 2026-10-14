@@ -2,6 +2,8 @@ import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { AgentRequest, ApprovalChallenge, ConversationSurface, StoredApproval, TaskRecord, TaskStatus, ToolInvocationRecord, UserIdentity, UserMemory } from './types.js';
 import type { WorkflowState } from './task-workflow.js';
+import { assertTaskRecoverySafe, TaskRecoveryError } from './task-recovery.js';
+import type { TaskRecoveryRequest, RecoveryAudit } from './task-recovery.js';
 
 export interface Repository {
   ping(): Promise<void>;
@@ -21,6 +23,7 @@ export interface Repository {
   createTask(request: AgentRequest, surfaceId: string): Promise<TaskRecord>;
   updateTask(id: string, status: TaskStatus, fields?: { threadId?: string; resultSummary?: string; resultVisibility?: 'surface' | 'private'; errorCode?: string }): Promise<void>;
   findTask(id: string): Promise<TaskRecord | undefined>;
+  prepareTaskRecovery(id: string, input: TaskRecoveryRequest): Promise<TaskRecord>;
   findTaskByMessageReference(user: UserIdentity, surface: ConversationSurface, referenceId: string): Promise<TaskRecord | undefined>;
   setTaskCard(id: string, bizId: string): Promise<void>;
   setApprovalCard(id: string, bizId: string): Promise<void>;
@@ -191,6 +194,22 @@ export class InMemoryRepository implements Repository {
     return this.tasks.get(id);
   }
 
+  public async prepareTaskRecovery(id: string, input: TaskRecoveryRequest): Promise<TaskRecord> {
+    const task = this.tasks.get(id);
+    const workflow = this.workflows.get(id);
+    const audits = (this.audits as Array<RecoveryAudit & {taskId?:string}>).filter(event => event.taskId === id);
+    const protectedState = Boolean(this.approvals.get(id) || this.approvalHistory.get(id)?.length
+      || [...this.invocations.values()].some(item => item.taskId === id) || this.artifacts.get(id)?.length);
+    assertTaskRecoverySafe(task,input,workflow,audits,protectedState);
+    const previousError = task.errorCode!;
+    const recovery = {requestId:input.requestId,requestedAt:new Date().toISOString(),previousError};
+    workflow!.manualRecoveries = [...(workflow!.manualRecoveries ?? []),recovery];
+    task.status = 'queued';
+    delete task.errorCode;
+    this.audits.push({requestId:input.requestId,taskId:id,user:input.user,eventType:'task.recovery_requested',payload:recovery});
+    return task;
+  }
+
   public async findTaskByMessageReference(user: UserIdentity, surface: ConversationSurface, referenceId: string): Promise<TaskRecord | undefined> {
     return [...this.tasks.values()]
       .filter((task) => task.request.user.corpId === user.corpId
@@ -297,6 +316,53 @@ export class InMemoryRepository implements Repository {
 
 export class PgRepository implements Repository {
   public constructor(private readonly pool: Pool) {}
+
+  public async prepareTaskRecovery(id: string, input: TaskRecoveryRequest): Promise<TaskRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [id]);
+      const row = locked.rows[0];
+      const task: TaskRecord | undefined = row ? {
+        id:row.id,request:row.request_payload,status:row.status,createdAt:row.created_at.getTime(),
+        ...(row.codex_thread_id ? {threadId:row.codex_thread_id} : {}),
+        ...(row.card_biz_id ? {cardBizId:row.card_biz_id} : {}),
+        ...(row.approval_card_biz_id ? {approvalCardBizId:row.approval_card_biz_id} : {}),
+        ...(row.result_summary ? {resultSummary:row.result_summary} : {}),
+        ...(row.result_visibility !== 'unknown' ? {resultVisibility:row.result_visibility} : {}),
+        ...(row.error_code ? {errorCode:row.error_code} : {})
+      } : undefined;
+      const saved = await client.query<{state:WorkflowState}>('SELECT state FROM task_workflows WHERE task_id=$1 FOR UPDATE',[id]);
+      const workflow = saved.rows[0]?.state;
+      const history = await client.query<{event_type:string;payload:Record<string,unknown>}>(
+        'SELECT event_type,payload FROM audit_events WHERE task_id=$1 ORDER BY created_at,id',[id]);
+      const protectedState = await client.query<{present:boolean}>(`SELECT
+        EXISTS(SELECT 1 FROM approvals WHERE task_id=$1)
+        OR EXISTS(SELECT 1 FROM tool_invocations WHERE task_id=$1)
+        OR EXISTS(SELECT 1 FROM task_artifacts WHERE task_id=$1) AS present`,[id]);
+      assertTaskRecoverySafe(task,input,workflow,history.rows.map(e=>({eventType:e.event_type,payload:e.payload})),
+        protectedState.rows[0]?.present !== false);
+      if (row.corp_id !== input.user.corpId || row.user_id !== input.user.userId) throw new TaskRecoveryError('TASK_RECOVERY_NOT_FOUND');
+      const previousError = task.errorCode!;
+      const recovery = {requestId:input.requestId,requestedAt:new Date().toISOString(),previousError};
+      workflow!.manualRecoveries = [...(workflow!.manualRecoveries ?? []),recovery];
+      const updated = await client.query(`UPDATE tasks SET status='queued',error_code=NULL,finished_at=NULL
+        WHERE id=$1 AND status='failed' AND error_code=$2 AND corp_id=$3 AND user_id=$4`,
+        [id,previousError,input.user.corpId,input.user.userId]);
+      if (updated.rowCount !== 1) throw new TaskRecoveryError('TASK_RECOVERY_CONFLICT');
+      await client.query('UPDATE task_workflows SET state=$2,updated_at=now() WHERE task_id=$1',[id,JSON.stringify(workflow)]);
+      await client.query(`INSERT INTO audit_events(request_id,task_id,corp_id,user_id,surface_id,event_type,payload)
+        VALUES($1,$2,$3,$4,$5,'task.recovery_requested',$6)`,
+        [input.requestId,id,input.user.corpId,input.user.userId,row.surface_id,JSON.stringify(recovery)]);
+      await client.query('COMMIT');
+      task.status = 'queued';
+      delete task.errorCode;
+      return task;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally { client.release(); }
+  }
 
   public async ping(): Promise<void> {
     await this.pool.query('SELECT 1');

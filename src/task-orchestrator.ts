@@ -21,6 +21,7 @@ import { CrossBorderOpsTool } from './crossborderops-tool.js';
 import { McpReadTool } from './mcp-read-tool.js';
 import { TaskWorkflow, listCapabilities, type ScreenshotDeliveryReceipt, type TaskCompletion } from './task-workflow.js';
 import { capabilityById } from './capability-catalog.js';
+import { recoveryToolAllowed, taskRecoveryPrompt, type TaskRecoveryRequest } from './task-recovery.js';
 import { EvidenceReviewer, formatIssues, type ReviewProfile } from './evidence-reviewer.js';
 import { structuredEvidenceExcerpt } from './evidence-excerpt.js';
 import { parseAnalysisInput } from './analysis-tool.js';
@@ -720,6 +721,12 @@ export class TaskOrchestrator {
     await (this.cardWriteDrains.get(taskId)?.() ?? Promise.resolve()).catch(() => undefined);
   }
 
+  public async resumeFailedTask(taskId: string, input: TaskRecoveryRequest): Promise<void> {
+    const task = await this.repo.prepareTaskRecovery(taskId, input);
+    const surfaceId = await this.repo.ensureSurface(task.request.user, task.request.surface);
+    await this.schedule(task.request.user, task, surfaceId);
+  }
+
   public async recover(): Promise<void> {
     for (const task of await this.repo.listPendingClarifications()) await this.scheduleClarificationExpiry(task);
     const tasks = await this.repo.listRecoverableTasks();
@@ -868,6 +875,9 @@ export class TaskOrchestrator {
       // recovered task keeps its thread; a new request never inherits old tool
       // outputs or evidence IDs from another task in the same chat.
       const knowledgeContextValid = !this.knowledgeTool || await this.knowledgeTool.contextValid(task.request.user, task.request.surface.id);
+      const persistedWorkflow = await this.repo.getWorkflow(task.id);
+      const manualRecovery = Boolean(persistedWorkflow?.manualRecoveries?.length);
+      if (manualRecovery && !knowledgeContextValid) throw new Error('TASK_RECOVERY_CONTEXT_INVALID');
       if (!knowledgeContextValid) await this.repo.resetSurfaceThread(surfaceId);
       let threadId: string = task.threadId && knowledgeContextValid
         ? await (this.codex.ensureThread?.(task.threadId, task.request.user, task.id) ?? Promise.resolve(task.threadId))
@@ -888,7 +898,7 @@ export class TaskOrchestrator {
       const recentContext = !knowledgeContextValid ? [] : task.request.surface.type === 'direct'
         ? await this.repo.listRecentDirectContext(task.request.user, surfaceId, task.id)
         : await this.repo.listRecentPublicGroupContext(task.request.user, surfaceId, task.id);
-      const workflow = new TaskWorkflow(knowledgeContextValid ? await this.repo.getWorkflow(task.id) ?? { evidence: [], revision: 0 } : { evidence: [], revision: 0 });
+      const workflow = new TaskWorkflow(knowledgeContextValid ? persistedWorkflow ?? { evidence: [], revision: 0 } : { evidence: [], revision: 0 });
       if (this.codex.usesWorker?.(task.id)) {
         for (const item of attachments.filter((attachment) => attachment.localPath)) {
           const scope = `task:${task.id}/attachment:${item.id}`;
@@ -951,14 +961,14 @@ export class TaskOrchestrator {
       const skillIndex = await this.guideTool.index();
       const executionBudget = workflow.state.executionBudget ??= {used: {}, exhausted: []};
       workflow.state.toolCheckpoints ??= {};
-      let recoveryMode = false;
+      let recoveryMode = manualRecovery;
       let recoveryUnsafe = false;
       let incompleteStreamFailures = 0;
       // sawToolActivity is turn-local; after a stream dies the retrying turn
       // may receive no new tool calls. Keep a task-level signal so a later
       // transport failure resumes from persisted evidence instead of treating
       // the whole task as replay-safe.
-      let hadToolActivity = false;
+      let hadToolActivity = manualRecovery;
       let scopeContext = '';
       if (this.crossBorderOpsAccess.configured()) {
         try {
@@ -996,6 +1006,7 @@ export class TaskOrchestrator {
         workflow.state.clarification?.answer ? '发起人对澄清问题的回答：' + workflow.state.clarification.answer : '',
         workflow.state.contract ? '已登记的工作计划（继续原任务，不重复执行已完成的写操作）：' + JSON.stringify(workflow.state.contract) : '',
         workflow.state.evidence.length ? '已取得的证据元数据（实时数据仍需核对时效）：' + JSON.stringify(workflow.state.evidence) : '',
+        manualRecovery ? taskRecoveryPrompt(workflow.state) : '',
         '用户请求：',
         task.request.text,
         attachments.length ? '附件：' + attachments.map((item) => `${item.name}（附件 ID：${item.id}）`).join('、') : ''
@@ -1035,6 +1046,12 @@ export class TaskOrchestrator {
           // whole model turn after this point, even when the model later fails.
           sawToolActivity = true;
           hadToolActivity = true;
+          if (manualRecovery && (approval.method !== 'item/tool/call'
+            || !recoveryToolAllowed(String(approval.params.namespace ?? ''), String(approval.params.tool ?? ''), capabilityIdForTool(approval)))) {
+            await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,surfaceId,
+              eventType:'task.recovery_tool_blocked',payload:{method:approval.method,namespace:approval.params.namespace,tool:approval.params.tool}});
+            return {success:false,contentItems:[{type:'inputText',text:'TASK_RECOVERY_READ_ONLY: 恢复任务只允许读取、计算、报告生成及经正常审核后的原会话文件交付。'}]};
+          }
           if (approval.method === 'item/tool/call') {
             const namespace = String(approval.params.namespace ?? '');
             const tool = String(approval.params.tool ?? '');

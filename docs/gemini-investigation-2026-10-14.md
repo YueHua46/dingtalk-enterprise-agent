@@ -14,7 +14,9 @@ The local gateway now buffers heartbeats and empty Responses lifecycle metadata.
 
 The deployed AstrBot plugin is archived in `integrations/astrbot-gemini-native-search`. Its normal function calls Gemini native search through a separate Responses request. Real protocol verification returned grounding sources, then successfully selected the existing `aiimg_task_status` tool after the search result. The old tool was not executed. Ten plugin tests passed. QQ message delivery has not been tested.
 
-Responses native-search/function mixing returned HTTP 200 in this installation. Mixed tools must not be described as universally failing with 400; support depends on the route/model/version. Separating the search request keeps ordinary tools available and avoids relying on mixed-tool support.
+After the upstream patch deployment, the same live provider path passed again: the main model selected `gemini_web_search`, the deployed plugin returned 15 grounding sources, and the next model turn selected the original `aiimg_task_status` tool. Both main-model requests returned HTTP 200; the full probe took 28.88 seconds. Only the public search was executed.
+
+Google's current Gemini API documentation says built-in/custom tool combinations are in Preview for Gemini 3 and Gemini 4. That protocol support does not automatically carry over to the server's Antigravity/Responses compatibility route: the direct mixed-tools probe returned HTTP 200 here, while the observed historical 400 remains specific to its original route/request. The separately registered AstrBot search function keeps the existing business tools intact and was verified end to end through this provider path.
 
 ## Gemini 4 entitlement
 
@@ -24,6 +26,16 @@ https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
 
 Both existing Antigravity accounts returned HTTP 200 for model discovery, with no Gemini 4 entry. Both directly returned HTTP 404, `Requested entity was not found`, when requesting `gemini-4-argon` through the configured Antigravity upstream. A Gemini 3.8 positive control returned HTTP 200, `OK`, and `finishReason: STOP` using the same authenticated path. Removing Sub2API's local allowlist cannot resolve this upstream denial. This does not establish entitlement to the separately billed Developer API.
 
-## Acceptance still pending
+Google's release notes identify the GA release date as 2026-10-13. Its current migration/pricing guide explicitly says Gemini 4 Argon is unavailable on the Free tier and Google AI Pro plan. The two server accounts report Google AI Pro, consistent with the observed lack of entitlement on this path. The separately billed Gemini API is a different access path; no billing account or API key was created.
 
-The original real group task failed and did not deliver a verified PDF. After the fixes, sending the new exact US 30-day diagnostic request through the current user's DWS profile failed twice with `RATE_LIMIT_ERROR`, using the same idempotency key. No new task was created. The native-window fallback also failed before performing any UI action. Do not substitute a mock task or bypass PDF evidence review to claim successful group E2E. A new group request must complete its evidence review and actual PDF delivery before this acceptance item can pass.
+Official references: `https://ai.google.dev/gemini-api/docs/changelog`, `https://ai.google.dev/gemini-api/docs/latest-model`, and `https://ai.google.dev/gemini-api/docs/tool-combination`. The current tool-combination guide covers Gemini 3 and Gemini 4 in Preview and describes context circulation fields that a compatibility adapter must preserve. The historical mixed-tool HTTP 400 should therefore be attributed to its specific route/request rather than asserted as a universal Gemini restriction.
+
+## Real group E2E and remaining acceptance
+
+After two DWS send attempts returned `RATE_LIMIT_ERROR`, the user manually sent the exact diagnostic request to the original group. This created real task `4d464fb6-8384-4983-936a-b9ce15110d7f` at 12:50:24 Asia/Taipei. It fetched authorized US advertising data and rendered a first PDF. The normal reviewer rejected that PDF for inconsistent report scopes, unsupported completeness and profitability claims, and unsupported object mappings. The model then fetched additional keyword data and recalculated its figures. The rejected PDF was never delivered.
+
+The next model request, gateway `req-3j`, repeatedly hit the same upstream empty stream on account 3. Six attempts ended in `MODEL_REQUEST_RETRY_EXHAUSTED`; total request time was 394,207 ms. The task failed at 13:04:31 Asia/Taipei. No whole-task replay occurred. Audit counts: one artifact review, zero submitted artifacts, zero delivered artifacts. All 22 observed tool calls were reference, read, calculation, rendering or submission operations; no advertising mutation occurred. This proves that bounded request retries alone did not resolve the failure.
+
+Immediately preceding successful requests included 313,699 request characters and 114,583 input tokens; Codex reported a 258,400-token context window. Another 60,080 ms request completed normally. These observations do not prove a fixed 60-second timeout or a context-window overflow. The exact failed wire body was not persisted, so reconstructed rollout contents must not be represented as an exact replay.
+
+The upstream patch was deployed after this task ended. Health, frontend, a real Responses request and native grounded search passed. Long-task recovery, corrected PDF review, and actual delivery to the original group remain required before declaring advertising E2E successful. Evidence is archived under ignored `output/gemini-investigation/e2e-4d464fb6/`.

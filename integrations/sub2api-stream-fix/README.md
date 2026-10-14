@@ -1,6 +1,6 @@
-# Sub2API Antigravity streaming candidate fix
+# Sub2API Antigravity streaming fix
 
-This candidate applies to the official `Wei-Shaw/sub2api` **v0.2.16** source. It is not deployed to the remote server. The local Agent gateway separately retries an empty request before any model content or tool output reaches its caller.
+This patch applies to the official `Wei-Shaw/sub2api` **v0.2.16** source. It was deployed to the remote server on 2026-10-14 at approximately 13:06 Asia/Taipei, after the active advertising task ended. The local Agent gateway separately retries an empty request before any model content or tool output reaches its caller.
 
 ## Confirmed production failure
 
@@ -47,4 +47,10 @@ Build a separate candidate image with the complete embedded frontend and existin
 
 The full Antigravity package passed locally using Go 1.27.2. After the final error-code adjustment, the affected Antigravity tests passed in 1.642s and `TestAntigravityCompat|TestAntigravityResponsesFailure` passed in 11.958s. These cover failure protocol framing, empty arrays, matching response IDs/timestamps, partial text preservation, and incomplete tool safety. The upstream frontend was installed with its frozen lockfile using pnpm 9.15.9; its 3 locale tests, type checking, and production Vite build passed. The regenerated patch applies cleanly to the original v0.2.16 files.
 
-Linux amd64 compilation passed with `CGO_ENABLED=0`, `-tags embed`, `-trimpath`, and version `0.2.16-streamfix.1` (original commit plus `+streamfix`, build type `local-patch`, actual build time `2026-10-14T04:50:40Z`). Candidate artifact: `output/sub2api-stream-fix/sub2api-0.2.16-streamfix.1-linux-amd64`, 123,695,264 bytes; SHA-256 `519723228ee82c444c739631b1a47ca919c4587552fd7cac8534558974039e87`. The artifact is ignored; the patch and this record are the committed deliverables. This subtask has not restarted or modified the remote service; deployment and production validation are coordinated separately.
+Linux amd64 compilation passed with `CGO_ENABLED=0`, `-tags embed`, `-trimpath`, and version `0.2.16-streamfix.1` (original commit plus `+streamfix`, build type `local-patch`, actual build time `2026-10-14T04:50:40Z`). Binary artifact: `output/sub2api-stream-fix/sub2api-0.2.16-streamfix.1-linux-amd64`, 123,695,264 bytes; SHA-256 `519723228ee82c444c739631b1a47ca919c4587552fd7cac8534558974039e87`. The artifact is ignored; the patch and this record are the committed deliverables.
+
+## Deployment and rollback
+
+The deployment uses `sub2api-local:0.2.16-streamfix.1`, image ID `sha256:64f343e4f6bf28c3659862a39f33a3d5991db184e8ab3ab2364c1b1d75407ebe`. The running binary's `-version` confirms the patched version, original commit plus `+streamfix`, and the build timestamp above. `/health`, the embedded frontend and its assets passed live checks. A real Agent Responses request and native search with grounding also passed after the switch. These small probes do not establish that the long advertising task is fixed.
+
+Remote compose directory: `/home/ubuntu/projects/sub2api-deploy`. Before changing only the service image, the switch script saved `docker-compose.yml.before-streamfix-20261014`; it automatically restores that file if health or frontend checks fail. For rollback during a safe maintenance window, restore that backup to `docker-compose.yml` and run `docker compose up -d --no-deps --pull never sub2api`. The original pinned image is retained. Do not roll back by rebuilding the older extracted source tree.

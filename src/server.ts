@@ -15,6 +15,7 @@ import { verifyModelTaskToken } from './file-worker-auth.js';
 import { NativeWebTool } from './native-web-tool.js';
 import { StandaloneWebSearch } from './standalone-web-search.js';
 import { requestModelWithRetry } from './model-request-retry.js';
+import { registerTaskRecoveryRoute } from './task-recovery-route.js';
 
 export interface ReadinessProbe {
   check(): Promise<Record<string, string>>;
@@ -123,6 +124,7 @@ export async function createServer(
       else if (typeof request.headers.authorization === 'string') headers.authorization = request.headers.authorization;
       let response: Response;
       const upstreamStartedAt = Date.now();
+      const modelBody = JSON.stringify(adapted.body);
       const cancellation=new AbortController();
       reply.raw.once('close',()=>{if(!reply.raw.writableFinished)cancellation.abort();});
       // Keep the transport-level guard above the retry budget. A fixed
@@ -131,11 +133,12 @@ export async function createServer(
       const modelRequestTimeoutMs = Math.max(10 * 60 * 1000, config.MODEL_REQUEST_RETRY_BUDGET_MS + 30_000);
       try {
         const result=await requestModelWithRetry(upstream,{
-          method:'POST',headers,body:JSON.stringify(adapted.body),
+          method:'POST',headers,body:modelBody,
           signal:AbortSignal.any([AbortSignal.timeout(modelRequestTimeoutMs),cancellation.signal])
         },{maxAttempts:config.MODEL_REQUEST_MAX_ATTEMPTS,budgetMs:config.MODEL_REQUEST_RETRY_BUDGET_MS,retryEmptySse:true,
           attemptTimeoutMs:config.MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
-          onRetry:event=>request.log.warn(event,'model request retry scheduled')});
+          onRetry:event=>request.log.warn({...event,taskId:workerTaskId,requestChars:modelBody.length,
+            durationMs:Date.now()-upstreamStartedAt},'model request retry scheduled')});
         response=result.response;
         reply.header('x-model-request-attempts',String(result.attempts));
         if ([429,502,503,504].includes(response.status)) {
@@ -144,7 +147,8 @@ export async function createServer(
             message: 'MODEL_REQUEST_RETRY_EXHAUSTED: upstream retries exhausted or retry-after exceeds budget'}});
         }
       } catch (error) {
-        request.log.error({ error: error instanceof Error ? error.name : 'UnknownError' }, 'model upstream unavailable');
+        request.log.error({ error: error instanceof Error ? error.name : 'UnknownError', taskId:workerTaskId,
+          requestChars:modelBody.length,durationMs:Date.now()-upstreamStartedAt }, 'model upstream unavailable');
         return reply.code(502).send({ error: {code: 'MODEL_REQUEST_RETRY_EXHAUSTED',
           message: 'MODEL_REQUEST_RETRY_EXHAUSTED: model_upstream_unavailable'} });
       }
@@ -179,7 +183,7 @@ export async function createServer(
             reply.raw.write(restoreSseChunk(event, adapted.toolNames) + '\n\n');
             if (isTerminalSseEvent(event)) {
               request.log.info({taskId: workerTaskId, durationMs: Date.now()-upstreamStartedAt, headersMs, receivedBytes,
-                requestChars: JSON.stringify(adapted.body).length, completed: event.includes('response.completed')}, 'model stream terminal');
+                requestChars: modelBody.length, completed: event.includes('response.completed')}, 'model stream terminal');
               reply.raw.end();
               return;
             }
@@ -188,7 +192,7 @@ export async function createServer(
         pending += decoder.decode();
         if (pending) reply.raw.write(restoreSseChunk(pending, adapted.toolNames));
         request.log.warn({taskId: workerTaskId, durationMs: Date.now()-upstreamStartedAt, headersMs, receivedBytes,
-          requestChars: JSON.stringify(adapted.body).length}, 'model stream ended without terminal');
+          requestChars: modelBody.length}, 'model stream ended without terminal');
         reply.raw.end();
       } catch (error) {
         request.log.error({ error: error instanceof Error ? error.name : 'UnknownError' }, 'model stream interrupted');
@@ -196,6 +200,8 @@ export async function createServer(
       }
     });
   }
+
+  registerTaskRecoveryRoute(app, config.INTERNAL_API_TOKEN, (taskId, input) => orchestrator.resumeFailedTask(taskId,input));
 
   app.post<{ Body: AgentRequest }>('/internal/messages', async (request, reply) => {
     if (config.NODE_ENV === 'production' && !safeTokenEqual(request.headers['x-internal-token'], config.INTERNAL_API_TOKEN)) {

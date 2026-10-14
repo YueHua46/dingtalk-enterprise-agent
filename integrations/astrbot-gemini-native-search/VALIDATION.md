@@ -14,6 +14,8 @@ Real API checks used the existing AstrBot provider configuration and credential 
 - A Responses request combining native search and a normal function returned HTTP 200. The current route does not universally reject mixed tools.
 - The main Anthropic request called `gemini_web_search`; after executing actual native search and submitting its result, the next main request called `aiimg_task_status`. Both main requests returned HTTP 200. No business tool was executed by this probe.
 
+After the upstream switched to `sub2api-local:0.2.16-streamfix.1`, the same deployed plugin and provider passed another real tool-chain probe at 13:11 (+08): native search returned `ok` with 15 sources; the subsequent main request produced an `aiimg_task_status` tool call. Both main requests returned HTTP 200 and the complete probe took 28.88 seconds. The existing business tool was not executed. Sanitized evidence is in `post-streamfix-verification.json`.
+
 Protocol regression tests run independently of AstrBot:
 
 ```sh
