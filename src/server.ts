@@ -15,6 +15,8 @@ import { verifyModelTaskToken } from './file-worker-auth.js';
 import { NativeWebTool } from './native-web-tool.js';
 import { StandaloneWebSearch } from './standalone-web-search.js';
 import { requestModelWithRetry } from './model-request-retry.js';
+import { modelRequestDiagnostics } from './model-request-diagnostics.js';
+import { applyGeminiOutputBudget } from './model-output-budget.js';
 import { registerTaskRecoveryRoute } from './task-recovery-route.js';
 
 export interface ReadinessProbe {
@@ -118,6 +120,8 @@ export async function createServer(
       let adapted;
       try { adapted = adaptModelRequest(request.body); }
       catch { return reply.code(400).send({ error: 'invalid_model_request' }); }
+      const defaultOutputBudgetApplied=applyGeminiOutputBudget(adapted.body,config.MODEL_NAME,
+        config.GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS);
       const upstream = config.MODEL_BASE_URL!.replace(/\/+$/, '') + '/responses';
       const headers: Record<string, string> = { 'content-type': 'application/json' };
       if (workerTaskId && config.MODEL_API_KEY) headers.authorization = `Bearer ${config.MODEL_API_KEY}`;
@@ -125,6 +129,8 @@ export async function createServer(
       let response: Response;
       const upstreamStartedAt = Date.now();
       const modelBody = JSON.stringify(adapted.body);
+      request.log.info({taskId:workerTaskId,requestChars:modelBody.length,defaultOutputBudgetApplied,
+        ...modelRequestDiagnostics(adapted.body,config.MODEL_NAME)},'model request structure');
       const cancellation=new AbortController();
       reply.raw.once('close',()=>{if(!reply.raw.writableFinished)cancellation.abort();});
       // Keep the transport-level guard above the retry budget. A fixed

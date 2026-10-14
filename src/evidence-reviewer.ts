@@ -2,7 +2,8 @@ import type { Config } from './config.js';
 import type { TaskContract, TaskCompletion, EvidenceRecord, WorkflowState } from './task-workflow.js';
 import {requestModelWithRetry,type ModelRetryState} from './model-request-retry.js';
 import {structuredEvidenceExcerpt} from './evidence-excerpt.js';
-import {readModelResponseBody} from './model-response-body.js';
+import {readModelResponseBody,ModelIncompleteResponseError} from './model-response-body.js';
+import {applyGeminiOutputBudget} from './model-output-budget.js';
 
 export interface ReviewIssue {
   severity: 'blocking' | 'advisory';
@@ -28,6 +29,8 @@ export interface ReviewDiagnostics {
   model?: string;
   requestChars: number;
   attempts: number;
+  maxOutputTokens?: number;
+  defaultOutputBudgetApplied?: boolean;
   requests: Array<{ attempt: number; durationMs: number; headersMs?: number; bodyMs?: number; status?: number; error?: string; inputTokens?: number; outputTokens?: number; reasoningTokens?: number; parseError?: string }>;
   retries: Array<{ attempt: number; status?: number; reason: string; waitMs: number }>;
   checks?: Array<{claim: string; kind: string; evidenceIds: string[]; observed: string; missing: string; verdict: string}>;
@@ -87,7 +90,7 @@ const RUBRIC = [
 ].join('\n');
 
 export class EvidenceReviewer {
-  public constructor(private readonly config: Pick<Config, 'MODEL_BASE_URL' | 'MODEL_API_KEY' | 'MODEL_NAME'> & Partial<Pick<Config,'MODEL_REQUEST_MAX_ATTEMPTS'|'MODEL_REQUEST_RETRY_BUDGET_MS'|'MODEL_REVIEW_TIMEOUT_MS'|'MODEL_REVIEW_BASE_URL'|'MODEL_REVIEW_API_KEY'|'MODEL_REVIEW_NAME'>>, private readonly http: typeof fetch = fetch) {}
+  public constructor(private readonly config: Pick<Config, 'MODEL_BASE_URL' | 'MODEL_API_KEY' | 'MODEL_NAME'> & Partial<Pick<Config,'MODEL_REQUEST_MAX_ATTEMPTS'|'MODEL_REQUEST_RETRY_BUDGET_MS'|'MODEL_REVIEW_TIMEOUT_MS'|'MODEL_REVIEW_BASE_URL'|'MODEL_REVIEW_API_KEY'|'MODEL_REVIEW_NAME'|'GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS'>>, private readonly http: typeof fetch = fetch) {}
 
   public async review(input: ReviewInput): Promise<ReviewResult> {
     if (!(this.config.MODEL_REVIEW_BASE_URL ?? this.config.MODEL_BASE_URL) || !(this.config.MODEL_REVIEW_API_KEY ?? this.config.MODEL_API_KEY)) return { status: 'unavailable', issues: [], reason: 'reviewer_not_configured' };
@@ -106,6 +109,7 @@ export class EvidenceReviewer {
           : { status: 'pass', issues, reason: 'supported', diagnostics };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
+        if (error instanceof ModelIncompleteResponseError) break;
         if (retryState.attempts >= (this.config.MODEL_REQUEST_MAX_ATTEMPTS ?? 6) || Date.now() >= retryState.deadlineAt) break;
       }
     }
@@ -114,9 +118,13 @@ export class EvidenceReviewer {
 
   private async ask(payload: unknown,retryState:ModelRetryState,diagnostics:ReviewDiagnostics): Promise<ReviewIssue[]> {
     const endpoint = (this.config.MODEL_REVIEW_BASE_URL ?? this.config.MODEL_BASE_URL)!.replace(/\/+$/, '') + '/responses';
-    const requestBody = JSON.stringify({ model: this.config.MODEL_REVIEW_NAME ?? this.config.MODEL_NAME, stream: true, input: [
+    const reviewModel=this.config.MODEL_REVIEW_NAME ?? this.config.MODEL_NAME;
+    const outboundBody:Record<string,unknown>={ model: reviewModel, stream: true, input: [
       { role: 'system', content: RUBRIC }, { role: 'user', content: JSON.stringify(payload) }
-    ] });
+    ] };
+    diagnostics.defaultOutputBudgetApplied=applyGeminiOutputBudget(outboundBody,reviewModel,this.config.GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS ?? 32768);
+    if(typeof outboundBody.max_output_tokens==='number')diagnostics.maxOutputTokens=outboundBody.max_output_tokens;
+    const requestBody = JSON.stringify(outboundBody);
     diagnostics.requestChars = requestBody.length;
     // Consume the non-streaming body inside the attempt deadline as well.
     // This makes a stalled body retryable just like a stalled connection.

@@ -1,6 +1,6 @@
 # Sub2API Antigravity streaming fix
 
-This patch applies to the official `Wei-Shaw/sub2api` **v0.2.16** source. It was deployed to the remote server on 2026-10-14 at approximately 13:06 Asia/Taipei, after the active advertising task ended. The local Agent gateway separately retries an empty request before any model content or tool output reaches its caller.
+This patch applies to the official `Wei-Shaw/sub2api` **v0.2.16** source. The initial streamfix.1 was deployed on 2026-10-14 at approximately 13:06 Asia/Taipei. The active deployment is now streamfix.2, switched at 13:51:48 with zero active account slots; it additionally preserves no-content MAX_TOKENS as an incomplete response. The local Agent gateway separately retries an empty request before any model content or tool output reaches its caller.
 
 ## Confirmed production failure
 
@@ -29,8 +29,8 @@ This patch does not implement transparent upstream replay after the HTTP heartbe
 In a separate checkout of upstream tag v0.2.16:
 
 ```sh
-git apply --check /path/to/sub2api-v0.2.16-stream.patch
-git apply /path/to/sub2api-v0.2.16-stream.patch
+git apply --check /path/to/sub2api-v0.2.16-streamfix.2.patch
+git apply /path/to/sub2api-v0.2.16-streamfix.2.patch
 cd backend
 go test ./internal/pkg/antigravity -count=1
 go test ./internal/service -run 'TestAntigravityCompat|TestAntigravityResponsesFailure' -count=1
@@ -49,8 +49,19 @@ The full Antigravity package passed locally using Go 1.27.2. After the final err
 
 Linux amd64 compilation passed with `CGO_ENABLED=0`, `-tags embed`, `-trimpath`, and version `0.2.16-streamfix.1` (original commit plus `+streamfix`, build type `local-patch`, actual build time `2026-10-14T04:50:40Z`). Binary artifact: `output/sub2api-stream-fix/sub2api-0.2.16-streamfix.1-linux-amd64`, 123,695,264 bytes; SHA-256 `519723228ee82c444c739631b1a47ca919c4587552fd7cac8534558974039e87`. The artifact is ignored; the patch and this record are the committed deliverables.
 
-## Deployment and rollback
+## Initial streamfix.1 deployment and rollback
 
 The deployment uses `sub2api-local:0.2.16-streamfix.1`, image ID `sha256:64f343e4f6bf28c3659862a39f33a3d5991db184e8ab3ab2364c1b1d75407ebe`. The running binary's `-version` confirms the patched version, original commit plus `+streamfix`, and the build timestamp above. `/health`, the embedded frontend and its assets passed live checks. A real Agent Responses request and native search with grounding also passed after the switch. These small probes do not establish that the long advertising task is fixed.
 
 Remote compose directory: `/home/ubuntu/projects/sub2api-deploy`. Before changing only the service image, the switch script saved `docker-compose.yml.before-streamfix-20261014`; it automatically restores that file if health or frontend checks fail. For rollback during a safe maintenance window, restore that backup to `docker-compose.yml` and run `docker compose up -d --no-deps --pull never sub2api`. The original pinned image is retained. Do not roll back by rebuilding the older extracted source tree.
+
+
+## Active streamfix.2 deployment
+
+The combined patch is `sub2api-v0.2.16-streamfix.2.patch`; `sub2api-streamfix.1-max-tokens.patch` is the incremental equivalent for an existing streamfix.1 source tree. See `MAX-TOKENS-FOLLOWUP.md` for the newly observed MAX_TOKENS cause, precise 8,192-token default conversion path, tests, and protocol behavior. Do not apply the merged and incremental patches together.
+
+On 2026-10-14 at 13:51:48 Asia/Taipei, the service was switched to `sub2api-local:0.2.16-streamfix.2` after checking zero active account slots and pre-switch health. Image ID: `sha256:19e1e0c8d568ed9c148b857ca83f8371ec79eea6a73ffdc63549c4188b787823`. The running binary reports `0.2.16-streamfix.2`, commit `01842576b3d5c1e2545b5a99ad555d36e28ed306+streamfix2`, build time `2026-10-14T05:43:57Z`. Its SHA-256 matches the local upload: `4dc52fdfe4a6083c916206de12baae4e591b95328a1bc8585461f22e34160abc` (123,695,264 bytes).
+
+Docker health is healthy, `/health` returns status ok, and the embedded frontend plus all six referenced assets passed checks after the switch. No advertising E2E was triggered by this deployment subtask; the main task coordinates the real recovery separately. No output budget was changed in this binary.
+
+Rollback to streamfix.1: restore `/home/ubuntu/projects/sub2api-deploy/docker-compose.yml.before-streamfix2-20261014` to `docker-compose.yml` from that directory, then run `docker compose up -d --no-deps --pull never sub2api` when active requests are zero. Both the streamfix.1 image and the original pre-patch image are retained. The switch script restores streamfix.1 automatically if health or frontend validation fails.

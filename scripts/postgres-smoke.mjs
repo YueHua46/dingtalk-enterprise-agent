@@ -18,6 +18,7 @@ const request = {
 };
 
 let task;
+let recoveryTask;
 try {
   await repo.ping();
   await repo.ensureUser(user);
@@ -51,13 +52,31 @@ try {
 
   await repo.updateTask(task.id, 'completed', { resultSummary: 'ok' });
   assert.equal((await repo.findTask(task.id))?.status, 'completed');
-  console.log(JSON.stringify({ ok: true, checks: ['task', 'inbox', 'approval', 'idempotency', 'memory'] }));
+  const recoverySurface = {type:'group',id:'smoke-recovery-' + suffix};
+  const recoveryRequest = {...request,requestId:'recovery-' + suffix,messageId:'recovery-' + suffix,surface:recoverySurface};
+  const recoverySurfaceId = await repo.ensureSurface(user,recoverySurface);
+  recoveryTask = await repo.createTask(recoveryRequest,recoverySurfaceId);
+  await repo.updateTask(recoveryTask.id,'failed',{threadId:'saved-thread',errorCode:'MODEL_REQUEST_RETRY_EXHAUSTED'});
+  await repo.saveWorkflow(recoveryTask.id,{revision:1,evidence:[],evidenceFiles:[{file:'evidence/index.json'}]});
+  for(const eventType of ['tool.call_started','tool.call_finished']) await repo.audit({requestId:recoveryRequest.requestId,taskId:recoveryTask.id,user,
+    surfaceId:recoverySurfaceId,eventType,payload:{namespace:'analysis',tool:'python',capabilityId:'analysis.python',argumentHash:'smoke'}});
+  const recoveryInput={requestId:'explicit-recovery-' + suffix,user,surface:recoverySurface};
+  const attempts=await Promise.allSettled([repo.prepareTaskRecovery(recoveryTask.id,recoveryInput),repo.prepareTaskRecovery(recoveryTask.id,recoveryInput)]);
+  assert.equal(attempts.filter(result=>result.status==='fulfilled').length,1);
+  assert.equal((await repo.findTask(recoveryTask.id))?.status,'queued');
+  assert.equal((await repo.findTask(recoveryTask.id))?.threadId,'saved-thread');
+  assert.equal((await repo.getWorkflow(recoveryTask.id))?.manualRecoveries?.[0]?.requestId,recoveryInput.requestId);
+  console.log(JSON.stringify({ ok: true, checks: ['task', 'inbox', 'approval', 'idempotency', 'memory', 'recovery-cas'] }));
 } finally {
   if (task) {
     await pool.query('DELETE FROM tool_invocations WHERE task_id=$1', [task.id]).catch(() => undefined);
     await pool.query('DELETE FROM approvals WHERE task_id=$1', [task.id]).catch(() => undefined);
     await pool.query('DELETE FROM audit_events WHERE task_id=$1', [task.id]).catch(() => undefined);
     await pool.query('DELETE FROM tasks WHERE id=$1', [task.id]).catch(() => undefined);
+  }
+  if(recoveryTask) {
+    await pool.query('DELETE FROM audit_events WHERE task_id=$1',[recoveryTask.id]).catch(()=>undefined);
+    await pool.query('DELETE FROM tasks WHERE id=$1',[recoveryTask.id]).catch(()=>undefined);
   }
   await pool.query('DELETE FROM inbox_events WHERE event_id=$1', [request.messageId]).catch(() => undefined);
   await pool.query('DELETE FROM conversation_surfaces WHERE corp_id=$1 AND user_id=$2', [user.corpId, user.userId]).catch(() => undefined);

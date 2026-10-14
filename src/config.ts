@@ -34,6 +34,9 @@ const schema = z.object({
   GEMINI_MODEL_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.string().url().optional()),
   GEMINI_MODEL_API_KEY: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
   GEMINI_MODEL_NAME: z.string().min(1).optional(),
+  // Only fills an omitted limit on this gateway's configured Gemini model.
+  // 0 disables it; explicit request limits always win.
+  GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(0).max(64000).default(32768),
   MODEL_BASE_URL: z.string().url().optional(),
   MODEL_TOOL_COMPAT_PROXY: z.enum(['true', 'false']).default('false'),
   MODEL_REQUEST_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(6),

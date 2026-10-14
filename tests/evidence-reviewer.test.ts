@@ -36,6 +36,27 @@ function input(overrides: Partial<ReviewInput> = {}): ReviewInput {
 }
 
 describe('EvidenceReviewer', () => {
+  it.each([
+    ['gpt-5.6-sol','gemini-3.8-flash-high',64000,64000],
+    ['gemini-3.8-flash-high','gpt-5.6-sol',64000,undefined],
+    ['gpt-5.6-sol','gemini-3.8-flash-high',0,undefined]
+  ] as const)('applies Gemini budget using the actual review model: %s / %s / %s',async(mainModel,reviewModel,configured,expected)=>{
+    const http=vi.fn(async(_url:string,init:RequestInit)=>{
+      const body=JSON.parse(String(init.body));expect(body.model).toBe(reviewModel);expect(body.max_output_tokens).toBe(expected);
+      return modelReply([]);
+    });
+    const result=await new EvidenceReviewer({...config,MODEL_NAME:mainModel,MODEL_REVIEW_NAME:reviewModel,
+      GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS:configured},http as typeof fetch).review(input());
+    expect(result.status).toBe('pass');expect(result.diagnostics?.maxOutputTokens).toBe(expected);expect(http).toHaveBeenCalledOnce();
+  });
+  it('does not repeat an explicit MAX_TOKENS terminal in either transport or verdict retry loops',async()=>{
+    const wire='data: {"type":"response.incomplete","response":{"status":"incomplete","output":[],"incomplete_details":{"reason":"max_output_tokens"}}}\n\n';
+    const http=vi.fn(async()=>new Response(wire,{headers:{'content-type':'text/event-stream'}}));
+    const result=await new EvidenceReviewer(config,http as typeof fetch).review(input());
+    expect(result.status).toBe('unavailable');expect(result.issues).toEqual([]);
+    expect(result.reason).toBe('MODEL_STREAM_response.incomplete:max_output_tokens');
+    expect(result.diagnostics?.attempts).toBe(1);expect(result.diagnostics?.retries).toEqual([]);expect(http).toHaveBeenCalledOnce();
+  });
   it('lets a valid 51-second review finish and records its usage', async () => {
     vi.useFakeTimers();
     try {

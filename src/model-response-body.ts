@@ -1,3 +1,13 @@
+/** An explicit incomplete response is a semantic model outcome, not a
+ * transport TypeError. Repeating the same request cannot raise its budget. */
+export class ModelIncompleteResponseError extends Error {
+  constructor(reason: unknown) {
+    const safeReason = reason === 'max_output_tokens' || reason === 'content_filter' ? reason : 'unknown';
+    super(`MODEL_STREAM_response.incomplete:${safeReason}`);
+    this.name='ModelIncompleteResponseError';
+  }
+}
+
 /** Normalize a complete Responses SSE stream into its final JSON envelope.
  * Partial output never becomes a successful verdict. */
 export async function readModelResponseBody(response: Response): Promise<string> {
@@ -12,7 +22,8 @@ export async function readModelResponseBody(response: Response): Promise<string>
     const item = JSON.parse(data);
     if (item.type === 'response.output_text.delta') output += item.delta ?? '';
     if (item.type === 'response.completed') completed = item.response;
-    if (['response.failed','response.incomplete','error'].includes(item.type)) throw new TypeError(`MODEL_STREAM_${item.type}`);
+    if (item.type === 'response.incomplete') throw new ModelIncompleteResponseError(item.response?.incomplete_details?.reason);
+    if (['response.failed','error'].includes(item.type)) throw new TypeError(`MODEL_STREAM_${item.type}`);
   };
   try {
     while (true) {
@@ -24,7 +35,8 @@ export async function readModelResponseBody(response: Response): Promise<string>
       if (done) break;
     }
     if (pending.trim()) event(pending);
-    if (!completed || completed.status === 'incomplete' || completed.status === 'failed') throw new TypeError('MODEL_STREAM_INCOMPLETE');
+    if (completed?.status === 'incomplete') throw new ModelIncompleteResponseError((completed.incomplete_details as {reason?:unknown} | undefined)?.reason);
+    if (!completed || completed.status === 'failed') throw new TypeError('MODEL_STREAM_INCOMPLETE');
     if (!Array.isArray(completed.output) || !completed.output.length) completed.output = [{content: [{type: 'output_text', text: output}]}];
     return JSON.stringify(completed);
   } finally {await reader.cancel().catch(() => undefined); reader.releaseLock();}

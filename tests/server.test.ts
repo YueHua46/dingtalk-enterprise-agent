@@ -8,6 +8,33 @@ import { randomUUID } from 'node:crypto';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('HTTP server', () => {
+  it('preserves an explicit MAX_TOKENS incomplete terminal and never retries it as an empty stream',async()=>{
+    const wire='event: response.created\ndata: {"type":"response.created","response":{"output":[]}}\n\n'
+      +'event: response.incomplete\ndata: {"type":"response.incomplete","response":{"status":"incomplete","output":[],"incomplete_details":{"reason":"max_output_tokens"},"usage":{"output_tokens":8192}}}\n\n';
+    const http=vi.fn(async()=>new Response(wire,{headers:{'content-type':'text/event-stream'}}));vi.stubGlobal('fetch',http);
+    const app=await createServer(loadConfig({DINGTALK_ROBOT_CODE:'robot',MODEL_BASE_URL:'https://model.example/v1',MODEL_TOOL_COMPAT_PROXY:'true'}),{} as TaskOrchestrator);
+    try {
+      const result=await app.inject({method:'POST',url:'/internal/model/v1/responses',payload:{model:'gemini-test',input:'test'}});
+      expect(result.statusCode).toBe(200);expect(http).toHaveBeenCalledOnce();
+      expect(result.headers['x-model-request-attempts']).toBe('1');
+      expect(result.body).toBe(wire);expect(result.body).not.toContain('response.completed');
+    } finally {await app.close();}
+  });
+  it('forwards the configured Gemini default while honoring an explicit request cap', async () => {
+    const bodies:Record<string,unknown>[]=[];
+    vi.stubGlobal('fetch',vi.fn(async(_url:string,options:RequestInit)=>{
+      bodies.push(JSON.parse(String(options.body)));
+      return new Response(JSON.stringify({output:[]}),{headers:{'content-type':'application/json'}});
+    }));
+    const app=await createServer(loadConfig({DINGTALK_ROBOT_CODE:'robot',MODEL_NAME:'gemini-3.8-flash-high',
+      MODEL_BASE_URL:'https://model.example/v1',MODEL_TOOL_COMPAT_PROXY:'true',GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS:'64000'}),{} as TaskOrchestrator);
+    try {
+      const payload={model:'gemini-3.8-flash-high',input:'test',reasoning:{effort:'high'},tools:[{type:'function',name:'tool'}]};
+      await app.inject({method:'POST',url:'/internal/model/v1/responses',payload});
+      await app.inject({method:'POST',url:'/internal/model/v1/responses',payload:{...payload,max_output_tokens:1024}});
+      expect(bodies).toEqual([{...payload,max_output_tokens:64000},{...payload,max_output_tokens:1024}]);
+    } finally {await app.close();}
+  });
   it('recovers a real compatibility empty-stream envelope before exposing SSE to Codex', async () => {
     let calls = 0;
     const complete = 'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n';
