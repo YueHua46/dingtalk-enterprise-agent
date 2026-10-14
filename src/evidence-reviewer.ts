@@ -241,9 +241,14 @@ function buildPayload(input: ReviewInput): Record<string, unknown> {
   const sourceExcerpts = Object.fromEntries(Object.entries(input.excerpts).filter(([id]) => !generatedIds.has(id)));
   const successful = evidence.filter((item) => item.status === 'success');
   const cited = [...new Set(Object.values(input.completion.factEvidence).flat())].filter(id => !generatedIds.has(id));
-  // Computations first (they carry the derived numbers), then citations, then
-  // the most recent remaining evidence, until the character budget is spent.
+  // Site rules are part of the acceptance context, not optional background.
+  // Put successful guide reads ahead of large metric payloads so the reviewer
+  // can verify applicability and thresholds before judging recommendations.
+  const guideIds = successful.filter((item) => item.capabilityId === 'reference.read_guide').map((item) => item.id);
+  // Then computations (they carry the derived numbers), citations, and the
+  // most recent remaining evidence until the character budget is spent.
   const ordered = [
+    ...guideIds,
     ...(input.verifiedFacts?.facts.map(fact => fact.evidenceId) ?? []),
     ...(input.verifiedEvidenceTables ?? []).flatMap(table => table && typeof table === 'object' && 'evidenceId' in table && typeof table.evidenceId === 'string' ? [table.evidenceId] : []),
     ...successful.filter((item) => ['analysis.python', 'analysis.table'].includes(item.capabilityId)).map((item) => item.id).reverse(),
@@ -271,6 +276,7 @@ function buildPayload(input: ReviewInput): Record<string, unknown> {
       continue;
     }
     let limit=profile === 'simple_product' ? 8_000 : EXCERPT_MAX_CHARS;
+    if (guideIds.includes(id)) limit = Math.min(limit, 16_000);
     try{if(JSON.parse(text)?.kind==='knowledge_evidence')limit=profile === 'simple_product' ? 20_000 : 40000;}catch{/* Other formats retain their existing bounds. */}
     // Bound sources carry the population/operation context for the selected
     // facts. Use the shared budget, not a fixed 12k prefix that hides later rows.

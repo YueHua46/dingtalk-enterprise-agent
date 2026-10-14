@@ -10,6 +10,7 @@ import { issueModelTaskToken } from './file-worker-auth.js';
 import { listingExportSchema, readListingExportBody } from './listing-export.js';
 import { knowledgeWorkerError } from './knowledge-worker-errors.js';
 import { reportRenderSchema } from './report-render.js';
+import { readUtf8Body as readBody } from './http-body.js';
 
 interface WorkerSettings {
   secret: string;
@@ -459,11 +460,3 @@ function json(response: ServerResponse, code: number, value: unknown): void {
   response.end(JSON.stringify(value));
 }
 
-async function readBody(request: IncomingMessage, maxBytes: number): Promise<string> {
-  let value = '';
-  for await (const chunk of request) {
-    value += String(chunk);
-    if (value.length > maxBytes) throw new Error('REQUEST_TOO_LARGE');
-  }
-  return value;
-}

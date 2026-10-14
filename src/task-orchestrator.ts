@@ -999,6 +999,8 @@ export class TaskOrchestrator {
         scopeContext,
         queryIntent.domain === 'business_data' ? [
           '业务数据查询契约（宿主前置约束，适用于所有站点和所有广告分析）：',
+          '如果用户请求涉及 Amazon 广告分析，必须先调用 reference.read_guide 读取 amazon-advertising-ai-optimizer/SKILL.md、对应站点规则参考、query-contract 和 report-template，再开始 CrossBorderOps 查询。每个站点本回合至少保留对应规则读取证据；不得用历史摘要或记忆代替。',
+          '站点规则是内部操作策略，不是 Amazon 平台规定；只在证据支持的站点、品类、阶段和样本门槛下适用，未知的成本、利润、搜索词或产品属性必须明确标为未知。',
           '广告分析优先使用 daily.availability 确定数据日期，再用 ads.metrics 对目标站点及时间窗按所需层级聚合，避免以分页原始明细代替整体统计。daily.product、ads.summary 和广告明细仅用于所需的补充核对。',
           'daily.product 必须带用户明确的单个 asin，时间窗不超过 30 天；用户要求 14 天时不得自行扩大时间窗。',
           'daily.metrics 在当前部署不保证可用；若返回不支持，不要重复调用，改用上述广告数据集或 daily.product。',
@@ -1672,8 +1674,13 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         const inspected = await this.codex.inspectOutput?.(task.id, path);
         if (!inspected) throw new Error('FILE_WORKER_NOT_ENABLED');
         const factManifest = workflow.state.artifactFacts?.[inspected.sha256];
-        if (workflow.state.reportDraft && !factManifest) {
-          throw new Error(`REPORT_COMPILED_ARTIFACT_REQUIRED: 广告报告必须使用宿主编译成功且文件哈希一致的 PDF；不能改用终端脚本绕过事实校验。用 artifact.revise_report 修正草稿，draft_id=${workflow.state.reportDraft.id}，然后提交宿主返回的最新路径。`);
+        const isAdvertisingPdf = path.toLowerCase().endsWith('.pdf')
+          && workflow.state.evidence.some(item => item.status === 'success' && item.capabilityId === 'crossborderops.ads.metrics');
+        if ((workflow.state.reportDraft || isAdvertisingPdf) && !factManifest) {
+          const draftHint = workflow.state.reportDraft
+            ? `用 artifact.revise_report 修正草稿，draft_id=${workflow.state.reportDraft.id}，然后提交宿主返回的最新路径。`
+            : '先调用 artifact.render_report 编译带 fact_bindings 的报告，再提交宿主返回的最新路径。';
+          throw new Error(`REPORT_COMPILED_ARTIFACT_REQUIRED: 广告报告必须使用宿主编译成功且文件哈希一致的 PDF；不能改用终端脚本绕过事实校验。${draftHint}`);
         }
         const finalAnswer = typeof finalAnswerInput === 'string'
           ? interpolateFacts(finalAnswerInput.trim(), factManifest?.facts ?? []) : undefined;
