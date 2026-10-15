@@ -23,6 +23,8 @@ RUN npm install --global @openai/codex@0.155.1 && npm cache clean --force
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN npx playwright install --with-deps chromium && chmod -R a+rX /opt/playwright
 COPY --from=build /app/dist ./dist
 COPY file-skills /opt/file-skills
 # A symlink outside a venv loses pyvenv.cfg discovery. Use an exec wrapper so

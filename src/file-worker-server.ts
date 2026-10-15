@@ -10,6 +10,8 @@ import { issueModelTaskToken } from './file-worker-auth.js';
 import { listingExportSchema, readListingExportBody } from './listing-export.js';
 import { knowledgeWorkerError } from './knowledge-worker-errors.js';
 import { reportRenderSchema } from './report-render.js';
+import { compiledDocumentSchema, type DocumentOutput } from './document-render.js';
+import { fileURLToPath } from 'node:url';
 import { readUtf8Body as readBody } from './http-body.js';
 
 interface WorkerSettings {
@@ -49,6 +51,7 @@ const active = new Map<string, ChildProcessWithoutNullStreams>();
 const owners = join(settings.root, '.owners');
 const wsServer = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
 const execFileAsync = promisify(execFile);
+let documentRenders = 0;
 
 const server = createServer(async (request, response) => {
   try {
@@ -155,6 +158,39 @@ const server = createServer(async (request, response) => {
       await writeFile(path, body, { mode: 0o600 });
       if (process.getuid?.() === 0) await chown(path, task.uid, task.uid);
       return json(response, 200, { path: `evidence/${segments[3]}` });
+    }
+    if (request.method === 'POST' && segments[2] === 'document-render' && segments.length === 3) {
+      if (process.env.DOCUMENT_PDF_ENABLED === 'false') throw new Error('DOCUMENT_PDF_DISABLED');
+      if (documentRenders >= 2) throw new Error('DOCUMENT_RENDER_BUSY: retry later');
+      documentRenders++;
+      let source: string | undefined;
+      try {
+        const task = await loadTask(taskId);
+        const payload = compiledDocumentSchema.parse(JSON.parse(await readBody(request, 512 * 1024)));
+        const name = `document-${randomUUID()}`;
+        source = join(task.tmp, `${name}.json`);
+        await writeFile(source, JSON.stringify(payload), {mode:0o600,flag:'wx'});
+        if (process.getuid?.() === 0) await chown(source,task.uid,task.uid);
+        // Chromium runs under this task's uid, with its sandbox enabled. The
+        // renderer accepts only escaped local components and blocks all network.
+        const {stdout} = await execFileAsync(process.execPath,[fileURLToPath(new URL('./document-pdf-worker.js',import.meta.url)),source,task.output,name],{
+          uid:task.uid,gid:task.uid,cwd:task.tmp,timeout:90_000,maxBuffer:256*1024,
+          env:{PATH:process.env.PATH,HOME:task.home,TMPDIR:task.tmp,PLAYWRIGHT_BROWSERS_PATH:process.env.PLAYWRIGHT_BROWSERS_PATH ?? '/opt/playwright',
+            ...(process.env.DOCUMENT_CHROMIUM_EXECUTABLE ? {DOCUMENT_CHROMIUM_EXECUTABLE:process.env.DOCUMENT_CHROMIUM_EXECUTABLE} : {})}
+        });
+        const result = JSON.parse(stdout) as DocumentOutput;
+        if (!Number.isInteger(result.pageCount) || result.pageCount<1 || result.pageCount>40 || result.previews.length!==result.pageCount) throw new Error('DOCUMENT_OUTPUT_INVALID');
+        const names=[`${name}.pdf`,`${name}.html`,...Array.from({length:result.pageCount},(_,i)=>`${name}.page-${i+1}.png`)];
+        const paths=[result.path,result.source,...result.previews];
+        for (let i=0;i<paths.length;i++) {
+          if (paths[i]!==join(task.output,names[i]!)) throw new Error('DOCUMENT_OUTPUT_INVALID');
+          await checkedOutput(task,names[i]);
+        }
+        return json(response,200,{path:basename(result.path),source:basename(result.source),previews:result.previews.map(p=>basename(p)),pageCount:result.pageCount});
+      } finally {
+        documentRenders--;
+        if(source) await rm(source,{force:true});
+      }
     }
     if (request.method === 'POST' && segments[2] === 'report-render' && segments.length === 3) {
       const task = await loadTask(taskId);

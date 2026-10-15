@@ -34,9 +34,14 @@ export function describeEvidence(raw: string): Pick<EvidenceFileEntry, 'rootKeys
   };
   visit(value, '', 0);
   const context: Record<string, unknown> = {};
-  for (const key of ['dataset', 'evidence']) if (value?.[key] !== undefined) context[key] = value[key];
-  for (const key of ['period', 'dimensions', 'coverage', 'semantics', 'metric_units', 'metric_semantics', 'dimension_field_coverage', 'field_semantics', 'annotation_provenance', 'name_resolution']) {
+  for (const key of ['dataset', 'evidence', 'source']) if (value?.[key] !== undefined) context[key] = value[key];
+  for (const key of ['period', 'filters', 'dimensions', 'coverage', 'semantics', 'metric_units', 'metric_semantics', 'dimension_field_coverage', 'field_semantics', 'annotation_provenance', 'name_resolution', 'source_context', 'source_data_context']) {
     if (value?.data?.[key] !== undefined) context[key] = value.data[key];
   }
+  // Retain business locators for human verification, never user credentials.
+  if (Array.isArray(value?.scope?.stores)) context.stores = value.scope.stores.map((s: any) =>
+    ({name:s.name,lingxing_sid:s.lingxing_sid,country:s.country}));
+  if (Array.isArray(value?.data?.rows)) context.observed_report_families = [...new Set(value.data.rows.map((r:any)=>r?.report).filter((v:any)=>typeof v==='string'))];
+  if (Array.isArray(value?.data?.rows)) context.observed_store_sids = [...new Set(value.data.rows.map((r:any)=>r?.sid??r?.lingxing_sid).filter((v:any)=>v!==undefined&&v!==null))];
   return {rootKeys: value && typeof value === 'object' ? Object.keys(value) : [], tables, context};
 }

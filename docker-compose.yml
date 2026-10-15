@@ -71,10 +71,15 @@ services:
       WORKER_MODEL_PROXY_URL: http://gateway:8080/internal/model/v1
       FILE_WORKER_ROOT: /work/tasks
       FILE_SKILLS_DIR: /opt/file-skills
+      DOCUMENT_PDF_ENABLED: ${DOCUMENT_PDF_ENABLED:-true}
       MEDIA_MAX_BYTES: ${MEDIA_MAX_BYTES:-52428800}
       KNOWLEDGE_MAX_SOURCE_BYTES: ${KNOWLEDGE_MAX_SOURCE_BYTES:-268435456}
     volumes:
       - file-worker-data:/work/tasks
+    init: true
+    mem_limit: ${FILE_WORKER_MEMORY_LIMIT:-4g}
+    cpus: ${FILE_WORKER_CPUS:-2}
+    pids_limit: ${FILE_WORKER_PIDS_LIMIT:-512}
     tmpfs:
       - /tmp:size=512m,nosuid
     read_only: true
@@ -88,6 +93,7 @@ services:
       - SETGID
     security_opt:
       - no-new-privileges:true
+      - seccomp:./config/chromium-seccomp.json
     networks:
       - file-worker-net
       - worker-egress

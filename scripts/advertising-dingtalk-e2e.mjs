@@ -1,50 +1,39 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+// Explicitly authorized employee -> robot private conversation. No task injection.
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {join} from 'node:path';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 
-const exec = promisify(execFile);
-const profile = process.argv[2];
-const group = process.argv[3];
-const bot = process.argv[4];
-if (!profile || !group || !bot) throw new Error('Usage: node scripts/advertising-dingtalk-e2e.mjs <profile> <group> <bot>');
-if (!/^[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}$/.test(profile)) throw new Error('EXPLICIT_EMPLOYEE_PROFILE_REQUIRED');
-
-const cli = join(process.env.APPDATA, 'npm/node_modules/dingtalk-workspace-cli/bin/dws.js');
-const uuid = randomUUID();
-const startedAt = new Date().toISOString();
-const question = process.argv[5] ? (await readFile(process.argv[5], 'utf8')).replace(/^\uFEFF/, '').trim()
-  : '分析日本站最近 7 天的整体广告表现，找出存在问题的广告活动。请提供 PDF 报告，不要修改广告。';
-const outputDir = 'output/advertising-e2e';
-await mkdir(outputDir, { recursive: true });
-const dws = async (args) => JSON.parse((await exec(process.execPath, [cli, '--profile', profile, ...args, '--format', 'json'], { maxBuffer: 12_000_000, timeout: 90_000 })).stdout);
-const sanitize = (value) => Array.isArray(value) ? value.map(sanitize) : value && typeof value === 'object'
-  ? Object.fromEntries(Object.entries(value).filter(([key]) => !/token|secret|signature|downloadurl|resourceurl/i.test(key)).map(([key, item]) => [key, sanitize(item)]))
-  : typeof value === 'string' && /OSSAccessKeyId=|Signature=/.test(value) ? '[temporary resource URL omitted]' : value;
-
-const text = `<@${bot}> ${question}`;
-const sent = await dws(['chat', '+messages-send', '--identity', 'user', '--group', group, '--at-open-dingtalk-ids', bot, '--text', text, '--uuid', uuid, '--yes']);
-await writeFile(`${outputDir}/send-${uuid}.json`, JSON.stringify({ startedAt, uuid, group, result: sanitize(sent) }, null, 2));
-console.log(JSON.stringify({ sent: true, uuid, startedAt, group, question }));
-
-let latest = [], task;
-const sqlString = value => "'" + value.replaceAll("'", "''") + "'";
-for (let poll = 1; poll <= 60; poll += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 20_000));
-  const sql = `SELECT json_build_object('id',id,'status',status,'started_at',started_at,'finished_at',finished_at,'answer',result_summary) FROM tasks WHERE created_at >= ${sqlString(startedAt)}::timestamptz AND request_payload->>'text'=${sqlString(question)} AND request_payload->'user'->>'userId'=${sqlString(profile.split(':')[1])} ORDER BY created_at DESC LIMIT 1`;
-  const raw = (await exec('docker', ['exec','dingtalk-enterprise-agent-postgres-1','psql','-U','agent','-d','agent','-At','-c',sql], {maxBuffer: 2_000_000})).stdout.trim();
-  task = raw ? JSON.parse(raw) : undefined;
-  console.log(JSON.stringify({poll, taskId:task?.id, status:task?.status, elapsedSeconds:Math.round((Date.now()-Date.parse(startedAt))/1000)}));
-  if (task && ['completed','failed','cancelled'].includes(task.status)) break;
+const [mode,directory,profile,bot,promptPath]=process.argv.slice(2);
+if(!['send','read','download'].includes(mode)||!directory||!profile||!bot)
+  throw Error('Usage: node scripts/advertising-dingtalk-e2e.mjs send|read|download <output-directory> <explicit-profile> <verified-bot-id> [prompt-file]');
+const exec=promisify(execFile),cli=join(process.env.APPDATA,'npm/node_modules/dingtalk-workspace-cli/bin/dws.js');
+const sanitize=v=>Array.isArray(v)?v.map(sanitize):v&&typeof v==='object'
+  ?Object.fromEntries(Object.entries(v).filter(([k])=>!/token|secret|signature|downloadurl|resourceurl/i.test(k)).map(([k,x])=>[k,sanitize(x)]))
+  :typeof v==='string'&&/OSSAccessKeyId=|Signature=|[?&](?:token|signature)=/i.test(v)?'[temporary resource URL omitted]':v;
+const dws=async args=>JSON.parse((await exec(process.execPath,[cli,'--profile',profile,...args,'--format','json'],{maxBuffer:12_000_000,timeout:90000})).stdout);
+await mkdir(directory,{recursive:true});
+const manifestPath=join(directory,'request.json');
+if(mode==='send') {
+  if(!promptPath)throw Error('Prompt file required');
+  if(!(await fetch('http://127.0.0.1:8080/readyz')).ok)throw Error('Gateway not healthy');
+  const manifest={profile,bot,startedAt:new Date().toISOString(),uuid:randomUUID(),prompt:await readFile(promptPath,'utf8')};
+  // Persist intent before the network call. Never resend automatically after an unknown result.
+  await writeFile(manifestPath,JSON.stringify(manifest,null,2),{flag:'wx'});
+  const sent=await dws(['chat','+messages-send','--as','user','--open-dingtalk-id',bot,'--text',manifest.prompt,'--uuid',manifest.uuid,'--yes']);
+  await writeFile(join(directory,'sent.json'),JSON.stringify(sanitize(sent),null,2));
+  console.log(JSON.stringify({startedAt:manifest.startedAt,uuid:manifest.uuid,result:sanitize(sent)}));
+} else {
+  const manifest=JSON.parse(await readFile(manifestPath,'utf8'));
+  if(manifest.profile!==profile||manifest.bot!==bot)throw Error('IDENTITY_OR_TARGET_MISMATCH');
+  const result=await dws(['chat','+chat-messages','--open-dingtalk-id',bot,'--start',manifest.startedAt,
+    '--page-all','--page-limit','5','--max-items','100','--no-reactions',
+    ...(mode==='download'?['--download-resources','--output-dir',directory+'/attachments']:[])]);
+  await writeFile(join(directory,mode==='download'?'download.json':'messages.json'),JSON.stringify(sanitize(result),null,2));
+  const messages=result.messages??result.data?.messages??[];
+  console.log(JSON.stringify({complete:result.complete,hasMore:result.hasMore,stopReason:result.stopReason,
+    count:messages.length,messages:messages.map(m=>sanitize({messageId:m.messageId,sender:m.sender,senderId:m.senderId,
+      text:m.text,type:m.type,resourceRefs:m.resourceRefs})),
+    ...(mode==='download'?{downloads:sanitize(result.downloads??result.downloadLedger??result.resourceDownloads??result)}:{})}));
 }
-
-const messages = await dws(['chat', '+chat-messages', '--group', group, '--start', startedAt, '--page-all', '--page-limit', '5', '--max-items', '100', '--no-reactions']);
-latest = messages.messages ?? messages.data?.messages ?? [];
-await writeFile(`${outputDir}/messages-${uuid}.json`, JSON.stringify(sanitize(messages), null, 2));
-
-const robot = latest.filter((message) => message.senderId === bot && message.text && message.text !== '[互动卡片]');
-const answer = task?.answer ?? '';
-await writeFile(`${outputDir}/result-${uuid}.json`, JSON.stringify({ uuid, startedAt, group, bot, task, answer, robotMessages: robot.length }, null, 2));
-console.log(JSON.stringify({ completed: task?.status==='completed', uuid, taskId:task?.id, robotMessages:robot.length, answerChars: answer.length, answerPreview: answer.slice(0, 1500) }));
-if (task?.status!=='completed') process.exitCode = 1;

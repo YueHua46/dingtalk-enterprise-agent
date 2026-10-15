@@ -829,7 +829,7 @@ describe('TaskOrchestrator integration', () => {
     expect(sent.some((item) => item.includes('等待确认'))).toBe(false);
   });
 
-  it('starts user OAuth only when the model invokes a DWS tool', async () => {
+  it('starts user OAuth before the model invokes a DWS tool', async () => {
     const repo = new InMemoryRepository();
     const direct: string[] = [];
     const codex = {
@@ -844,7 +844,7 @@ describe('TaskOrchestrator integration', () => {
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const dws = {
-      status: vi.fn(async () => null),
+      status: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ profileKey: 'corp-1:user-1' }),
       beginDeviceAuthorization: vi.fn(async () => ({ prompt: '请打开设备授权链接', completion: Promise.resolve({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' }) })),
       runCommand: vi.fn(async () => ({ userId: 'user-1' }))
     } as unknown as DwsBroker;
@@ -864,6 +864,45 @@ describe('TaskOrchestrator integration', () => {
     expect(dws.runCommand).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }), expect.any(Array));
   });
 
+  it('starts user OAuth before a knowledge query reaches the DWS-backed source verifier', async () => {
+    const repo = new InMemoryRepository();
+    const direct: string[] = [];
+    const codex = {
+      startThread: vi.fn(async () => 'thread-knowledge-oauth'),
+      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
+        const response = await onRequest({ method: 'item/tool/call', params: {
+          namespace: 'knowledge', tool: 'search', arguments: { query: '查找授权资料' }
+        } });
+        expect(response.success).toBe(true);
+        return { text: '已查询知识库', threadId: 'thread-knowledge-oauth' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    } as unknown as CodexClient;
+    const dws = {
+      status: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ profileKey: 'corp-1:user-1' }),
+      invalidateStatus: vi.fn(),
+      beginDeviceAuthorization: vi.fn(async () => ({ prompt: '请打开设备授权链接', completion: Promise.resolve({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' }) }))
+    } as unknown as DwsBroker;
+    const knowledgeTool = {
+      contextValid: vi.fn(async () => true),
+      authorizationVerified: vi.fn(async () => undefined),
+      execute: vi.fn(async () => ({ hits: [{ text: '已授权资料' }] }))
+    } as any;
+    const sender: MessageSender = {
+      async send() { throw new Error('group card should be used when available'); },
+      async beginTaskCard() { return 'knowledge-oauth-card'; },
+      async updateTaskCard() { },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
+    const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender,
+      undefined, undefined, undefined, undefined, knowledgeTool);
+    await orchestrator.accept(request('message-knowledge-oauth', '查找资料'));
+    await waitUntil(() => direct.some((item) => item.includes('设备授权链接')));
+    expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(1);
+    await waitUntil(() => knowledgeTool.execute.mock.calls.length === 1);
+    expect(knowledgeTool.execute).toHaveBeenCalledWith(expect.objectContaining({ corpId: 'corp-1', userId: 'user-1' }), 'search', expect.any(Object), expect.any(Object));
+  });
+
   it('retries device authorization once and continues the task after a transient failure', async () => {
     const repo = new InMemoryRepository();
     const direct: string[] = [];
@@ -879,7 +918,7 @@ describe('TaskOrchestrator integration', () => {
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const dws = {
-      status: vi.fn(async () => null),
+      status: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ profileKey: 'corp-1:user-1' }),
       beginDeviceAuthorization: vi.fn()
         .mockRejectedValueOnce(new Error('DWS_AUTH_INIT_FAILED: 设备授权进程在输出授权链接前退出（code 3）'))
         .mockResolvedValueOnce({ prompt: '请打开设备授权链接', completion: Promise.resolve({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' }) }),
@@ -901,19 +940,12 @@ describe('TaskOrchestrator integration', () => {
     expect(stored?.status).toBe('completed');
   });
 
-  it('returns actionable guidance instead of raw errors when device authorization cannot start', async () => {
+  it('returns actionable guidance instead of starting the model when device authorization cannot start', async () => {
     const repo = new InMemoryRepository();
     const direct: string[] = [];
-    let toolResponse: { success?: boolean; text?: string } | undefined;
     const codex = {
       startThread: vi.fn(async () => 'thread-oauth-init-failed'),
-      turn: vi.fn(async (_thread: string, _input: string, _onEvent: unknown, onRequest: (request: CodexApprovalRequest) => Promise<any>) => {
-        const response = await onRequest({ method: 'item/tool/call', params: {
-          namespace: 'dingtalk', tool: 'dws', arguments: { capability: 'contact.me' }
-        } });
-        toolResponse = { success: response.success, text: response.contentItems[0].text };
-        return { text: '授权服务暂时不可用，请稍后重新发送任务。', threadId: 'thread-oauth-init-failed' };
-      }),
+      turn: vi.fn(async () => ({ text: '不应在授权前开始模型回合', threadId: 'thread-oauth-init-failed' })),
       interrupt: vi.fn(async () => undefined)
     } as unknown as CodexClient;
     const dws = {
@@ -929,22 +961,18 @@ describe('TaskOrchestrator integration', () => {
     };
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender);
     const task = await orchestrator.accept(request('message-oauth-init-failed', '使用钉钉工具查我的部门'));
-    await waitUntil(() => toolResponse !== undefined);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('failed'), { timeout: 5000 });
     expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(2);
-    expect(toolResponse?.success).toBe(false);
-    expect(toolResponse?.text).toContain('授权服务暂时不可用');
-    expect(toolResponse?.text).toContain('重新发送原任务');
-    expect(toolResponse?.text).not.toContain('code 3');
-    expect(toolResponse?.text).not.toContain('oauth client not configured');
+    expect(codex.turn).not.toHaveBeenCalled();
     // No authorization link was ever produced, so the bot must not claim one was sent.
     expect(direct.some((item) => item.includes('设备授权'))).toBe(false);
     const stored = await repo.findTask(task!.id);
-    expect(['completed', 'running']).toContain(stored?.status);
+    expect(stored?.status).toBe('failed');
   });
 
-  it('does not route or start OAuth from message keywords alone', async () => {
+  it('starts OAuth before the first model turn even when the request has no tool wording', async () => {
     const repo = new InMemoryRepository();
-    const sent: string[] = [];
+    const direct: string[] = [];
     const codex = {
       startThread: vi.fn(async () => 'thread-no-keywords'),
       turn: vi.fn(async () => ({ text: '我会按需查询。', threadId: 'thread-no-keywords' })),
@@ -952,14 +980,19 @@ describe('TaskOrchestrator integration', () => {
     } as unknown as CodexClient;
     const dws = {
       status: vi.fn(async () => null),
-      beginDeviceAuthorization: vi.fn()
+      beginDeviceAuthorization: vi.fn(async () => ({ prompt: '请打开设备授权链接', completion: Promise.resolve({ corpId: 'corp-1', userId: 'user-1', profileKey: 'corp-1:user-1' }) }))
     } as unknown as DwsBroker;
-    const sender: MessageSender = { async send(_surface, markdown) { sent.push(markdown); } };
+    const sender: MessageSender = {
+      async send() { },
+      async beginTaskCard() { return 'oauth-first-card'; },
+      async updateTaskCard() { },
+      async sendDirect(_user, markdown) { direct.push(markdown); }
+    };
     const orchestrator = new TaskOrchestrator(loadConfig({ DINGTALK_ROBOT_CODE: 'robot' }), repo, codex, dws, sender);
     await orchestrator.accept(request('message-no-keywords', '使用钉钉工具查我的部门'));
-    await waitUntil(() => sent.includes('我会按需查询。'));
-    expect(dws.status).not.toHaveBeenCalled();
-    expect(dws.beginDeviceAuthorization).not.toHaveBeenCalled();
+    await waitUntil(() => direct.some((item) => item.includes('设备授权链接')));
+    expect(dws.status).toHaveBeenCalled();
+    expect(dws.beginDeviceAuthorization).toHaveBeenCalledTimes(1);
   });
 
   it('denies Codex shell escalation without asking a chat user to approve it', async () => {

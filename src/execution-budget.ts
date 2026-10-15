@@ -21,7 +21,7 @@ export function executionLane(namespace: string, tool: string): ExecutionLane {
     || (namespace === 'reference' && tool === 'list_guides') || (namespace === 'dingtalk' && tool === 'schema')) return 'discovery';
   if (namespace === 'reference') return 'preparation';
   if (namespace === 'analysis') return 'computation';
-  if (namespace === 'artifact' && ['render_report','revise_report'].includes(tool)) return 'rendering';
+  if (namespace === 'artifact' && ['render_report','revise_report','render_document','revise_document'].includes(tool)) return 'rendering';
   if (namespace === 'artifact' && tool === 'submit') return 'review';
   if (namespace === 'agent' && tool === 'workflow') return 'control';
   return 'collection';
@@ -53,14 +53,14 @@ export function migrateArtifactBudget(state: ExecutionBudgetState, history?: Art
   let renderingCalls = 0, submissionCalls = 0;
   for (const event of history.calls) {
     const p = event.payload;
-    if (p?.namespace !== 'artifact' || !['render_report', 'submit'].includes(p.tool ?? '')) continue;
+    if (p?.namespace !== 'artifact' || !['render_report', 'revise_report', 'render_document', 'revise_document', 'submit'].includes(p.tool ?? '')) continue;
     if (!p.argumentHash || !['tool.call_started','tool.call_finished'].includes(event.eventType)) return block();
     const key = `${p.tool}:${p.argumentHash}`;
     const count = (pending.get(key) ?? 0) + (event.eventType === 'tool.call_started' ? 1 : -1);
     if (count < 0) return block();
     pending.set(key, count);
     if (event.eventType === 'tool.call_started') {
-      if (p.tool === 'render_report') renderingCalls++; else submissionCalls++;
+      if (p.tool !== 'submit') renderingCalls++; else submissionCalls++;
     }
   }
   if (renderingCalls + submissionCalls !== used || [...pending.values()].some(n => n !== 0)

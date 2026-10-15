@@ -31,3 +31,29 @@ Worker 启用 Codex 原生 `web.run`：`web_search=live`、`features.standalone_
 ## 文件格式范围
 
 首批处理 PDF、DOCX、XLSX、PPTX、文本及常见图片。旧版 Office 文件先在工作区用 LibreOffice 转换；转换失败会报告。宏、外部数据连接、SmartArt、动画和复杂版式的保真度不能保证；需要改动此类文件时应明确告知用户。Desktop 的 Windows 私有 `@oai/artifact-tool` 没有复制到 Linux 镜像，Excel 和 PPT 使用 `openpyxl`、`xlsxwriter`、`python-pptx` 与 LibreOffice。
+
+## 按需组合的 HTML/PDF
+
+新分析任务默认简洁聊天；明确要求 PDF 后，在计划登记 `delivery: {format: 'pdf', detail: 'brief'}`（也可 standard/full）。`artifact.render_document` 接收按问题选择和排序的 summary、text、metrics、actions、callout、table、chart 块，由可信 HTML/CSS 和 Chromium 导出。`ops-clean` 只规定字体、颜色、间距与分页，不规定广告章节、国家分支、封面或最低页数。旧 `render_report` 仅兼容历史广告草稿。
+
+宿主从本任务保存的证据解析 `fact_bindings`；表格与图表按来源哈希、行选择器和字段填值。图表只支持来源绑定的 line/bar；需聚合或排序时先计算。缺失保留 null，不替换为零。正文数字观测不能用手抄或建议字段绕过绑定。渲染后保存 HTML 源文件，并从实际 PDF 读取正文、渲染页面 PNG；Agent 检查页面，审核完整内容和证据后才通过 `artifact.submit` 投递。局部修改使用 `revise_document` 与最新 draft_id，旧版或字节被改动的 PDF 无法交付。源文件与预览不自动发送。
+
+为方便运营核验，编译器按事实绑定与表格/图表来源自动生成文档内 `[S1]` 等编号，并附“来源与核验”。来源追溯到保存的实际查询、业务报表、店铺名称与领星 SID、日期、筛选/聚合条件、引用字段及计算口径，不由模型编造。计算结果同时指向其输入来源；Python 只能按代码显式引用的已登记文件关联，并明确不等于已验证的文件读取轨迹。缺失或循环血缘拒绝编译。来源附录不暴露内部证据 UUID、凭据、文件路径或临时下载链接；它只提供核验信息，不规定业务章节或分析顺序。查询分页完整与上游采集完整性必须分别说明，无报表行不能自动解释为零。
+
+本次升级新增固定版本 Playwright 与 Chromium、Linux 依赖及中日德字体，必须完整重建 `Dockerfile.file-worker`；仅使用 `Dockerfile.runtime-update` 不能补齐依赖，其检查会拒绝旧运行时。先构建和验证 worker，再更新 gateway，不能在正在运行的任务中切换运行时。`DOCUMENT_PDF_ENABLED=false` 可暂停新渲染并返回明确错误，不会静默回退旧模板。
+
+浏览器在任务 UID/GID 下运行，开启 Chromium sandbox，禁用页面 JavaScript、网络与外部资源。Compose 保留只读文件系统、任务目录权限与 no-new-privileges，使用 `config/chromium-seccomp.json` 允许沙箱所需的用户命名空间系统调用。该文件源自 Microsoft Playwright `utils/docker/seccomp_profile.json`（2026-10-15 获取，许可证见相邻 LICENSE），额外允许 chroot：Chromium 在自身用户命名空间内使用它，仍须通过内核权限检查；不添加 SYS_ADMIN 或 SYS_CHROOT 容器能力。部署主机必须支持非特权用户命名空间；不支持时渲染报错，不自动关闭沙箱。
+
+渲染并发上限 2，子进程 90 秒超时，内部 80 秒清理；单份最多 40 页、25 MiB，超出需缩减范围或拆分，不静默截断。容器默认 4 GiB / 2 CPU / 512 PID，可用 `FILE_WORKER_MEMORY_LIMIT`、`FILE_WORKER_CPUS`、`FILE_WORKER_PIDS_LIMIT` 调整，`init: true` 回收子进程。
+
+本地构建后可运行 `node scripts/document-pdf-smoke.mjs`，生成合成数据的一页简报和多页长表/图表样例，输出到忽略目录 `output/pdf-smoke`。环境变量 `DOCUMENT_PDF_PYTHON` 指定已安装 PyMuPDF 的 Python；Windows 可显式指定 python.exe。必须检查实际 PDF 的页面图片，不能只检查 HTML 截图。Linux 镜像验收需使用 Compose 同等的 UID、seccomp、只读根目录与资源限制；同时验证拒绝旧哈希文件、失败草稿修正、默认聊天不渲染，以及交付仍回到原会话。
+
+完整构建 worker 后，可在项目根目录运行以下独立验收。脚本在临时目录启动真实 worker，使用合成数据验证 HTTP 鉴权、任务 UID 归属、PDF 导出与读回、页面预览、拒绝原始 HTML 和关闭开关；不调用模型、钉钉或业务系统。验收容器退出后删除。
+
+```powershell
+docker compose run --rm --no-deps --entrypoint node --volume "${PWD}/scripts/document-worker-smoke.mjs:/app/scripts/document-worker-smoke.mjs:ro" file-worker scripts/document-worker-smoke.mjs
+```
+
+### 运营可读的来源卡片
+
+文档来源根据保存的证据血缘生成，按实际数据提供方命名；已知系统名称翻译不参与路由，未识别来源明确待核实。每项分开展示资料位置、本次筛选、业务计算和核验提醒，计算引用输入来源编号。数据库/API字段、文件路径、凭据及内部证据标识只保留在审计记录。店铺范围与实际有记录的店铺分别说明，缺失记录不计为零。此设计只规范来源展示，不固定报告正文或业务章节。

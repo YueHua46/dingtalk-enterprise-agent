@@ -117,7 +117,7 @@ Client，不会把机器人 AppKey/AppSecret 传给登录端点。机器人凭�
 
 ### 员工 Profile
 
-模型实际调用 `dingtalk.dws` 且当前员工尚未授权时，任务进入 `waiting_oauth`；网关不再根据用户消息关键词预判工具路由：
+每个新任务在进入附件处理、路由和模型回合前都会检查当前员工的 DWS Profile。尚未授权或 Token 已失效时，任务立即进入 `waiting_oauth`；不能先让模型回答“未授权”，也不能等模型选择某项能力后才启动授权：
 
 1. 网关使用 DWS 托管 OAuth Client 发起 `dws auth login --device`；不得注入机器人 AppKey/AppSecret。首次授权（`profile list` 中无该员工 Profile）**不带 `--profile`**——CLI 对未注册 Profile 会直接报 code 3 `profile not found`；重新授权（Profile 已注册、Token 失效）才带 `--profile <corpId>:<userId>` 绑定既有 Profile。
 2. 授权地址与一次性验证码只私聊发起人（钉钉原生机器人单聊接口 `robot/oToMessages`，仅用应用凭证，不依赖 DWS Bot Profile；DWS Bot Profile 仅作降级发送通道）。

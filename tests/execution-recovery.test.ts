@@ -1,5 +1,5 @@
 import {describe, it, expect, vi} from 'vitest';
-import {TaskOrchestrator} from '../src/task-orchestrator.js';
+import {TaskOrchestrator, requiresCompiledAdvertisingReport} from '../src/task-orchestrator.js';
 import {InMemoryRepository} from '../src/persistence.js';
 import {loadConfig} from './test-config.js';
 import {executionLane, takeExecutionBudget} from '../src/execution-budget.js';
@@ -27,6 +27,115 @@ function setup(turn:any, overrides: Record<string,string> = {}) {
   return {files,repo,codex,orchestrator,query};
 }
 describe('execution reserves and recovery',()=>{
+  const documentPayload = {format:'pdf',document:{title:'广告观察',blocks:[{id:'answer',type:'summary',text:'先核对当前目标与数据范围。'}]}};
+  const pdfWorkflow = (extra:any = {}) => new TaskWorkflow({revision:0,evidence:[],contract:{goal:'广告分析',
+    delivery:{format:'pdf',detail:'brief'},deliverables:[],requiredFacts:[],assumptions:[],openQuestions:[],completionCriteria:[]},...extra});
+
+  it.each([undefined,'chat'])('does not render generic documents without explicit PDF delivery: %s',async(format)=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const render=vi.fn();Object.assign(h.codex,{renderDocument:render});
+    const workflow=pdfWorkflow();
+    if(format)workflow.state.contract!.delivery={format,detail:'brief'} as any;
+    else delete workflow.state.contract!.delivery;
+    try {
+      const result=await (h.orchestrator as any).handleCodexRequest({id:'no-pdf',request},'thread',call('artifact','render_document',documentPayload),workflow,new Map());
+      expect(result.success).toBe(false);
+      expect(result.contentItems[0].text).toContain('PDF_DELIVERY_NOT_REQUESTED');
+      expect(render).not.toHaveBeenCalled();
+      expect(workflow.state.documentDraft).toBeUndefined();
+    } finally {await h.orchestrator.stop();}
+  });
+
+  it('recovers a failed generic draft, rejects stale/no-change revisions and requires actual delivery',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    const render=vi.fn().mockRejectedValueOnce(new Error('DOCUMENT_RENDER_BUSY')).mockResolvedValue({path:'output/current.pdf',source:'output/current.html',previews:[],pageCount:1});
+    Object.assign(h.codex,{renderDocument:render,inspectOutput:async()=>({name:'current.pdf',size:20,sha256:'a'.repeat(64),reviewText:'实际正文'})});
+    const workflow=pdfWorkflow(),task={id:'generic-retry',request};
+    const invoke=(tool:string,args:any)=>(h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact',tool,args),workflow,new Map());
+    const complete=()=> (h.orchestrator as any).submitCompletion(task,undefined,workflow,new Map(),{status:'answered',answer:'done',factEvidence:{},missingFacts:[]},true);
+    try {
+      const failed=await invoke('render_document',documentPayload);
+      expect(failed.success).toBe(false);
+      const id=workflow.state.documentDraft!.id;
+      expect((await complete()).feedback).toContain('DOCUMENT_DRAFT_NOT_COMPILED');
+      expect((h.orchestrator as any).evidenceReviewer.review).not.toHaveBeenCalled();
+      expect((await invoke('revise_document',{draft_id:'f'.repeat(64),changes:[{path:'/document/title',value:'修订'}]})).contentItems[0].text).toContain('DOCUMENT_DRAFT_STALE');
+      expect((await invoke('revise_document',{draft_id:id,changes:[{path:'/document/title',value:documentPayload.document.title}]})).success).toBe(true);
+      expect(workflow.state.documentDraft).toMatchObject({id,compiled:true,artifactSha256:'a'.repeat(64)});
+      expect((await invoke('revise_document',{draft_id:id,changes:[{path:'/document/title',value:documentPayload.document.title}]})).contentItems[0].text).toContain('DOCUMENT_REVISION_NO_CHANGE');
+      expect(render).toHaveBeenCalledTimes(2);
+      expect((await complete()).feedback).toContain('DOCUMENT_NOT_DELIVERED');
+      expect((h.orchestrator as any).evidenceReviewer.review).not.toHaveBeenCalled();
+    } finally {await h.orchestrator.stop();}
+  });
+
+  it('reviews actual PDF text and saved row provenance, then delivers only the latest compiled version',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    const dir=await mkdtemp(join(tmpdir(),'document-delivery-'));
+    let currentHash='a'.repeat(64);
+    const render=vi.fn(async()=>({path:'output/current.pdf',source:'output/current.html',previews:['output/current.page-1.png'],pageCount:1}));
+    const task={id:'generic-delivery',request:{...request,text:'请把英国站观察导出简短 PDF'}};
+    const deliver=vi.spyOn(h.orchestrator as any,'submitGeneratedArtifact').mockImplementation(async()=>({name:'current.pdf',size:20,sha256:currentHash}));
+    try {
+      await mkdir(join(dir,'evidence'));
+      const raw=JSON.stringify({data:{rows:[{scope:'overall',spend:10},{scope:'other',spend:90}]}});
+      await writeFile(join(dir,'evidence','metrics.json'),raw);
+      const source={file:'metrics.json',evidenceId:'metrics',capabilityId:'analysis.table',arguments:'{}',kind:'calculation' as const,
+        sha256:createHash('sha256').update(raw).digest('hex'),query:{marketplace:'UK'},...describeEvidence(raw)};
+      Object.assign(h.codex,{renderDocument:render,
+        inspectOutput:async()=>({name:'current.pdf',size:20,sha256:currentHash,reviewText:'PDF实际正文：花费10'}),
+        writeEvidence:async(_id:string,name:string,content:string)=>{await writeFile(join(dir,'evidence',name),content);return `evidence/${name}`;},
+        runPython:async(_id:string,code:string)=>({exitCode:0,timedOut:false,stderr:'',stdout:execFileSync('python',['-'],{cwd:dir,input:code,encoding:'utf8'})})});
+      const workflow=pdfWorkflow({evidenceFiles:[source]});
+      const invoke=(tool:string,args:any)=>(h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact',tool,args),workflow,new Map());
+      const payload={...documentPayload,document:{...documentPayload.document,blocks:[
+        {id:'answer',type:'summary',text:'花费 {{fact:spend}}'},
+        {id:'rows',type:'table',columns:[{field:'spend',label:'花费'}],source:{evidenceId:'metrics',where:{scope:'overall'}}}
+      ]},fact_bindings:[{id:'spend',evidenceId:'metrics',where:{scope:'overall'},field:'spend'}]};
+      expect((await invoke('render_document',payload)).success).toBe(true);
+      const first=structuredClone(workflow.state.documentDraft!);
+      currentHash='b'.repeat(64);
+      expect((await invoke('revise_document',{draft_id:first.id,changes:[{path:'/document/title',value:'英国站简报'}]})).success).toBe(true);
+      expect(workflow.state.documentDraft!.id).not.toBe(first.id);
+      currentHash='a'.repeat(64);
+      const old=await invoke('submit',{path:'output/current.pdf'});
+      expect(old.success).toBe(false);
+      expect(old.contentItems[0].text).toContain('DOCUMENT_LATEST_ARTIFACT_REQUIRED');
+      expect(deliver).not.toHaveBeenCalled();
+      currentHash='b'.repeat(64);
+      expect((await invoke('submit',{path:'output/current.pdf',final_answer:'英国站简报已发送，请查看附件。'})).success).toBe(true);
+      const review=(h.orchestrator as any).evidenceReviewer.review;
+      const input=review.mock.calls[0][0];
+      expect(JSON.parse(input.completion.answer)).toMatchObject({actualPdfText:'PDF实际正文：花费10',artifactBody:{title:'英国站简报',blocks:[{id:'answer',text:'花费 10'},{id:'rows',rows:[[10]]}]}});
+      expect(input.verifiedEvidenceTables).toEqual([expect.objectContaining({evidenceId:'metrics',sourceSha256:source.sha256,selectedRowValues:[[10]],query:{marketplace:'UK'}})]);
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(deliver.mock.calls[0]![0]).toMatchObject({request:{user:{corpId:'corp',userId:'employee'},surface:{type:'group',id:'original-group'}}});
+      expect(workflow.state.evidence).toContainEqual(expect.objectContaining({capabilityId:'artifact.submit',scope:`task:${task.id}/output:${currentHash}`,status:'success'}));
+      const completion=await (h.orchestrator as any).submitCompletion(task,undefined,workflow,new Map(),{status:'answered',answer:'英国站简报已发送，请查看附件。',factEvidence:{},missingFacts:[]},true);
+      expect(completion.accepted).toBe(true);
+      expect(review).toHaveBeenCalledOnce();
+    } finally {await h.orchestrator.stop();await rm(dir,{recursive:true,force:true});}
+  });
+
+  it('does not infer PDF delivery from an advertising report request', () => {
+    const workflow = new TaskWorkflow({revision:0,evidence:[],contract:{goal:'广告分析',delivery:{format:'chat',detail:'brief'},deliverables:[],requiredFacts:[],assumptions:[],openQuestions:[],completionCriteria:[]}});
+    expect(requiresCompiledAdvertisingReport({request:{text:'分析德国广告报告'}} as any, workflow)).toBe(false);
+    workflow.state.contract!.delivery = {format:'pdf',detail:'brief'};
+    expect(requiresCompiledAdvertisingReport({request:{text:'分析英国广告'}} as any, workflow)).toBe(true);
+  });
+
+  it('blocks PDF rendering when the explicit delivery contract is chat', async () => {
+    const h = setup(async()=>({text:'done',threadId:'thread'}));
+    const workflow = new TaskWorkflow({revision:0,contract:{goal:'广告分析',delivery:{format:'chat',detail:'brief'},deliverables:[],requiredFacts:[],assumptions:[],openQuestions:[],completionCriteria:[]},evidence:[]});
+    try {
+      const result = await (h.orchestrator as any).handleCodexRequest({id:'chat-delivery',request},'thread',call('artifact','render_report',report),workflow,new Map());
+      expect(result.success).toBe(false);
+      expect(result.contentItems[0].text).toContain('PDF_DELIVERY_NOT_REQUESTED');
+      expect(h.codex.renderReport).not.toHaveBeenCalled();
+    } finally { await h.orchestrator.stop(); }
+  });
   it('retries an unchanged failed draft without reviewing it as completed',async()=>{
     const h=setup(async()=>({text:'done',threadId:'thread'}));
     vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
@@ -54,7 +163,7 @@ describe('execution reserves and recovery',()=>{
   it('requires a compiled advertising PDF before spending semantic review time',async()=>{
     const h=setup(async()=>({text:'done',threadId:'thread'}));
     vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
-    const workflow=new TaskWorkflow({revision:0,evidence:[{id:'ads',capabilityId:'crossborderops.ads.metrics',status:'success',scope:'DE',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString()} as any]});
+    const workflow=new TaskWorkflow({revision:0,contract:{goal:'广告分析',delivery:{format:'pdf',detail:'standard'},deliverables:[],requiredFacts:[],assumptions:[],openQuestions:[],completionCriteria:[]},evidence:[{id:'ads',capabilityId:'crossborderops.ads.metrics',status:'success',scope:'DE',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString()} as any]});
     const task={id:'missing-ad-pdf',request:{...request,text:'分析德国广告并生成 PDF 报告'}};
     try {
       const completion=await (h.orchestrator as any).submitCompletion(task,undefined,workflow,new Map(),

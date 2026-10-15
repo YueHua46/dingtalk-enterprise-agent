@@ -4,7 +4,7 @@ import { reportRenderSchema, type ReportRender } from './report-render.js';
 
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor']);
 
-function isJsonValue(value: unknown, ancestors = new Set<unknown>(), depth = 0): boolean {
+export function isJsonValue(value: unknown, ancestors = new Set<unknown>(), depth = 0): boolean {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
   if (typeof value !== 'object' || depth > 64 || ancestors.has(value)) return false;
@@ -30,18 +30,18 @@ export type ReportRevision = z.infer<typeof reportRevisionSchema>;
 
 export const reportRevisionTool = {
   type: 'function', name: 'revise_report',
-  description: '按宿主返回的 draft_id 局部修正报告。changes 使用 JSON pointer，例如 /report/executive_summary 或 /report/sections/0/paragraphs/1；{path,value}新增或替换字段，数组可整体替换以增减项目，末尾用 /- 追加，{path,op:"remove"}删除字段或数组项目。只提交需要修正的局部内容，不替换/report全文、模板或证据附表来源；最终必须符合报告schema。新fact_bindings按id替换或补充，历史不再引用的绑定自动清理，新绑定必须实际引用。',
+  description: '仅恢复已有 draft_id 的历史广告报告；新任务使用 render_document 自由编排，不能用本工具新建旧模板。按宿主返回的 draft_id 局部修正报告。changes 使用 JSON pointer，例如 /report/executive_summary 或 /report/sections/0/paragraphs/1；{path,value}新增或替换字段，数组可整体替换以增减项目，末尾用 /- 追加，{path,op:"remove"}删除字段或数组项目。只提交需要修正的局部内容，不替换/report全文、模板或证据附表来源；最终必须符合报告schema。新fact_bindings按id替换或补充，历史不再引用的绑定自动清理，新绑定必须实际引用。',
   inputSchema: z.toJSONSchema(reportRevisionSchema)
 };
 
-function pointerSegments(path: string): string[] {
+function pointerSegments(path: string, root = 'report'): string[] {
   const parts = path.split('/').slice(1).map(part => {
     if (/~(?![01])/.test(part)) throw new Error('REPORT_REVISION_PATH_INVALID');
     const decoded = part.replace(/~1/g, '/').replace(/~0/g, '~');
     if (!decoded || unsafeKeys.has(decoded)) throw new Error('REPORT_REVISION_PATH_INVALID');
     return decoded;
   });
-  if (parts[0] !== 'report' || parts.length < 2) throw new Error('REPORT_REVISION_PATH_INVALID');
+  if (parts[0] !== root || parts.length < 2) throw new Error('REPORT_REVISION_PATH_INVALID');
   return parts;
 }
 
@@ -53,12 +53,11 @@ function existingChild(parent: unknown, key: string): unknown {
   return (parent as Record<string, unknown>)[key];
 }
 
-/** Host validates draft identity; this function applies only report-local replacements. */
-export function applyReportRevision(draft: ReportRender, input: unknown): ReportRender {
-  const args = reportRevisionSchema.parse(input);
-  const next = structuredClone(reportRenderSchema.parse(draft));
-  for (const change of args.changes) {
-    const parts = pointerSegments(change.path);
+/** Shared safe JSON pointer interpreter. The caller validates the final schema. */
+export function applyContentChanges<T>(draft: T, changes: Array<{path: string; op?: 'set' | 'remove' | undefined; value?: unknown}>, root: string): T {
+  const next = structuredClone(draft);
+  for (const change of changes) {
+    const parts = pointerSegments(change.path, root);
     let parent: unknown = next;
     for (const key of parts.slice(0, -1)) parent = existingChild(parent, key);
     const key = parts[parts.length - 1]!;
@@ -75,6 +74,13 @@ export function applyReportRevision(draft: ReportRender, input: unknown): Report
       }
     } else (parent as Record<string, unknown>)[key] = structuredClone(change.value);
   }
+  return next;
+}
+
+/** Host validates draft identity; this function applies only report-local replacements. */
+export function applyReportRevision(draft: ReportRender, input: unknown): ReportRender {
+  const args = reportRevisionSchema.parse(input);
+  const next = applyContentChanges(reportRenderSchema.parse(draft), args.changes, 'report');
   if (args.fact_bindings) {
     const bindings = [...(next.fact_bindings ?? [])];
     const seen = new Set<string>();

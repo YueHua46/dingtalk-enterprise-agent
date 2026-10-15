@@ -18,17 +18,21 @@ import { workflowDynamicTools } from './task-workflow.js';
 import { mcpReadDynamicTools } from './mcp-read-tool.js';
 import { analysisDynamicTools } from './analysis-tool.js';
 import { nativeReadOnlyMcpTools } from './mcp-tool-list.js';
-import { reportRenderTool } from './report-render.js';
 import { reportRevisionTool } from './report-revision.js';
+import { documentRenderTool } from './document-render.js';
+import { documentRevisionTool } from './document-revision.js';
 
 const agentTools = [{ ...memoryDynamicTools[0], tools: [...memoryDynamicTools[0]!.tools, ...workflowDynamicTools[0]!.tools] }];
 const execFileAsync = promisify(execFile);
 export const enterpriseTools = [...listingDynamicTools, ...knowledgeDynamicTools, ...dwsDynamicTools, ...agentTools, ...guideDynamicTools, ...analysisDynamicTools, ...nativeWebDynamicTools, ...amazonDynamicTools, ...imageDynamicTools, ...crossBorderOpsDynamicTools, ...ziniaoDynamicTools, ...mcpReadDynamicTools, {
   type: 'namespace', name: 'artifact', description: '登记文件任务的最终成果。',
   tools: [
-    reportRenderTool,
+    documentRenderTool,
+    documentRevisionTool,
+    // New tasks compose documents. Only revision of an existing legacy draft
+    // is advertised; its renderer remains available internally for recovery.
     reportRevisionTool,
-    { type: 'function', name: 'submit', description: '提交 output 目录中的最终文件。推荐同时提供 final_answer（简短文件交付说明及最多三项要点；完整数据、论证和操作建议留在文件中，不要在摘要重复整份报告或增加新结论），宿主将文件正文和摘要一次性联合核验，通过后发送文件；再用完全相同的摘要完成任务可复用审核，新增结论或证据会重新审核。未通过时按反馈修改后再提交。仅真实 delivered 回执代表发送完成。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' }, final_answer: {type: 'string', description: '待联合审核的简短最终回复：文件名及最多三项要点，详细指标与建议见文件；成功交付后原样答复'} }, required: ['path'], additionalProperties: false } },
+    { type: 'function', name: 'submit', description: '提交 output 目录中的最终文件。推荐同时提供 final_answer（遵循用户对聊天正文的要求，默认简短文件交付说明及最多三项要点；不要重复整份报告或增加新结论），宿主将文件正文和摘要一次性联合核验，通过后发送文件；再用完全相同的摘要完成任务可复用审核，新增结论或证据会重新审核。未通过时按反馈修改后再提交。仅真实 delivered 回执代表发送完成。', inputSchema: { type: 'object', properties: { path: { type: 'string', description: '相对于任务 output 目录的文件路径' }, final_answer: {type: 'string', description: '待联合审核的最终回复，优先遵循用户对正文内容及长度的要求，默认简短交付说明；成功交付后原样答复'} }, required: ['path'], additionalProperties: false } },
     { type: 'function', name: 'overwrite_drive', description: '仅在发起人明确要求覆盖钉盘普通文件时，将 output 成果经宿主确认卡覆盖指定 nodeId。在线文档不适用。', inputSchema: { type: 'object', properties: { path: { type: 'string' }, nodeId: { type: 'string' } }, required: ['path', 'nodeId'], additionalProperties: false } },
     { type: 'function', name: 'import_drive', description: '以当前钉钉用户身份将指定钉盘普通文件下载并导入当前文件工作区，返回可读取的任务内路径。', inputSchema: { type: 'object', properties: { nodeId: { type: 'string' } }, required: ['nodeId'], additionalProperties: false } },
     { type: 'function', name: 'import_chat', description: '将当前群或私聊中的文件消息按真实 messageId、fileId 和文件名下载并导入当前任务工作区。先用 dingtalk.chat.chat-messages 读取 resourceRefs；仅限发起任务的原会话。', inputSchema: { type: 'object', properties: { messageId: { type: 'string' }, fileId: { type: 'string' }, name: { type: 'string' } }, required: ['messageId', 'fileId', 'name'], additionalProperties: false } },
@@ -47,7 +51,7 @@ export const enterpriseInstructions = [
   '4. 取证：当前用户或组织的实时业务事实必须来自本任务的工具调用，不能凭记忆、旧会话摘要或推测。优先选择一次就能直接回答问题的能力（服务端聚合、批量或多对象查询），避免逐个对象重复调用同一能力。某个来源失败或受限时，判断是否有同等可信且有权使用的其他来源；不要把一个来源受限说成整个任务无法完成。查询条件正确且结果完整时，零结果就是该来源内的有效结论；如果用户所指的对象可能存在于另一类产品或数据源，先核对那个来源再下结论。工具返回成功只表示传输成功，不表示业务范围、时间范围、分页或计算已经满足问题；优先读取工具返回的 coverage、scope、freshness、total、offset、hasMore 等结构化元数据，缺少关键元数据时先补足数据契约或改用能明确给出范围的能力，再作范围性结论。',
   '知识库工具返回 answerReady=true 时，先使用返回的全部事实、来源、位置和 nextAction 作答，不要为了换参数名称或再次确认同一结论重复调用。只有 nextAction 明确指出缺口，或用户问题中的另一项事实尚未覆盖时才补查。answerReady 不等于跳过交付前核验，资料冲突仍须分别说明。',
   '5. 计算：凡是由多行数据派生的数字（求和、均值、比率、环比、排名），优先用 analysis.table 对保存的证据表计算，复杂逻辑用 analysis.python，不要心算。服务端已返回的指标直接引用，无需重复计算。业务查询成功后返回提示中会给出完整结果文件路径。',
-  '6. 交付：调用 agent.workflow 的 complete 提交最终答复（直接输出最终答复也会被同样核验）。数值表可用 artifact.render_report 的 evidence_tables 直接绑定计算或查询结果，避免手工抄数。宿主会核验答复是否被证据支持；未通过时会一次性列出全部问题，逐条修正后重新提交，只改有问题的部分。',
+  '6. 交付：调用 agent.workflow 的 complete 提交最终答复（直接输出最终答复也会被同样核验）。默认简短聊天；用户明确要求 PDF 时，登记 delivery.format=pdf，再用 artifact.render_document 按问题自由组合内容。统一样式不规定章节，表格/图表 source 直接绑定保存的查询或计算证据；fact_bindings 用于文件正文事实，避免手工抄数。生成后检查实际 PDF 页面预览，用 revise_document 局部修正，再 submit。render_report 只兼容历史广告模板。宿主会核验答复是否被证据支持；未通过时会一次性列出全部问题，逐条修正后重新提交，只改有问题的部分。',
   '',
   '## 答复标准',
   '结论的依据类型必须一致：观测事实、计算结果、规则基准、实际配置、原因推断和行动建议分别注明来源与成立条件。已取得一个指标不代表取得与其相关的其他变量；应用规则前检查其站点、对象和阶段。对缺少前提的结论保留不确定性，并继续提供已有证据支持的诊断。不要用行业常识补造具体对象的配置、成本或状态。',
@@ -127,6 +131,7 @@ export interface CodexClientLike {
   runPython?(taskId: string, code: string): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }>;
   renderListing?(taskId: string, payload: import('./listing-export.js').ListingExport, signal?: AbortSignal): Promise<{ docx: string; xlsx: string }>;
   renderReport?(taskId: string, payload: import('./report-render.js').ReportRender): Promise<{ path: string }>;
+  renderDocument?(taskId: string, payload: import('./document-render.js').CompiledDocument): Promise<import('./document-render.js').DocumentOutput>;
 }
 
 export class CodexClient {

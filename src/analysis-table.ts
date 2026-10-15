@@ -109,7 +109,14 @@ if order:
     if result and order['field'] not in result[0]: raise ValueError('UNKNOWN_SORT_FIELD')
     nonnull=[r for r in result if r.get(order['field']) is not None]
     empty=[r for r in result if r.get(order['field']) is None]
-    result=sorted(nonnull,key=lambda r:number(r[order['field']]),reverse=order['descending'])+empty
+    values=[r[order['field']] for r in nonnull]
+    try:
+        for v in values: number(v)
+        sort_key=lambda r:number(r[order['field']])
+    except (ValueError,decimal.InvalidOperation):
+        if not all(isinstance(v,str) for v in values): raise ValueError('MIXED_SORT_TYPES: use a uniformly numeric or text column')
+        sort_key=lambda r:r[order['field']]
+    result=sorted(nonnull,key=sort_key,reverse=order['descending'])+empty
 def encode(v):
     if isinstance(v,Decimal): return float(v)
     raise TypeError(type(v).__name__)

@@ -7,6 +7,21 @@ import {createHash} from 'node:crypto';
 import {tableAnalysisSchema,tableAnalysisCode} from '../src/analysis-table.js';
 
 describe('saved evidence table computations',()=>{
+  it('sorts dates and labels as text, numeric strings as numbers, and keeps nulls last',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'agent-sort-'));
+    try {
+      await mkdir(join(dir,'evidence'));
+      const compute=async(rows:unknown[],descending=false)=>{
+        await writeFile(join(dir,'evidence/source.json'),JSON.stringify({data:{rows}}));
+        const code=tableAnalysisCode(tableAnalysisSchema.parse({evidenceId:'source',order_by:{field:'value',descending}}),{file:'source.json'});
+        return JSON.parse(execFileSync('python',['-c',code],{cwd:dir,encoding:'utf8',stdio:'pipe'})).data.rows.map((r:any)=>r.value);
+      };
+      expect(await compute([{value:'2026-10-11'},{value:null},{value:'2026-10-08'},{value:'2026-10-09'}])).toEqual(['2026-10-08','2026-10-09','2026-10-11',null]);
+      expect(await compute([{value:'Zeta'},{value:'Alpha'}],true)).toEqual(['Zeta','Alpha']);
+      expect(await compute([{value:'10'},{value:'2'},{value:1},{value:null}])).toEqual([1,'2','10',null]);
+      await expect(compute([{value:'2026-10-08'},{value:1}])).rejects.toThrow();
+    } finally {await rm(dir,{recursive:true,force:true});}
+  });
   it('keeps output fields distinct and allows ratios of generated counts and previous ratios',async()=>{
     const dir=await mkdtemp(join(tmpdir(),'agent-count-'));
     try {

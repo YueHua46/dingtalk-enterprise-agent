@@ -26,6 +26,22 @@ export interface ResolvedFact {
 
 /** The model selects a fact; it cannot supply its value or source digest. */
 export function prepareFactBindings(bindings: FactBinding[], sources: EvidenceFileEntry[]) {
+  // Return every broken reference together with real candidates. A bare
+  // SOURCE_UNAVAILABLE hid which of many bindings was wrong and encouraged
+  // repeated guesses, even though the correct saved table already existed.
+  const errors = bindings.flatMap<Record<string,unknown>>(binding => {
+    const source = sources.find(item => item.evidenceId === binding.evidenceId);
+    const table = source?.tables?.find(item => item.path === binding.rows_path);
+    if (!source?.sha256 || !['observation', 'calculation'].includes(source.kind ?? '') || !table) {
+      const candidates = sources.flatMap(item => !item.sha256 || !['observation','calculation'].includes(item.kind ?? '') ? []
+        : (item.tables ?? []).filter(t => Object.prototype.hasOwnProperty.call(t.fields,binding.field))
+          .map(t => ({evidenceId:item.evidenceId,file:item.file,rows_path:t.path,rows:t.rows,fields:Object.keys(t.fields).slice(0,30)}))).slice(-8);
+      return [{code:'FACT_SOURCE_UNAVAILABLE',id:binding.id,evidenceId:binding.evidenceId,rows_path:binding.rows_path,field:binding.field,candidates}];
+    }
+    const missing = [binding.field,...Object.keys(binding.where)].filter(field => !Object.prototype.hasOwnProperty.call(table.fields,field));
+    return missing.length ? [{code:'FACT_FIELD_UNAVAILABLE',id:binding.id,evidenceId:binding.evidenceId,rows_path:binding.rows_path,missing,availableFields:Object.keys(table.fields)}] : [];
+  });
+  if (errors.length) throw new Error('FACT_BINDING_INVALID\n'+JSON.stringify({errors,next:'从 evidence/index.json 选择真实 evidenceId 和 tables.path，用局部修订一次性修正列出的绑定；不要猜测 ID 或重新查询已有数据。'}));
   const ids = new Set<string>();
   return bindings.map(binding => {
     if (ids.has(binding.id)) throw new Error('FACT_ID_DUPLICATE');

@@ -55,6 +55,6 @@ export const reportRenderSchema = z.strictObject({
 export type ReportRender = z.infer<typeof reportRenderSchema>;
 export const reportRenderTool = {
   type: 'function', name: 'render_report',
-  description: '生成广告 PDF。已有数值证据时必须用 fact_bindings={id,evidenceId,rows_path,where,field,decimals?,suffix?} 和 {{fact:id}} 引用正文事实，金额、比率、数量、对象ID以及含数字的名称不能手抄；附表用 evidence_tables。where准确指定唯一对象行；派生指标先analysis.table一次计算；百分号仅附加不缩放。行动建议只传report.action_plan，每条{id,priority,object,problem,evidence,proposal,conditions,observation,acceptance,stop_loss,rollback,confirmation}，object/evidence引用事实；不要重复传budget_bid/execution_plan/review_plan/risks或在其他节重写行动规则，宿主从这一份记录生成全部执行和复盘表。建议阈值只写proposal/conditions/observation/acceptance/stop_loss/rollback等建议字段；sections用于短诊断，观测数字都用引用。范围、覆盖、因果仍须核验。返回draft_id后需修正只用revise_report局部修改。最后submit审核并发送；摘要仅简短交付说明。',
+  description: '历史广告 PDF 模板兼容能力，新任务首选 artifact.render_document 自由编排。仅在用户明确要求 PDF 或文件导出时生成；只填写与用户问题相关的章节。已有数值证据时必须用 fact_bindings 和 {{fact:id}} 引用正文事实，金额、比率、数量、对象 ID 以及含数字的名称不能手抄；附表用 evidence_tables。where 准确指定唯一对象行，派生指标先用 analysis.table 或 analysis.python 计算。范围、覆盖、因果仍须核验。返回 draft_id 后用 revise_report 局部修正，最后 submit 审核并发送。',
   inputSchema: z.toJSONSchema(reportRenderSchema)
 };

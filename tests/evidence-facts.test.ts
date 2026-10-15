@@ -9,6 +9,21 @@ import {describeEvidence} from '../src/evidence-manifest.js';
 import {reportRenderTool} from '../src/report-render.js';
 
 describe('host-resolved report facts',()=>{
+  it('reports all unavailable bindings and real table candidates without choosing a source',()=>{
+    const source={file:'totals.json',evidenceId:'real',capabilityId:'analysis.table',kind:'calculation' as const,
+      arguments:'{}',sha256:'abc',...describeEvidence(JSON.stringify({data:{rows:[{scope:'all',spend:12,sales:20}]}}))};
+    const bindings=['spend','sales'].map(field=>factBindingSchema.parse({id:field,evidenceId:'invented',field}));
+    try {prepareFactBindings(bindings,[source]);throw new Error('expected rejection');}
+    catch(error){
+      const message=String(error);
+      expect(message).toContain('FACT_BINDING_INVALID');
+      const result=JSON.parse(message.slice(message.indexOf('\n')+1));
+      expect(result.errors).toHaveLength(2);
+      expect(result.errors[0]).toMatchObject({id:'spend',code:'FACT_SOURCE_UNAVAILABLE',candidates:[{evidenceId:'real',rows_path:'data.rows'}]});
+      expect(result.errors[1]).toMatchObject({id:'sales',code:'FACT_SOURCE_UNAVAILABLE'});
+    }
+    expect(()=>prepareFactBindings([factBindingSchema.parse({id:'wrong',evidenceId:'real',field:'orders'})],[source])).toThrow('availableFields');
+  });
   it('deduplicates large repeated sources without losing per-fact provenance',async()=>{
     const dir=await mkdtemp(join(tmpdir(),'agent-fact-transport-'));
     try {

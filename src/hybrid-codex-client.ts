@@ -56,6 +56,10 @@ export class HybridCodexClient implements CodexClientLike {
     if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
     return this.remote.renderReport(taskId, payload);
   }
+  public async renderDocument(taskId: string, payload: import('./document-render.js').CompiledDocument): Promise<import('./document-render.js').DocumentOutput> {
+    if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
+    return this.remote.renderDocument(taskId, payload);
+  }
   public async downloadOutput(taskId: string, name: string): Promise<Buffer> {
     if (this.route(taskId) !== this.remote) throw new Error('FILE_WORKER_NOT_ENABLED');
     return this.remote.downloadOutput(taskId, name);

@@ -2,11 +2,14 @@ import type { ExecutionBudgetState } from './execution-budget.js';
 import type { EvidenceFileEntry } from './evidence-manifest.js';
 import type { ResolvedFact } from './evidence-facts.js';
 import type { ReportRender } from './report-render.js';
+import type { DocumentRender } from './document-render.js';
 import { randomUUID } from 'node:crypto';
 import { capabilityById, capabilityCatalog } from './capability-catalog.js';
 
 export interface TaskContract {
   mode?: 'conversation' | 'read' | 'write';
+  /** Delivery is an explicit user-facing contract; marketplace never selects a workflow. */
+  delivery?: TaskDelivery;
   goal: string;
   deliverables: string[];
   requiredFacts: Array<{ id: string; description: string; acceptableSources: string[]; enumeration?: 'all' | 'bounded' | 'point' | 'context'; grain?: string[] }>;
@@ -15,6 +18,12 @@ export interface TaskContract {
   completionCriteria: string[];
   steps?: WorkflowPlanStep[];
 }
+
+export type TaskDelivery = {
+  format: 'chat' | 'pdf';
+  detail: 'brief' | 'standard' | 'full';
+  audience?: 'operator' | 'manager' | 'self';
+};
 
 export type WorkflowEvidenceMode = 'url' | 'title' | 'content' | 'query' | 'element' | 'screenshot' | 'api_state' | 'file_readback';
 export interface WorkflowPlanStep {
@@ -118,6 +127,7 @@ export interface WorkflowState {
   artifactFacts?: Record<string, {facts: ResolvedFact[]; report: Record<string, unknown>; reviewReport?: Record<string, unknown>; tables?: unknown[]}>;
   /** Unresolved structured draft, retained for precise local correction. */
   reportDraft?: {id: string; payload: ReportRender; compiled?: boolean};
+  documentDraft?: {id: string; payload: DocumentRender; compiled?: boolean; artifactSha256?: string};
   revision: number;
   planCount?: number;
   budgetExhausted?: boolean;
@@ -146,7 +156,7 @@ export const workflowDynamicTools = [{
     type: 'function', name: 'workflow',
     description: [
       'operation=verify：强制步骤验收。每个关键步骤执行后，先观察实际结果，再提交 checkpoint={stepId, criterion, evidenceIds, observationMethod, status, reason, nextAction}。observationMethod 由 Agent 根据目标选择 url/title/content/query/element/screenshot/api_state/file_readback，可组合使用。独立核验器用宿主保存的实际结果核对，不接受自述成功替代证据。失败后只能有限恢复，不自动重放写入。',
-      'operation=plan：多步骤任务必须登记工作计划 contract={goal, deliverables[], steps:[{stepId,purpose,action,acceptanceCriteria,preferredEvidence[],fallbackEvidence[],recoveryStrategy,critical}], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；每个步骤的验收条件由 Agent 根据用户目标生成，宿主不按页面名称或关键词推断。',
+      'operation=plan：多步骤任务必须登记工作计划 contract={goal, delivery?:{format:chat|pdf,detail:brief|standard|full,audience?:operator|manager|self}, deliverables[], steps:[{stepId,purpose,action,acceptanceCriteria,preferredEvidence[],fallbackEvidence[],recoveryStrategy,critical}], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；delivery 默认 chat/brief；每个步骤的验收条件由 Agent 根据用户目标生成，宿主不按站点或关键词推断。',
       'operation=clarify：仅当缺少只有发起人能决定、且会改变查询对象、跨越权限或影响真实写入目标的条件时使用，提供 question（给发起人的一个最小问题）与 reason。',
       'operation=complete：提交最终答复 completion={status: answered|partial|blocked, answer: 给用户的完整回答, factEvidence: {事实ID: 单个证据ID或证据ID数组}（可为空对象，宿主会自动关联已有成功查询，不需要为填写引用重复查资料）, missingFacts: [未满足的事实ID]}。宿主会核验答复是否被证据支持；未通过时一次性返回所有问题，逐条修正后重新提交。'
     ].join('\n'),
@@ -163,7 +173,42 @@ export const workflowDynamicTools = [{
           reason: { type: 'string', minLength: 1, maxLength: 2000 },
           nextAction: { type: 'string', enum: ['continue', 'retry', 'change_strategy', 'report_failure'] }
         }, required: ['stepId', 'criterion', 'evidenceIds', 'observationMethod', 'status', 'reason', 'nextAction'] },
-        contract: { type: 'object' },
+        // Publish the real shape: an opaque object can be reduced to a generic
+        // `reason` field by provider schema adapters, hiding goal and delivery.
+        contract: { type: 'object', additionalProperties: false, properties: {
+          goal: { type: 'string', minLength: 1, maxLength: 1000 },
+          mode: { type: 'string', enum: ['conversation', 'read', 'write'] },
+          delivery: { type: 'object', additionalProperties: false, properties: {
+            format: { type: 'string', enum: ['chat', 'pdf'] },
+            detail: { type: 'string', enum: ['brief', 'standard', 'full'] },
+            audience: { type: 'string', enum: ['operator', 'manager', 'self'] }
+          }, required: ['format', 'detail'] },
+          deliverables: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } },
+          assumptions: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } },
+          openQuestions: { type: 'array', maxItems: 10, items: { type: 'string', minLength: 1 } },
+          completionCriteria: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } },
+          requiredFacts: { type: 'array', maxItems: 20, items: {
+            type: 'object', additionalProperties: false, properties: {
+              id: { type: 'string', pattern: '^[a-z][a-z0-9_]{0,39}$' },
+              description: { type: 'string', minLength: 1 },
+              acceptableSources: { type: 'array', minItems: 1, maxItems: 15, items: { type: 'string', minLength: 1 } },
+              enumeration: { type: 'string', enum: ['all', 'bounded', 'point', 'context'] },
+              grain: { type: 'array', maxItems: 10, items: { type: 'string', minLength: 1, maxLength: 80 } }
+            }, required: ['id', 'description', 'acceptableSources']
+          } },
+          steps: { type: 'array', maxItems: 30, items: {
+            type: 'object', additionalProperties: false, properties: {
+              stepId: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_-]{0,99}$' },
+              purpose: { type: 'string', minLength: 1, maxLength: 500 },
+              action: { type: 'string', minLength: 1, maxLength: 1000 },
+              acceptanceCriteria: { type: 'string', minLength: 1, maxLength: 1500 },
+              preferredEvidence: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', enum: ['url', 'title', 'content', 'query', 'element', 'screenshot', 'api_state', 'file_readback'] } },
+              fallbackEvidence: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', enum: ['url', 'title', 'content', 'query', 'element', 'screenshot', 'api_state', 'file_readback'] } },
+              recoveryStrategy: { type: 'string', minLength: 1, maxLength: 1000 },
+              critical: { type: 'boolean' }
+            }, required: ['stepId', 'purpose', 'action', 'acceptanceCriteria', 'preferredEvidence', 'fallbackEvidence', 'recoveryStrategy']
+          } }
+        }, required: ['goal'] },
         question: { type: 'string' }, reason: { type: 'string' },
         completion: {
           type: 'object', additionalProperties: false,
@@ -202,6 +247,23 @@ export class TaskWorkflow {
     };
     if (typeof value.goal !== 'string' || !value.goal.trim() || value.goal.length > 1000) throw new Error('WORKFLOW_PLAN_INVALID: goal 必填');
     if (value.mode !== undefined && !['conversation', 'read', 'write'].includes(String(value.mode))) throw new Error('WORKFLOW_PLAN_INVALID: mode 只能是 conversation|read|write');
+    let delivery: TaskDelivery | undefined;
+    if (value.delivery !== undefined) {
+      if (!value.delivery || typeof value.delivery !== 'object' || Array.isArray(value.delivery)) throw new Error('WORKFLOW_PLAN_INVALID: delivery 必须是对象');
+      const rawDelivery = value.delivery as Record<string, unknown>;
+      if (!['chat', 'pdf'].includes(String(rawDelivery.format)) || !['brief', 'standard', 'full'].includes(String(rawDelivery.detail))) {
+        throw new Error('WORKFLOW_PLAN_INVALID: delivery.format 只能是 chat|pdf，detail 只能是 brief|standard|full');
+      }
+      if (rawDelivery.audience !== undefined && !['operator', 'manager', 'self'].includes(String(rawDelivery.audience))) {
+        throw new Error('WORKFLOW_PLAN_INVALID: delivery.audience 无效');
+      }
+      delivery = {
+        format: rawDelivery.format as TaskDelivery['format'],
+        detail: rawDelivery.detail as TaskDelivery['detail']
+      };
+      if (typeof rawDelivery.audience === 'string') delivery.audience = rawDelivery.audience as 'operator' | 'manager' | 'self';
+    }
+    delivery ??= { format: 'chat', detail: 'brief' };
     const requiredFacts = value.requiredFacts ?? [];
     if (!Array.isArray(requiredFacts) || requiredFacts.length > 20) throw new Error('WORKFLOW_PLAN_INVALID: requiredFacts 最多 20 项');
     const facts = requiredFacts.map((rawFact) => {
@@ -245,6 +307,7 @@ export class TaskWorkflow {
     if (new Set(steps.map((step) => step.stepId)).size !== steps.length) throw new Error('WORKFLOW_PLAN_INVALID: stepId 重复');
     const contract: TaskContract = {
       ...(value.mode ? { mode: value.mode as 'conversation' | 'read' | 'write' } : {}),
+      ...(delivery ? { delivery } : {}),
       goal: value.goal.trim(), deliverables: strings(value.deliverables, 20, 'deliverables'), requiredFacts: facts,
       assumptions: strings(value.assumptions, 20, 'assumptions'), openQuestions: strings(value.openQuestions, 10, 'openQuestions'),
       completionCriteria: strings(value.completionCriteria, 20, 'completionCriteria'), ...(steps.length ? { steps } : {})

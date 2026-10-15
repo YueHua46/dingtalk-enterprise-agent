@@ -241,7 +241,7 @@ export class InMemoryRepository implements Repository {
   public async getArtifactBudgetHistory(taskId: string): Promise<ArtifactBudgetHistory> {
     return {calls: (this.audits as Array<ArtifactBudgetHistory['calls'][number] & {taskId?:string}>)
       .filter(event => event.taskId === taskId && ['tool.call_started','tool.call_finished'].includes(event.eventType)
-        && event.payload?.namespace === 'artifact' && ['render_report','submit'].includes(event.payload?.tool ?? '')),
+        && event.payload?.namespace === 'artifact' && ['render_report','revise_report','render_document','revise_document','submit'].includes(event.payload?.tool ?? '')),
       deliveryAttempts: [...this.invocations.values()].filter(item => item.taskId === taskId && item.toolName === 'artifact.send').length};
   }
 
@@ -592,7 +592,7 @@ export class PgRepository implements Repository {
     const result = await this.pool.query<{event_type:string; payload: NonNullable<ArtifactBudgetHistory['calls'][number]['payload']>}>(
       `SELECT event_type, json_build_object('namespace',payload->>'namespace','tool',payload->>'tool','argumentHash',payload->>'argumentHash') AS payload
        FROM audit_events WHERE task_id=$1 AND event_type IN ('tool.call_started','tool.call_finished')
-       AND payload->>'namespace'='artifact' AND payload->>'tool' IN ('render_report','submit') ORDER BY id`, [taskId]);
+       AND payload->>'namespace'='artifact' AND payload->>'tool' IN ('render_report','revise_report','render_document','revise_document','submit') ORDER BY id`, [taskId]);
     const attempts = await this.pool.query<{count:string}>(
       "SELECT count(*)::text AS count FROM tool_invocations WHERE task_id=$1 AND tool_name='artifact.send'", [taskId]);
     return {calls:result.rows.map(row => ({eventType:row.event_type,payload:row.payload})), deliveryAttempts:Number(attempts.rows[0]!.count)};

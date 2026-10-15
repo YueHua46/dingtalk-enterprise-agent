@@ -153,7 +153,7 @@ Client。机器人 AppKey/AppSecret 不能传给 DWS 设备码接口：它们用
 Compose 将 `DWS_KEYCHAIN_DIR` 固定到 `/var/lib/dws/keychain`。该路径位于持久化的
 `dws-data` 卷中，使 DWS 能在 Gateway 根文件系统保持只读时安全保存加密凭据与 DEK。
 
-将最终 Profile Key 写入 `.env` 的 `DWS_BOT_PROFILE`。员工业务 Profile 无需管理员预先批量创建：员工首次访问受保护资源时，机器人会私聊设备授权入口；授权完成并核对 `corpId + userId` 后自动恢复原任务。
+将最终 Profile Key 写入 `.env` 的 `DWS_BOT_PROFILE`。员工业务 Profile 无需管理员预先批量创建：员工每次发起新任务时，网关会先检查其 Profile；未授权或 Token 失效时立即私聊设备授权入口，授权完成并核对 `corpId + userId` 后自动恢复原任务。
 
 ## Markdown 交互
 

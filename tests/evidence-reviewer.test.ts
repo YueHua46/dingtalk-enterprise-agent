@@ -36,6 +36,38 @@ function input(overrides: Partial<ReviewInput> = {}): ReviewInput {
 }
 
 describe('EvidenceReviewer', () => {
+  it('requires an exact audit of every delivered narrative unit, including action premises and the chat summary',async()=>{
+    const answer=JSON.stringify({artifactBody:{blocks:[
+      {type:'summary',text:'只分析已入库的报表，不能代表全账户。'},
+      {type:'actions',items:[{proposal:'建议先核实竞价。',conditions:'平均点击成本不是当前配置竞价。'}]}
+    ]},actualPdfText:'实际提取正文',finalAnswer:'附件分析仅覆盖本次已入库报表。'});
+    const http=vi.fn(async(_url:string,init:RequestInit)=>{
+      const payload=JSON.parse(JSON.parse(String(init.body)).input[1].content);
+      expect(payload.reviewUnits).toEqual([
+        {id:'blocks.0.text',text:'只分析已入库的报表，不能代表全账户。'},
+        {id:'blocks.1.items.0.proposal',text:'建议先核实竞价。'},
+        {id:'blocks.1.items.0.conditions',text:'平均点击成本不是当前配置竞价。'},
+        {id:'finalAnswer',text:'附件分析仅覆盖本次已入库报表。'}
+      ]);
+      return new Response(JSON.stringify({output:[{content:[{text:JSON.stringify({issues:[],checks:payload.reviewUnits.map((unit:{id:string;text:string})=>({
+        unitId:unit.id,claim:unit.text,kind:'coverage',evidenceIds:[],observed:'核对实际报表',missing:'',verdict:'supported'
+      }))})}]}]}));
+    });
+    expect((await new EvidenceReviewer(config,http as typeof fetch).review(input({completion:{status:'answered',answer,factEvidence:{},missingFacts:[]}}))).status).toBe('pass');
+  });
+
+  it.each(['omit','paraphrase','unknown'])('does not accept a superficial document audit (%s)',async(mode)=>{
+    const text='从当前平均点击成本直接调整配置竞价。';
+    const answer=JSON.stringify({artifactBody:{blocks:[{type:'summary',text}]}});
+    const http=vi.fn(async()=>new Response(JSON.stringify({output:[{content:[{text:JSON.stringify({issues:[],checks:[{
+      ...(mode==='omit'?{}:{unitId:mode==='unknown'?'invented':'blocks.0.text'}),
+      claim:mode==='paraphrase'?'建议调整竞价。':text,kind:'recommendation',evidenceIds:[],observed:'仅核验了温和改写',missing:'',verdict:'qualified'
+    }]})}]}]})));
+    const result=await new EvidenceReviewer({...config,MODEL_REVIEW_MAX_ATTEMPTS:1},http as typeof fetch).review(input({completion:{status:'answered',answer,factEvidence:{},missingFacts:[]}}));
+    expect(result.status).toBe('unavailable');
+    expect(result.reason).toContain(mode==='unknown'?'review_unknown_unit':'review_unit_not_quoted');
+  });
+
   it('does not start a review after the task deadline',async()=>{
     const http=vi.fn();
     const result=await new EvidenceReviewer(config,http as typeof fetch).review(input({deadlineAt:Date.now()-1}));

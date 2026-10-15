@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { TaskWorkflow } from '../src/task-workflow.js';
+import { TaskWorkflow, workflowDynamicTools } from '../src/task-workflow.js';
+import { adaptModelRequest } from '../src/model-tool-proxy.js';
 
 const contract = {
   goal: '分析授权店铺销量变化', deliverables: ['店铺与 ASIN 清单'],
@@ -8,6 +9,16 @@ const contract = {
 };
 
 describe('TaskWorkflow evidence contract', () => {
+  it('publishes goal and PDF delivery to the actual provider tool schema', () => {
+    const adapted = adaptModelRequest({tools: workflowDynamicTools});
+    const tool = (adapted.body.tools as Array<any>).find(t => t.name === 'agent__workflow');
+    const schema = tool.inputSchema.properties.contract;
+    expect(schema.required).toContain('goal');
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.delivery.properties.format.enum).toEqual(['chat', 'pdf']);
+    expect(schema.properties.delivery.required).toEqual(['format', 'detail']);
+    expect(schema.properties.steps.items.required).toContain('acceptanceCriteria');
+  });
   it('preserves observed coverage through recording and task resume', () => {
     const workflow = new TaskWorkflow();
     const coverage = {mode: 'page', total: 11020, returned: 50, offset: 0, limit: 50, has_more: true, next_offset: 50};
@@ -47,6 +58,19 @@ describe('TaskWorkflow evidence contract', () => {
     const workflow = new TaskWorkflow();
     expect(() => workflow.plan({ goal: 'x', requiredFacts: [{ id: 'fact', description: 'x', acceptableSources: ['dingtalk.message'] }] }))
       .toThrow(/WORKFLOW_SOURCE_UNREGISTERED: dingtalk.message.*dingtalk.*/);
+  });
+
+  it('records delivery explicitly instead of inferring it from marketplace or wording', () => {
+    const workflow = new TaskWorkflow();
+    const planned = workflow.plan({ ...contract, delivery: { format: 'pdf', detail: 'brief', audience: 'operator' } });
+    expect(planned.delivery).toEqual({ format: 'pdf', detail: 'brief', audience: 'operator' });
+    const chat = new TaskWorkflow();
+    expect(chat.plan(contract).delivery).toEqual({ format: 'chat', detail: 'brief' });
+  });
+
+  it('rejects an invalid delivery contract', () => {
+    const workflow = new TaskWorkflow();
+    expect(() => workflow.plan({ ...contract, delivery: { format: 'docx', detail: 'brief' } })).toThrow('WORKFLOW_PLAN_INVALID: delivery.format');
   });
 
   it('accepts a completion without a plan and keeps only real citations', () => {

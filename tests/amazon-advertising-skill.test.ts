@@ -16,10 +16,11 @@ describe('amazon-advertising-ai-optimizer skill', () => {
     }
   })();
 
-  it('is discoverable and exposes the three site rule references', async () => {
+  it('is discoverable and treats site material as optional experience references', async () => {
     const root = await guide.execute({ name: 'amazon-advertising-ai-optimizer' });
     expect(root.text).toContain('CrossBorderOps');
-    expect(root.text).toContain('只生成建议');
+    expect(root.text).toContain('可选参考');
+    expect(root.text).toContain('不是固定 Workflow');
     for (const reference of ['japan-rules', 'germany-rules', 'usa-profit-model', 'output-template', 'report-template']) {
       const result = await guide.execute({ name: 'amazon-advertising-ai-optimizer', reference });
       expect(result.text.length).toBeGreaterThan(100);
@@ -52,16 +53,31 @@ describe('amazon-advertising-ai-optimizer skill', () => {
     expect(result.text).toContain('必须提供 `asin`');
     expect(result.text).toContain('不重复发送同一个失败请求');
     const skill = readFileSync(resolve('skills/amazon-advertising-ai-optimizer/SKILL.md'), 'utf8');
-    expect(skill).toContain('不要求每次分析全部加载');
+    expect(skill).toContain('只有当前问题需要时才读取');
   });
 
-  it('requires a PDF artifact for complete downloadable reports', async () => {
+  it('uses dynamic document composition for new PDFs and isolates the historical template', async () => {
     const result = await guide.execute({ name: 'amazon-advertising-ai-optimizer', reference: 'report-template' });
     expect(result.text).toContain('artifact.render_report');
     expect(result.text).toContain('artifact.submit');
     expect(result.text).toContain('不重复发送 PDF');
+    expect(result.text).toContain('只适用于历史');
+    expect(result.text).toContain('新任务使用通用 PDF Skill');
     const skill = readFileSync(resolve('skills/amazon-advertising-ai-optimizer/SKILL.md'), 'utf8');
-    expect(skill).toContain('生成排版好的 PDF');
+    expect(skill).toContain('只有用户明确要求 PDF');
+    expect(skill).toContain('artifact.render_document');
+    const pdf = readFileSync(resolve('file-skills/pdf/SKILL.md'), 'utf8');
+    expect(pdf).toContain('does not prescribe business chapters');
+    expect(pdf).toContain('actual PDF page previews');
+  });
+
+  it('documents the experience-pack boundary and unknown-market fallback', async () => {
+    const result = await guide.execute({ name: 'amazon-advertising-ai-optimizer', reference: 'experience-packs' });
+    expect(result.text).toContain('不是 Amazon 官方规则');
+    expect(result.text).toContain('没有匹配经验包时');
+    const skill = readFileSync(resolve('skills/amazon-advertising-ai-optimizer/SKILL.md'), 'utf8');
+    expect(skill).toContain('英国、加拿大、意大利或其他站点');
+    expect(skill).not.toContain('每个站点本回合至少');
   });
 
   it.skipIf(!pythonHasReportlab)('renders the sample report as a non-empty PDF artifact', () => {
