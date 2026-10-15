@@ -109,6 +109,7 @@ export interface WorkflowState {
   toolCheckpoints?: Record<string, {capabilityId: string; evidenceId?: string; result: string; completedAt: string}>;
   /** Verifier rounds spent on this task (bounded by the orchestrator). */
   reviewRounds?: number;
+  reviewBudget?: {spentMs: number; startedAt?: number};
   /** Re-submitting unchanged content must not restart an exhausted transport budget. */
   reviewedDeliveryAnswer?: {answer: string; evidenceKey: string; artifactSha256: string; deliveryEvidenceId: string};
   artifactReviews?: Record<string, {status: 'pass'|'revise'|'unavailable'; reason: string; evidenceKey: string; answerKey?: string;
@@ -116,7 +117,7 @@ export interface WorkflowState {
   /** Host-resolved facts bound to the bytes actually rendered, not a model-written citation list. */
   artifactFacts?: Record<string, {facts: ResolvedFact[]; report: Record<string, unknown>; reviewReport?: Record<string, unknown>; tables?: unknown[]}>;
   /** Unresolved structured draft, retained for precise local correction. */
-  reportDraft?: {id: string; payload: ReportRender};
+  reportDraft?: {id: string; payload: ReportRender; compiled?: boolean};
   revision: number;
   planCount?: number;
   budgetExhausted?: boolean;

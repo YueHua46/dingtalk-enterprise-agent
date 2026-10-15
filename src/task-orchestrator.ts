@@ -6,7 +6,7 @@ import { reportRenderSchema } from './report-render.js';
 import { applyReportRevision, reportRevisionSchema } from './report-revision.js';
 import { assertReportGrounding } from './report-grounding.js';
 import { materializeReportActions } from './report-actions.js';
-import { prepareFactBindings, factResolutionConfig, factResolutionCode, interpolateFacts, type ResolvedFact } from './evidence-facts.js';
+import { prepareFactBindings, factResolutionConfig, factResolutionCode, decodeResolvedFacts, interpolateFacts, type ResolvedFact } from './evidence-facts.js';
 import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
 import { DwsTool } from './dws-tool.js';
@@ -28,7 +28,7 @@ import { TaskWorkflow, listCapabilities, type ScreenshotDeliveryReceipt, type Ta
 import { capabilityById } from './capability-catalog.js';
 import { recoveryToolAllowed, taskRecoveryPrompt, type TaskRecoveryRequest } from './task-recovery.js';
 import { toolCheckpointKey, legacyObservationCheckpoint } from './tool-checkpoint.js';
-import { EvidenceReviewer, formatIssues, type ReviewProfile } from './evidence-reviewer.js';
+import { EvidenceReviewer, formatIssues, type ReviewProfile, type ReviewInput, type ReviewResult } from './evidence-reviewer.js';
 import { structuredEvidenceExcerpt } from './evidence-excerpt.js';
 import { parseAnalysisInput } from './analysis-tool.js';
 import { EMPTY_TURN_TEXT } from './codex-client.js';
@@ -79,13 +79,19 @@ const MAX_REVISION_TURNS = 3;
 /** Tool output above this size is summarized for the model once the full result is saved as a sandbox file. */
 const MODEL_TOOL_OUTPUT_MAX_CHARS = 60_000;
 
+// Protocol error code emitted by the Responses bridge, never inferred from user intent.
+function isMalformedFunctionCallFailure(error: unknown): boolean {
+  return (error instanceof Error ? error.message : String(error)).includes('malformed_function_call');
+}
+
 export function isRetryableModelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /upstream[_\s-]*(?:error|request failed)|model_upstream_unavailable|no available accounts|\b(?:429|502|503|504)\b|rate[\s_-]*limit|too many requests|fetch failed|connection (?:reset|closed)|stream (?:disconnected|interrupted)|econnreset|etimedout|timed? out|timeout|deadline exceeded|aborterror/i.test(message);
+  return isMalformedFunctionCallFailure(error) || /upstream[_\s-]*(?:error|request failed)|model_upstream_unavailable|no available accounts|\b(?:429|502|503|504)\b|rate[\s_-]*limit|too many requests|fetch failed|connection (?:reset|closed)|stream (?:disconnected|interrupted)|econnreset|etimedout|timed? out|timeout|deadline exceeded|aborterror/i.test(message);
 }
 
 function modelFailureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (isMalformedFunctionCallFailure(error)) return '上游模型生成了无效工具调用';
   if (/upstream[_\s-]*(?:error|request failed)/i.test(message)) return '上游请求失败（Upstream request failed）';
   if (/\b429\b|rate[\s_-]*limit|too many requests/i.test(message)) return '上游服务限流';
   if (/no available accounts|\b503\b/i.test(message)) return '上游服务暂无可用资源';
@@ -303,6 +309,10 @@ function canFastFinalizeDeliveredImage(workflow: TaskWorkflow): boolean {
   return workflow.state.evidence.every((item) => item.capabilityId === 'image.generate' || item.capabilityId === 'reference.read_guide');
 }
 
+function requiresCompiledAdvertisingReport(task: TaskRecord, workflow: TaskWorkflow): boolean {
+  if (!workflow.state.evidence.some((item) => item.status === 'success' && item.capabilityId === 'crossborderops.ads.metrics')) return false;
+  return /(?:pdf|报告|报表|report)/i.test(task.request.text);
+}
 
 function reviewProfileFor(workflow: TaskWorkflow): ReviewProfile {
   const ids = workflow.state.evidence.map((item) => item.capabilityId);
@@ -1244,7 +1254,8 @@ export class TaskOrchestrator {
             break;
           }
           const delayMs = MODEL_RETRY_DELAYS_MS[attempt];
-          const incompleteModelStream = /stream closed before response\.completed/i.test(errorMessage);
+          const malformedFunctionCall = isMalformedFunctionCallFailure(error);
+          const incompleteModelStream = malformedFunctionCall || /stream closed before response\.completed/i.test(errorMessage);
           if (recoveryUnsafe && isRetryableModelError(error)) {
             const detail = error instanceof Error ? error.message : String(error);
             throw new Error(`${MODEL_RETRY_UNSAFE_AFTER_TOOL}: ${detail}`);
@@ -1253,7 +1264,7 @@ export class TaskOrchestrator {
           // a whole turn here would multiply the bounded gateway attempts.
           if (/MODEL_REQUEST_RETRY_(?:EXHAUSTED|BUDGET_EXCEEDED)/.test(errorMessage)) throw error;
           if (this.config.MODEL_TOOL_COMPAT_PROXY === 'true' && !sawToolActivity && !recoveryMode && !hadToolActivity
-            && !/stream (?:disconnected|interrupted)/i.test(errorMessage)) throw error;
+            && !malformedFunctionCall && !/stream (?:disconnected|interrupted)/i.test(errorMessage)) throw error;
           if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
           // This gateway compatibility failure has already delivered an
           // incomplete Responses stream. One fresh turn can recover from a
@@ -1312,7 +1323,9 @@ export class TaskOrchestrator {
           const outcome = candidate && candidate !== EMPTY_TURN_TEXT
             ? await this.submitCompletion(task, surfaceId, workflow, evidenceExcerpts, { status: isWebFallback ? 'partial' : 'answered', answer: candidate, factEvidence: {}, missingFacts: isWebFallback ? workflow.state.contract?.requiredFacts.map((fact) => fact.id) ?? [] : [] }, computeAvailable, taskDeadlineAt)
             : { accepted: false as const, feedback: '本回合没有输出最终答复。' };
-          if (outcome.accepted || isWebFallback || revisionTurns >= Math.min(MAX_REVISION_TURNS, maxReviewRounds)) break;
+          const artifactPresenceRepair = 'feedback' in outcome && /^REPORT_(?:REQUIRED_BEFORE_REVIEW|DRAFT_NOT_COMPILED)/.test(outcome.feedback);
+          const repairLimit = artifactPresenceRepair ? 1 : Math.min(MAX_REVISION_TURNS, maxReviewRounds);
+          if (outcome.accepted || isWebFallback || revisionTurns >= repairLimit) break;
           if (Date.now() >= taskDeadlineAt) {
             await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
               eventType: 'workflow.deadline_exceeded', payload: { stage: 'revision_turn', deadlineExceeded: true, deadlineAt: new Date(taskDeadlineAt).toISOString() } });
@@ -1553,7 +1566,8 @@ export class TaskOrchestrator {
         const draft = workflow.state.reportDraft;
         if (!draft || draft.id !== args.draft_id) throw new Error('REPORT_DRAFT_STALE: 使用最近 render_report 返回的 draft_id');
         const revised = applyReportRevision(draft.payload, args);
-        if (sha256(revised) === draft.id) throw new Error('REPORT_REVISION_NO_CHANGE: 内容与事实引用未变化，不能重复生成');
+        if (sha256(revised) === draft.id && draft.compiled)
+          throw new Error('REPORT_REVISION_NO_CHANGE: 已成功编译的内容与事实引用未变化');
         return this.handleCodexRequest(task, threadId, {...request, params: {...request.params,
           tool: 'render_report', arguments: revised}}, workflow, evidenceExcerpts, onKnowledgeProgress, taskDeadlineAt, queryIntent);
       } catch (error) {
@@ -1586,9 +1600,10 @@ export class TaskOrchestrator {
             configRef = {file:`report-facts-${digest}.json`, sha256:digest};
             await this.codex.writeEvidence(task.id, configRef.file, config);
           }
-          const resolved = await this.codex.runPython(task.id, factResolutionCode(bindings, configRef));
-          if (resolved.exitCode !== 0 || resolved.timedOut) throw new Error('FACT_RESOLUTION_FAILED: ' + resolved.stderr);
-          facts = JSON.parse(resolved.stdout);
+          const resolved = await this.codex.runPython(task.id, factResolutionCode(bindings, configRef, true));
+          if (resolved.exitCode !== 0 || resolved.timedOut) throw new Error('FACT_RESOLUTION_FAILED: '
+            + (resolved.stderr.trim() || (resolved.timedOut ? 'PYTHON_TIMEOUT' : `PYTHON_EXIT_${resolved.exitCode}`)));
+          facts = decodeResolvedFacts(resolved.stdout);
         }
         payload.report = interpolateFacts(payload.report, facts, true);
         const reviewReport = structuredClone(payload.report);
@@ -1652,7 +1667,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           if (!inspected) throw new Error('FACT_REPORT_HASH_UNAVAILABLE');
           workflow.state.artifactFacts ??= {};
           workflow.state.artifactFacts[inspected.sha256] = {facts, report: payload.report, reviewReport, tables:verifiedTables};
-          workflow.state.reportDraft = {id:draftId,payload:unresolvedDraft};
+          workflow.state.reportDraft = {id:draftId,payload:unresolvedDraft,compiled:true};
           await this.repo.saveWorkflow(task.id, workflow.state);
           await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,
             eventType:'artifact.facts_bound',payload:{sha256:inspected.sha256,facts:facts.map(f => ({id:f.id,evidenceId:f.evidenceId,sourceSha256:f.sourceSha256,field:f.field,rowIndex:f.rowIndex}))}});
@@ -1698,7 +1713,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
           if (cached?.status === 'revise') throw new Error(`ARTIFACT_REVIEW_REVISE: 文件内容未变化，请先按反馈修正再提交。\n${formatIssues(cached.issues)}`);
           if (!cached) await this.chargeArtifactBudget(task, workflow, 'review');
           const startedAt = Date.now();
-          const review = cached ?? await this.evidenceReviewer.review({
+          const review = cached ?? await this.reviewWithinTaskBudget(task, workflow, {
             request: task.request.text,
             ...(task.request.quotedText ? {quotedText: task.request.quotedText} : {}),
             ...(workflow.state.clarification?.answer ? {clarificationAnswer: workflow.state.clarification.answer} : {}),
@@ -1889,7 +1904,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       if (args?.operation === 'verify') {
         try {
           const checkpoint = workflow.parseCheckpoint(args.checkpoint);
-          const review = await this.evidenceReviewer.review({
+          const review = await this.reviewWithinTaskBudget(task, workflow, {
             stage: 'step', criterion: checkpoint.criterion, steps: workflow.state.steps, checkpoints: workflow.state.checkpoints,
             request: task.request.text, evidence: workflow.state.evidence, evidenceFiles:workflow.state.evidenceFiles, excerpts: Object.fromEntries(evidenceExcerpts),
             completion: { status: 'partial', answer: checkpoint.reason, factEvidence: {}, missingFacts: [] },
@@ -2371,6 +2386,33 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
    * Verifier infrastructure failures never count as a rejection, and the
    * number of verifier rounds is bounded so a task always terminates.
    */
+  /** Charge every semantic review to the same persisted task budget. */
+  private async reviewWithinTaskBudget(task: {id: string}, workflow: TaskWorkflow, input: ReviewInput): Promise<ReviewResult> {
+    const now = Date.now();
+    const budget = workflow.state.reviewBudget ??= {spentMs: 0};
+    // A persisted start without an end means the previous process was interrupted.
+    // Account for that elapsed time rather than resetting the budget on recovery.
+    if (budget.startedAt !== undefined) {
+      budget.spentMs += Math.max(0, now - budget.startedAt);
+      delete budget.startedAt;
+    }
+    const remaining = this.config.TASK_REVIEW_BUDGET_MS - budget.spentMs;
+    const deadlineAt = Math.min(input.deadlineAt ?? Infinity, now + remaining);
+    if (remaining <= 0 || deadlineAt <= now) {
+      await this.repo.saveWorkflow(task.id, workflow.state);
+      return {status: 'unavailable', issues: [], reason: 'task_review_budget_exhausted: 累计核验时间预算已用完，文件未通过核验，不得发送。'};
+    }
+    budget.startedAt = now;
+    await this.repo.saveWorkflow(task.id, workflow.state);
+    try {
+      return await this.evidenceReviewer.review({...input, deadlineAt});
+    } finally {
+      budget.spentMs += Math.max(0, Date.now() - now);
+      delete budget.startedAt;
+      await this.repo.saveWorkflow(task.id, workflow.state);
+    }
+  }
+
   private async submitCompletion(task: TaskRecord, surfaceId: string | undefined, workflow: TaskWorkflow, evidenceExcerpts: Map<string, string>,
     raw: unknown, computeAvailable: boolean, taskDeadlineAt?: number): Promise<{ accepted: true; completion: TaskCompletion } | { accepted: false; feedback: string }> {
     const audit = (eventType: string, payload: Record<string, unknown>) => this.repo.audit({ requestId: task.request.requestId, taskId: task.id,
@@ -2381,6 +2423,23 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
     } catch (error) {
       await audit('workflow.complete_rejected', { stage: 'structure', reason: publicErrorDetail(error) });
       return { accepted: false, feedback: error instanceof Error ? error.message : String(error) };
+    }
+    // Compilation is host state, not a semantic judgement. Do not spend a
+    // full model review on a successful completion with a known failed draft.
+    // Partial/blocked completions must remain possible after a real failure.
+    if (this.enforcing() && completion.status === 'answered' && workflow.state.reportDraft
+      && !workflow.state.reportDraft.compiled) {
+      delete workflow.state.completion;
+      await audit('workflow.complete_rejected', {stage:'artifact_compile', reason:'REPORT_DRAFT_NOT_COMPILED',
+        draftId:workflow.state.reportDraft.id});
+      return {accepted:false, feedback:`REPORT_DRAFT_NOT_COMPILED：草稿尚未成功编译。用 artifact.revise_report 修正 draft_id=${workflow.state.reportDraft.id}；编译成功后调用 artifact.submit 核验并发送。无法完成时提交 partial/blocked 并说明实际错误。`};
+    }
+    // A report task must produce a host-compiled artifact before semantic review.
+    if (this.enforcing() && completion.status === 'answered' && requiresCompiledAdvertisingReport(task, workflow)
+      && !workflow.state.reportDraft?.compiled) {
+      delete workflow.state.completion;
+      await audit('workflow.complete_rejected', {stage:'artifact_presence', reason:'REPORT_REQUIRED_BEFORE_REVIEW'});
+      return {accepted:false, feedback:'REPORT_REQUIRED_BEFORE_REVIEW：广告报告必须先调用 artifact.render_report 生成并成功编译 PDF，再调用 artifact.submit；在实际 PDF 生成前不进入内容审查。若编译失败，请按返回的具体事实或渲染错误修正；无法完成时提交 partial/blocked。'};
     }
     // A planned task cannot be declared answered while any observed step is
     // still only executed/observed.  The checkpoint tool is deliberately
@@ -2453,7 +2512,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       const round = (workflow.state.reviewRounds ?? 0) + 1;
       workflow.state.reviewRounds = round;
       const startedAt = Date.now();
-      const review = await this.evidenceReviewer.review({
+      const review = await this.reviewWithinTaskBudget(task, workflow, {
         request: task.request.text,
         ...(task.request.quotedText ? { quotedText: task.request.quotedText } : {}),
         ...(workflow.state.clarification?.answer ? { clarificationAnswer: workflow.state.clarification.answer } : {}),

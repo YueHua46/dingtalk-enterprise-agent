@@ -99,7 +99,7 @@ const RUBRIC = [
 ].join('\n');
 
 export class EvidenceReviewer {
-  public constructor(private readonly config: Pick<Config, 'MODEL_BASE_URL' | 'MODEL_API_KEY' | 'MODEL_NAME'> & Partial<Pick<Config,'MODEL_REQUEST_MAX_ATTEMPTS'|'MODEL_REQUEST_RETRY_BUDGET_MS'|'MODEL_REVIEW_TIMEOUT_MS'|'MODEL_REVIEW_BASE_URL'|'MODEL_REVIEW_API_KEY'|'MODEL_REVIEW_NAME'|'GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS'>>, private readonly http: typeof fetch = fetch) {}
+  public constructor(private readonly config: Pick<Config, 'MODEL_BASE_URL' | 'MODEL_API_KEY' | 'MODEL_NAME'> & Partial<Pick<Config,'MODEL_REQUEST_MAX_ATTEMPTS'|'MODEL_REQUEST_RETRY_BUDGET_MS'|'MODEL_REVIEW_MAX_ATTEMPTS'|'MODEL_REVIEW_RETRY_BUDGET_MS'|'MODEL_REVIEW_TIMEOUT_MS'|'MODEL_REVIEW_BASE_URL'|'MODEL_REVIEW_API_KEY'|'MODEL_REVIEW_NAME'|'GEMINI_RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS'>>, private readonly http: typeof fetch = fetch) {}
 
   public async review(input: ReviewInput): Promise<ReviewResult> {
     if (!(this.config.MODEL_REVIEW_BASE_URL ?? this.config.MODEL_BASE_URL) || !(this.config.MODEL_REVIEW_API_KEY ?? this.config.MODEL_API_KEY)) return { status: 'unavailable', issues: [], reason: 'reviewer_not_configured' };
@@ -108,7 +108,7 @@ export class EvidenceReviewer {
     try { payload = buildPayload(input); }
     catch (error) { return {status: 'unavailable', issues: [], reason: error instanceof Error ? error.message : 'review_evidence_budget_exceeded'}; }
     let lastError = 'review_failed';
-    const budget = this.config.MODEL_REQUEST_RETRY_BUDGET_MS ?? 1_200_000;
+    const budget = this.config.MODEL_REVIEW_RETRY_BUDGET_MS ?? 360_000;
     const retryState={attempts:0,deadlineAt:Math.min(Date.now()+budget,input.deadlineAt ?? Infinity)};
     const diagnostics: ReviewDiagnostics = {model: this.config.MODEL_REVIEW_NAME ?? this.config.MODEL_NAME, requestChars: 0, attempts: 0, requests: [], retries: []};
     if (Date.now() >= retryState.deadlineAt) return {status:'unavailable',issues:[],reason:'review_task_deadline_exceeded',diagnostics};
@@ -122,7 +122,7 @@ export class EvidenceReviewer {
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         if (error instanceof ModelIncompleteResponseError) break;
-        if (retryState.attempts >= (this.config.MODEL_REQUEST_MAX_ATTEMPTS ?? 6) || Date.now() >= retryState.deadlineAt) break;
+        if (retryState.attempts >= (this.config.MODEL_REVIEW_MAX_ATTEMPTS ?? 2) || Date.now() >= retryState.deadlineAt) break;
       }
     }
     return { status: 'unavailable', issues: [], reason: lastError.slice(0, 200), diagnostics };
@@ -168,8 +168,8 @@ export class EvidenceReviewer {
       headers: { authorization: `Bearer ${this.config.MODEL_REVIEW_API_KEY ?? this.config.MODEL_API_KEY}`, 'content-type': 'application/json' },
       body: requestBody,
       signal: AbortSignal.timeout(Math.max(1,retryState.deadlineAt-Date.now()))
-    },{maxAttempts:this.config.MODEL_REQUEST_MAX_ATTEMPTS??6,
-      budgetMs:this.config.MODEL_REQUEST_RETRY_BUDGET_MS??1_200_000,
+    },{maxAttempts:this.config.MODEL_REVIEW_MAX_ATTEMPTS??2,
+      budgetMs:this.config.MODEL_REVIEW_RETRY_BUDGET_MS??360_000,
       attemptTimeoutMs:this.config.MODEL_REVIEW_TIMEOUT_MS??REVIEW_TIMEOUT_MS,
       state:retryState,http:measuredHttp,onRetry:event=>diagnostics.retries.push(event)});
     if (!response.ok) throw new Error(`review_http_${response.status}`);
@@ -345,7 +345,25 @@ function compactVerifiedFacts(input: ReviewInput['verifiedFacts']): unknown {
   // representation unless its complete dictionary actually saves space.
   const compact = {artifactSha256: input.artifactSha256, facts, rows,
     rowReferenceBoundary: 'Resolve each fact.rowRef in rows for complete source identity, selector, dimensions, query and lineage.'};
-  return JSON.stringify(compact).length < JSON.stringify(input).length ? compact : input;
+  // Different rows often share a large query and population lineage. Row-only
+  // deduplication still repeats those records and crowds out source excerpts.
+  const objects: unknown[] = [];
+  const objectIndexes = new Map<string, number>();
+  const sharedRows = Object.fromEntries(Object.entries(rows).map(([id, raw]) => {
+    const row = {...raw as Record<string, unknown>};
+    for (const key of ['query', 'context', 'rowDimensions', 'lineage']) {
+      if (row[key] === undefined) continue;
+      const identity = JSON.stringify(row[key]);
+      let index = objectIndexes.get(identity);
+      if (index === undefined) { index = objects.length; objectIndexes.set(identity, index); objects.push(row[key]); }
+      delete row[key]; row[key + 'Ref'] = index;
+    }
+    return [id, row];
+  }));
+  const shared = {...compact, rows:sharedRows, objects,
+    rowReferenceBoundary:'Resolve each fact.rowRef in rows. Resolve queryRef/contextRef/rowDimensionsRef/lineageRef as zero-based indexes in objects to restore complete provenance. No source metadata or facts have been omitted.'};
+  return [input, compact, shared].reduce((smallest, candidate) =>
+    JSON.stringify(candidate).length < JSON.stringify(smallest).length ? candidate : smallest);
 }
 
 function dataQuality(excerpts: Record<string, string>): Record<string, unknown> {

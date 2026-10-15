@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {factBindingSchema,prepareFactBindings,factResolutionConfig,factResolutionCode,interpolateFacts} from '../src/evidence-facts.js';
+import {factBindingSchema,prepareFactBindings,factResolutionConfig,factResolutionCode,decodeResolvedFacts,interpolateFacts} from '../src/evidence-facts.js';
 import {describeEvidence} from '../src/evidence-manifest.js';
 import {reportRenderTool} from '../src/report-render.js';
 
@@ -36,6 +36,10 @@ describe('host-resolved report facts',()=>{
       expect(driver.length).toBeLessThan(20000);
       const run=(script:string)=>JSON.parse(execFileSync('python',['-'],{cwd:dir,input:script,encoding:'utf8',maxBuffer:4*1024*1024,stdio:['pipe','pipe','pipe']}));
       const facts=run(driver);
+      const compact=execFileSync('python',['-'],{cwd:dir,input:factResolutionCode(bindings,{file:'fact-config.json',sha256:createHash('sha256').update(config).digest('hex')},true),encoding:'utf8',maxBuffer:512*1024});
+      expect(decodeResolvedFacts(compact)).toEqual(facts);
+      expect(Buffer.byteLength(compact)).toBeLessThan(Buffer.byteLength(JSON.stringify(facts))/2);
+      expect(()=>decodeResolvedFacts('{"version":1,"objects":[],"facts":[{"contextRef":99}]}')).toThrow('FACT_TRANSPORT_INVALID');
       expect(run(code)).toEqual(facts);
       expect(facts).toHaveLength(100);
       facts.forEach((fact:any,i:number)=>expect(fact).toEqual({
@@ -115,6 +119,27 @@ describe('host-resolved report facts',()=>{
       expect(()=>execFileSync('python',['-c',resolve({scope:'missing'})],{cwd:dir,stdio:'pipe'})).toThrow();
       await writeFile(join(dir,'evidence/facts.json'),'{}');
       expect(()=>execFileSync('python',['-c',resolve({scope:'all-products'})],{cwd:dir,stdio:'pipe'})).toThrow();
+    } finally {await rm(dir,{recursive:true,force:true});}
+  });
+  it('reports candidate dimensions when a fact selector is ambiguous without choosing a row',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'agent-fact-candidates-'));
+    try {
+      await mkdir(join(dir,'evidence'));
+      const raw=JSON.stringify({data:{rows:[
+        {store_sid:240,profile_id:'jp-1',customer_search_term:'camera',clicks:4},
+        {store_sid:240,profile_id:'jp-2',customer_search_term:'camera',clicks:9},
+        {store_sid:240,profile_id:'jp-3',customer_search_term:'camera',clicks:12}]}});
+      await writeFile(join(dir,'evidence/facts.json'),raw);
+      const source={file:'facts.json',evidenceId:'metrics',capabilityId:'crossborderops.ads.metrics',kind:'observation' as const,
+        arguments:'{}',sha256:createHash('sha256').update(raw).digest('hex'),...describeEvidence(raw)};
+      const code=factResolutionCode(prepareFactBindings([factBindingSchema.parse({id:'term_clicks',evidenceId:'metrics',where:{store_sid:240,customer_search_term:'camera'},field:'clicks'})],[source]));
+      try { execFileSync('python',['-c',code],{cwd:dir,encoding:'utf8',stdio:'pipe'}); throw new Error('expected ambiguity'); }
+      catch (error) {
+        const detail=String(error);
+        expect(detail).toContain('FACT_ROW_NOT_UNIQUE: term_clicks matched 3 rows');
+        expect(detail).toContain('"profile_id": "jp-1"');
+        expect(detail).toContain('"rowIndex": 2');
+      }
     } finally {await rm(dir,{recursive:true,force:true});}
   });
   it('rejects invented, stale or unused references instead of silently inserting model values',()=>{

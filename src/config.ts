@@ -44,9 +44,11 @@ const schema = z.object({
   // all attempts instead of allowing one hung upstream request to consume it.
   MODEL_REQUEST_RETRY_BUDGET_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(1_200_000),
   MODEL_REQUEST_ATTEMPT_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(300_000).default(180_000),
-  // Per-attempt reviewer deadline. Transient failures share the model retry
-  // budget instead of consuming a separate, shorter delivery deadline.
+  // Review is a bounded stage within the task, with its own retry policy.
   MODEL_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(300_000).default(180_000),
+  MODEL_REVIEW_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(2),
+  MODEL_REVIEW_RETRY_BUDGET_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(360_000),
+  TASK_REVIEW_BUDGET_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(360_000),
   MODEL_REVIEW_PROVIDER: z.enum(['primary', 'tokenshop', 'gemini']).default('primary'),
   MODEL_REVIEW_BASE_URL: z.string().url().optional(),
   MODEL_REVIEW_API_KEY: z.string().min(1).optional(),

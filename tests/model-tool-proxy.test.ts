@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { adaptModelRequest, restoreModelResponse, restoreSseChunk } from '../src/model-tool-proxy.js';
+import { adaptModelRequest, restoreModelResponse, restoreSseChunk, modelResponseDiagnostics } from '../src/model-tool-proxy.js';
 
 describe('Responses namespace compatibility', () => {
+  it('records structural response diagnostics without exposing content or promoting text to tools',()=>{
+    const response={status:'completed',output:[{type:'message',content:[{type:'output_text',text:'call:default_api:tool{secret:value}'}]},
+      {type:'function_call',name:'real_tool',arguments:'{"token":"secret"}'},{type:'reasoning'}],
+      usage:{input_tokens:100,output_tokens:20,output_tokens_details:{reasoning_tokens:10}}};
+    const diagnostics=modelResponseDiagnostics({type:'response.completed',response});
+    expect(diagnostics).toMatchObject({responseStatus:'completed',outputTypes:{message:1,function_call:1,reasoning:1},
+      messagePhases:{absent:1},inputTokens:100,outputTokens:20,reasoningTokens:10});
+    expect(JSON.stringify(diagnostics)).not.toContain('secret');
+    expect((restoreModelResponse(response,new Map()) as any).output[0]).toEqual(response.output[0]);
+  });
   it('flattens namespaced tools and history without inspecting prompt keywords', () => {
     const request = {
       model: 'example',

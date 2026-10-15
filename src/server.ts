@@ -8,7 +8,7 @@ import type { Config } from './config.js';
 import type { AgentRequest } from './types.js';
 import { requestId } from './security.js';
 import { TaskOrchestrator } from './task-orchestrator.js';
-import { adaptModelRequest, restoreModelResponse, restoreSseChunk } from './model-tool-proxy.js';
+import { adaptModelRequest, restoreModelResponse, restoreSseChunk, modelResponseDiagnostics } from './model-tool-proxy.js';
 import type { ZiniaoGateMetrics } from './ziniao-gate.js';
 import { DingTalkDirectory, type DirectoryCandidate } from './dingtalk-directory.js';
 import { verifyModelTaskToken } from './file-worker-auth.js';
@@ -165,7 +165,11 @@ export async function createServer(
       if (!response.body) return reply.send();
       if (!contentType.includes('text/event-stream')) {
         const raw = await response.text();
-        try { return reply.send(restoreModelResponse(JSON.parse(raw), adapted.toolNames)); }
+        try {
+          const parsed=JSON.parse(raw);
+          request.log.info({taskId:workerTaskId,...modelResponseDiagnostics(parsed)},'model response protocol');
+          return reply.send(restoreModelResponse(parsed, adapted.toolNames));
+        }
         catch { return reply.send(raw); }
       }
       reply.hijack();
@@ -188,8 +192,13 @@ export async function createServer(
             pending = pending.slice(match.index + match[0].length);
             reply.raw.write(restoreSseChunk(event, adapted.toolNames) + '\n\n');
             if (isTerminalSseEvent(event)) {
+              let protocol:Record<string,unknown>={};
+              for(const line of event.split(/\r?\n/)) {
+                if(!line.startsWith('data: ') || line.slice(6)==='[DONE]') continue;
+                try {protocol=modelResponseDiagnostics(JSON.parse(line.slice(6)));} catch { /* malformed terminal diagnostics */ }
+              }
               request.log.info({taskId: workerTaskId, durationMs: Date.now()-upstreamStartedAt, headersMs, receivedBytes,
-                requestChars: modelBody.length, completed: event.includes('response.completed')}, 'model stream terminal');
+                requestChars: modelBody.length, completed: event.includes('response.completed'),...protocol}, 'model stream terminal');
               reply.raw.end();
               return;
             }

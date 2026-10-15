@@ -130,6 +130,31 @@ describe('EvidenceReviewer', () => {
       excerpts: {[sourceId]: JSON.stringify({data: {rows}})}})).status).toBe('pass');
   });
 
+  it('shares complete source provenance across different rows without losing context', async () => {
+    const sample=input();
+    const facts=Array.from({length:8},(_,i)=>({id:`fact_${i}`,evidenceId:sample.evidence[0]!.id,
+      sourceSha256:'source-sha',rowsPath:'data.rows',rowIndex:i,selector:{asin:`ASIN-${i}`},
+      field:'spend',value:i,display:String(i),rowDimensions:{asin:`ASIN-${i}`,spend:i},
+      query:{scope:'authorized',fullQuery:'完整查询'.repeat(1000)},context:{coverage:'partial'},lineage:{fullPopulation:'完整溯源'.repeat(1000)}}));
+    const http=vi.fn(async(_url:string,init:RequestInit)=>{
+      const payload=JSON.parse(JSON.parse(String(init.body)).input[1].content);
+      const compact=payload.verifiedFacts;
+      expect(compact.objects).toBeDefined();
+      for(let i=0;i<facts.length;i++) {
+        const {rowRef,...fact}=compact.facts[i];
+        const row={...compact.rows[rowRef]};
+        for(const key of ['query','context','rowDimensions','lineage']) {
+          row[key]=compact.objects[row[key+'Ref']]; delete row[key+'Ref'];
+        }
+        expect({...row,...fact}).toEqual(facts[i]);
+      }
+      expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify({facts}).length/2);
+      return modelReply([]);
+    });
+    expect((await new EvidenceReviewer(config,http as typeof fetch).review({...sample,
+      verifiedFacts:{artifactSha256:'pdf-sha',facts}})).status).toBe('pass');
+  });
+
   it('keeps table bindings whole and labels bounded source omissions without declaring missing data', async () => {
     const sample = input();
     const sourceId = sample.evidence[0]!.id;
@@ -198,13 +223,28 @@ describe('EvidenceReviewer', () => {
     try {
       let attempts = 0;
       const http = vi.fn(async () => ++attempts <= 5 ? new Response('upstream busy', {status: 502, headers: {'retry-after': '0'}}) : modelReply([]));
-      const pending = new EvidenceReviewer(config, http as typeof fetch).review(input());
+      const pending = new EvidenceReviewer({...config,MODEL_REVIEW_MAX_ATTEMPTS:6}, http as typeof fetch).review(input());
       await vi.advanceTimersByTimeAsync(90000);
       const result = await pending;
       expect(result.status).toBe('pass');
       expect(http).toHaveBeenCalledTimes(6);
       expect(result.diagnostics?.retries).toHaveLength(5);
     } finally { vi.useRealTimers(); }
+  });
+
+  it('bounds a stalled review independently from the twenty-minute executor retry policy',async()=>{
+    vi.useFakeTimers();
+    try {
+      const http=vi.fn(async(_url:string,init:RequestInit)=>new Promise<Response>((_resolve,reject)=>
+        init.signal?.addEventListener('abort',()=>reject(new DOMException('expired','AbortError')))));
+      const pending=new EvidenceReviewer({...config,MODEL_REQUEST_MAX_ATTEMPTS:6,MODEL_REQUEST_RETRY_BUDGET_MS:1_200_000},http as typeof fetch).review(input());
+      await vi.advanceTimersByTimeAsync(361000);
+      const result=await pending;
+      expect(result.status).toBe('unavailable');
+      expect(http).toHaveBeenCalledTimes(2);
+      expect(result.issues).toEqual([]);
+      expect(result.diagnostics?.attempts).toBe(2);
+    } finally {vi.useRealTimers();}
   });
 
   it('retries an attempt timeout within the independent total budget', async () => {
@@ -231,7 +271,7 @@ describe('EvidenceReviewer', () => {
         await new Promise(resolve => setTimeout(resolve, 179_000));
         return modelReply([]);
       };
-      const pending = new EvidenceReviewer(config, http).review(input());
+      const pending = new EvidenceReviewer({...config,MODEL_REVIEW_MAX_ATTEMPTS:6,MODEL_REVIEW_RETRY_BUDGET_MS:1_200_000}, http).review(input());
       await vi.advanceTimersByTimeAsync(1_199_000);
       const result = await pending;
       expect(result.status).toBe('pass');

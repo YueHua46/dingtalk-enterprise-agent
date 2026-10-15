@@ -27,6 +27,42 @@ function setup(turn:any, overrides: Record<string,string> = {}) {
   return {files,repo,codex,orchestrator,query};
 }
 describe('execution reserves and recovery',()=>{
+  it('retries an unchanged failed draft without reviewing it as completed',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    h.codex.renderReport.mockRejectedValueOnce(new Error('RENDER_TEMPORARILY_UNAVAILABLE'));
+    Object.assign(h.codex,{inspectOutput:async()=>({name:'report.pdf',size:20,sha256:'a'.repeat(64),reviewText:'body'})});
+    const workflow=new TaskWorkflow({revision:0,evidence:[]});
+    const task={id:'retry-failed-report',request};
+    const invoke=(tool:string,args:any)=>(h.orchestrator as any).handleCodexRequest(task,'thread',call('artifact',tool,args),workflow,new Map());
+    try {
+      const failed=await invoke('render_report',report);
+      expect(failed.success).toBe(false);
+      expect(workflow.state.reportDraft?.compiled).not.toBe(true);
+      const completion=await (h.orchestrator as any).submitCompletion(task,undefined,workflow,new Map(),
+        {status:'answered',answer:'done',factEvidence:{},missingFacts:[]},true);
+      expect(completion).toMatchObject({accepted:false,feedback:expect.stringContaining('REPORT_DRAFT_NOT_COMPILED')});
+      expect((h.orchestrator as any).evidenceReviewer.review).not.toHaveBeenCalled();
+      expect(workflow.state.reviewRounds).toBeUndefined();
+      const retry=await invoke('revise_report',{draft_id:workflow.state.reportDraft!.id,
+        changes:[{path:'/report/executive_summary',value:report.report.executive_summary}]});
+      expect(retry.success).toBe(true);
+      expect(workflow.state.reportDraft?.compiled).toBe(true);
+      expect(h.codex.renderReport).toHaveBeenCalledTimes(2);
+    } finally {await h.orchestrator.stop();}
+  });
+  it('requires a compiled advertising PDF before spending semantic review time',async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    vi.spyOn(h.orchestrator as any,'enforcing').mockReturnValue(true);
+    const workflow=new TaskWorkflow({revision:0,evidence:[{id:'ads',capabilityId:'crossborderops.ads.metrics',status:'success',scope:'DE',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString()} as any]});
+    const task={id:'missing-ad-pdf',request:{...request,text:'分析德国广告并生成 PDF 报告'}};
+    try {
+      const completion=await (h.orchestrator as any).submitCompletion(task,undefined,workflow,new Map(),
+        {status:'answered',answer:'广告分析已完成。',factEvidence:{},missingFacts:[]},true);
+      expect(completion).toMatchObject({accepted:false,feedback:expect.stringContaining('REPORT_REQUIRED_BEFORE_REVIEW')});
+      expect((h.orchestrator as any).evidenceReviewer.review).not.toHaveBeenCalled();
+    } finally {await h.orchestrator.stop();}
+  });
   it('compiles a large fact report through the actual bounded interpreter transport',async()=>{
     const h=setup(async()=>({text:'done',threadId:'thread'}));
     const dir=await mkdtemp(join(tmpdir(),'report-transport-'));
@@ -44,7 +80,7 @@ describe('execution reserves and recovery',()=>{
         runPython:vi.fn(async(_id:string,code:string)=>{
           expect(code.length).toBeLessThanOrEqual(20000);
           expect(Buffer.byteLength(JSON.stringify({code}))).toBeLessThanOrEqual(64*1024);
-          return {exitCode:0,timedOut:false,stderr:'',stdout:execFileSync('python',['-'],{cwd:dir,input:code,encoding:'utf8',maxBuffer:4*1024*1024})};
+          return {exitCode:0,timedOut:false,stderr:'',stdout:execFileSync('python',['-'],{cwd:dir,input:code,encoding:'utf8',maxBuffer:512*1024})};
         }),
         inspectOutput:async()=>({name:'report.pdf',size:20,sha256:'a'.repeat(64),reviewText:'body'})});
       const bindings=Array.from({length:100},(_,i)=>({id:`amount_${i}`,evidenceId:'metrics',where:{scope:'overall'},field:'amount',decimals:2}));
@@ -121,7 +157,7 @@ describe('execution reserves and recovery',()=>{
       expect(secondId).not.toBe(firstId);
       const expectedDraft=structuredClone(originalDraft.payload);
       expectedDraft.report.sections![0]!.paragraphs![0]='修订诊断';
-      expect(workflow.state.reportDraft).toEqual({id:secondId,payload:expectedDraft});
+      expect(workflow.state.reportDraft).toEqual({id:secondId,payload:expectedDraft,compiled:true});
       expect(previousDraft).toEqual(originalDraft);
       const expectedRendered=structuredClone(firstRendered);
       expectedRendered.report.sections[0].paragraphs[0]='修订诊断';
@@ -136,7 +172,7 @@ describe('execution reserves and recovery',()=>{
       expect(unchanged.success).toBe(false);
       expect(unchanged.contentItems[0].text).toContain('REPORT_REVISION_NO_CHANGE');
       expect(h.codex.renderReport).toHaveBeenCalledTimes(2);
-      expect(workflow.state.reportDraft).toEqual({id:secondId,payload:expectedDraft});
+      expect(workflow.state.reportDraft).toEqual({id:secondId,payload:expectedDraft,compiled:true});
     } finally {await h.orchestrator.stop();}
   });
   it('reviews trusted appendix provenance and one canonical action without repeating rendered tables',async()=>{
@@ -365,7 +401,31 @@ describe('execution reserves and recovery',()=>{
     expect(info.tables?.[0]).toEqual({path:'data.rows',rows:2,fields:{x:['null','number'],later:['string']}});
     expect(info.context?.coverage).toEqual({has_more:true});
   });
-  it.each(['502 Bad Gateway', 'stream disconnected before completion'])('continues after %s without querying again and includes saved evidence in the recovery prompt',async(error)=>{
+  it('shares the persisted review budget across stages and refuses another review after exhaustion', async()=>{
+    const h=setup(async()=>({text:'done',threadId:'thread'}));
+    const workflow=new TaskWorkflow({revision:0,evidence:[]});
+    const reviewer=vi.fn(async(input:any)=>{
+      expect(input.deadlineAt).toBeLessThanOrEqual(Date.now()+360000);
+      return {status:'pass',issues:[],reason:'supported'};
+    });
+    (h.orchestrator as any).evidenceReviewer.review=reviewer;
+    const input={request:'read',completion:{status:'answered',answer:'done',factEvidence:{},missingFacts:[]},evidence:[],excerpts:{},computeAvailable:true,round:1,maxRounds:3};
+    try {
+      const first=await (h.orchestrator as any).reviewWithinTaskBudget({id:'review-budget'},workflow,input);
+      expect(first.status).toBe('pass');
+      expect(workflow.state.reviewBudget?.startedAt).toBeUndefined();
+      workflow.state.reviewBudget={spentMs:360000};
+      const restored=new TaskWorkflow(JSON.parse(JSON.stringify(workflow.state)));
+      const second=await (h.orchestrator as any).reviewWithinTaskBudget({id:'review-budget'},restored,input);
+      expect(second).toMatchObject({status:'unavailable',reason:expect.stringContaining('task_review_budget_exhausted')});
+      expect(reviewer).toHaveBeenCalledOnce();
+      restored.state.reviewBudget={spentMs:359000,startedAt:Date.now()-2000};
+      const interrupted=await (h.orchestrator as any).reviewWithinTaskBudget({id:'review-budget'},restored,input);
+      expect(interrupted.status).toBe('unavailable');
+      expect(reviewer).toHaveBeenCalledOnce();
+    } finally {await h.orchestrator.stop();}
+  });
+  it.each(['502 Bad Gateway', 'stream disconnected before completion', 'malformed_function_call'])('continues after %s without querying again and includes saved evidence in the recovery prompt',async(error)=>{
     let turns=0;
     const h=setup(async(_id:string,prompt:string,_events:any,onTool:any)=>{
       const result=await onTool(call('crossborderops','query',{dataset:'ads.metrics',params:{site:'DE'}}));
@@ -394,11 +454,11 @@ describe('execution reserves and recovery',()=>{
     expect(h.files.has('01_crossborderops.ads.metrics.json')).toBe(true);
     await h.orchestrator.stop();
   });
-  it('stops after one repeated incomplete Responses stream behind the HTTP proxy',async()=>{
+  it.each(['stream disconnected before completion: stream closed before response.completed','malformed_function_call'])('stops after one repeated protocol failure behind the HTTP proxy: %s',async(protocolError)=>{
     let turns=0;
     const h=setup(async(_id:string,_p:string,_e:any,onTool:any)=>{
       if(++turns===1) await onTool(call('crossborderops','query',{dataset:'ads.metrics'}));
-      throw new Error('stream disconnected before completion: stream closed before response.completed');
+      throw new Error(protocolError);
       return {text:'恢复后完成',threadId:'thread'};
     },{MODEL_TOOL_COMPAT_PROXY:'true'});
     const task=await h.orchestrator.accept(request);

@@ -62,7 +62,7 @@ export function factResolutionConfig(bindings: ReturnType<typeof prepareFactBind
   return JSON.stringify({sources, bindings: compactBindings});
 }
 
-export function factResolutionCode(bindings: ReturnType<typeof prepareFactBindings>, configFile?: {file: string; sha256: string}) {
+export function factResolutionCode(bindings: ReturnType<typeof prepareFactBindings>, configFile?: {file: string; sha256: string}, compactOutput = false) {
   const encoded = Buffer.from(configFile ? JSON.stringify(configFile) : factResolutionConfig(bindings)).toString('base64');
   const loadConfig = configFile ? `config_ref=json.loads(base64.b64decode('${encoded}'))
 config_raw=(pathlib.Path('evidence')/config_ref['file']).read_bytes()
@@ -84,7 +84,15 @@ for b in cfg['bindings']:
   if isinstance(a,bool) or isinstance(v,bool): return type(a)==type(v) and a==v
   return a==v
  selected=[(i,r) for i,r in enumerate(rows) if all(k in r and same(r[k],v) for k,v in b['where'].items())]
- if len(selected)!=1: raise ValueError('FACT_ROW_NOT_UNIQUE: '+b['id']+' matched '+str(len(selected)))
+ if len(selected)!=1:
+  # Return a small, deterministic candidate preview so the model can add the
+  # missing dimension (profile/campaign/placement/etc.) in one revision.
+  # Never choose a row implicitly: ambiguity remains a hard data-integrity
+  # failure, but the failure now contains enough information to converge.
+  candidates=[]
+  for candidate_index,candidate_row in selected[:8]:
+   candidates.append({'rowIndex':candidate_index,'dimensions':{k:v for k,v in candidate_row.items() if isinstance(v,(str,int,float,bool)) or v is None}})
+  raise ValueError('FACT_ROW_NOT_UNIQUE: '+b['id']+' matched '+str(len(selected))+' rows; candidates='+json.dumps(candidates,ensure_ascii=False,allow_nan=False))
  index,row=selected[0]
  if b['field'] not in row: raise ValueError('FACT_FIELD_MISSING')
  value=row[b['field']]
@@ -102,7 +110,35 @@ for b in cfg['bindings']:
   'rowsPath':b['rows_path'],'rowIndex':index,'selector':b['where'],'field':b['field'],'value':value,'display':display,
   'query':b['source'].get('query'),'context':b['source'].get('context'),
   'rowDimensions':{k:v for k,v in row.items() if isinstance(v,(str,int,float,bool)) or v is None},'lineage':lineage})
-print(json.dumps(facts,ensure_ascii=True,allow_nan=False))`;
+${compactOutput ? `# Keep complete provenance, but transport each repeated object only once.
+objects=[]; indexes={}
+for fact in facts:
+ for key in ['query','context','rowDimensions','lineage']:
+  value=fact.pop(key)
+  identity=json.dumps(value,sort_keys=True,ensure_ascii=True,allow_nan=False)
+  if identity not in indexes:
+   indexes[identity]=len(objects); objects.append(value)
+  fact[key+'Ref']=indexes[identity]
+print(json.dumps({'version':1,'objects':objects,'facts':facts},ensure_ascii=True,allow_nan=False))` : 'print(json.dumps(facts,ensure_ascii=True,allow_nan=False))'}`;
+}
+
+/** Expand the host interpreter's lossless transport before hashing or review. */
+export function decodeResolvedFacts(stdout: string): ResolvedFact[] {
+  const result = JSON.parse(stdout);
+  if (Array.isArray(result)) return result;
+  if (result?.version !== 1 || !Array.isArray(result.objects) || !Array.isArray(result.facts))
+    throw new Error('FACT_TRANSPORT_INVALID');
+  return result.facts.map((item: Record<string, unknown>) => {
+    const fact = {...item};
+    for (const key of ['query', 'context', 'rowDimensions', 'lineage']) {
+      const index = fact[key + 'Ref'];
+      if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= result.objects.length)
+        throw new Error('FACT_TRANSPORT_INVALID: ' + key);
+      fact[key] = result.objects[index as number];
+      delete fact[key + 'Ref'];
+    }
+    return fact as unknown as ResolvedFact;
+  });
 }
 
 /** References also work in the delivery summary, using the manifest tied to the PDF hash. */
@@ -124,6 +160,7 @@ export function interpolateFacts<T>(value: T, facts: ResolvedFact[], requireUse 
     return node;
   };
   const resolved = walk(value) as T;
-  if (requireUse && facts.some(fact => !used.has(fact.id))) throw new Error('FACT_REFERENCE_UNUSED');
+  if (requireUse && facts.some(fact => !used.has(fact.id)))
+    throw new Error('FACT_REFERENCE_UNUSED: ' + facts.filter(fact => !used.has(fact.id)).map(fact => fact.id).join(', '));
   return resolved;
 }

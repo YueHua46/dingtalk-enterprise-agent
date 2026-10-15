@@ -95,7 +95,10 @@ export function applyReportRevision(draft: ReportRender, input: unknown): Report
     else if (node && typeof node === 'object') Object.values(node).forEach(visit);
   };
   visit(parsed.report);
-  for (const binding of args.fact_bindings ?? []) if (!referenced.has(binding.id)) throw new Error('FACT_REFERENCE_UNUSED');
+  // A revision may carry the previous full binding list while changing only
+  // one paragraph. Unused historical bindings are harmless and are removed
+  // below; rejecting them forces the model into a full-list rewrite and was a
+  // major source of non-converging report repair loops.
   if (parsed.fact_bindings) parsed.fact_bindings = parsed.fact_bindings.filter(binding => referenced.has(binding.id));
   return parsed;
 }

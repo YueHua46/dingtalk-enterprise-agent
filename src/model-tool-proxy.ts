@@ -105,3 +105,23 @@ export function restoreSseChunk(chunk: string, toolNames: Map<string, ToolIdenti
     catch { return line; }
   }).join('\n');
 }
+
+/** Protocol diagnostics only: never log message text or turn text into calls. */
+export function modelResponseDiagnostics(value: unknown): Record<string, unknown> {
+  const raw = value as any;
+  const response = raw?.response ?? raw;
+  const outputTypes: Record<string, number> = {};
+  const messagePhases: Record<string, number> = {};
+  for (const item of Array.isArray(response?.output) ? response.output : []) {
+    const type = typeof item?.type === 'string' ? item.type : 'unknown';
+    outputTypes[type] = (outputTypes[type] ?? 0) + 1;
+    if (type === 'message') {
+      const phase = typeof item.phase === 'string' ? item.phase : 'absent';
+      messagePhases[phase] = (messagePhases[phase] ?? 0) + 1;
+    }
+  }
+  return {responseStatus:response?.status, outputTypes, messagePhases,
+    incompleteReason:response?.incomplete_details?.reason,
+    inputTokens:response?.usage?.input_tokens, outputTokens:response?.usage?.output_tokens,
+    reasoningTokens:response?.usage?.output_tokens_details?.reasoning_tokens};
+}

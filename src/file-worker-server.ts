@@ -352,7 +352,8 @@ async function runPython(task: TaskPaths, code: string): Promise<{ exitCode: num
   } catch (error) {
     const failure = error as { code?: unknown; killed?: boolean; signal?: unknown; stdout?: unknown; stderr?: unknown; message?: string };
     return { exitCode: typeof failure.code === 'number' ? failure.code : 1, stdout: clip(failure.stdout, 64_000),
-      stderr: clip(failure.stderr ?? failure.message, 8_000), timedOut: Boolean(failure.killed && failure.signal) };
+      stderr: clip(String(failure.stderr ?? '').trim() || [failure.code, failure.message].filter(Boolean).join(': '), 8_000),
+      timedOut: Boolean(failure.killed && failure.signal) };
   } finally {
     await rm(script, { force: true });
   }

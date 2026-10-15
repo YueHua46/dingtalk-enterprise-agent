@@ -64,11 +64,11 @@ describe('report local revisions', () => {
     expect(() => applyReportRevision(makeDraft(), {draft_id: 'draft-1', changes: [{path: '/report/report_title', op: 'remove'}]})).toThrow();
   });
 
-  it('prunes stale historical bindings while rejecting unused newly submitted bindings', () => {
+  it('prunes stale historical and newly submitted unused bindings', () => {
     const draft = makeDraft(); draft.report.executive_summary = '{{fact:spend}}';
     expect(applyReportRevision(draft, revision('/report/executive_summary', '改为无此观测的描述')).fact_bindings).toEqual([]);
-    expect(() => applyReportRevision(draft, {...revision('/report/executive_summary', '修改'),
-      fact_bindings: [{id: 'new_fact', evidenceId: 'e2', field: 'spend'}]})).toThrow('FACT_REFERENCE_UNUSED');
+    expect(applyReportRevision(draft, {...revision('/report/executive_summary', '修改'),
+      fact_bindings: [{id: 'new_fact', evidenceId: 'e2', field: 'spend'}]}).fact_bindings).toEqual([]);
   });
 
   it('merges bindings by id, preserving other bindings and rejecting duplicate updates', () => {
