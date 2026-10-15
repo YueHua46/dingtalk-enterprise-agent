@@ -58,4 +58,3 @@ describe('GuideTool', () => {
     expect(index).toContain('amazon-product-research');
   });
 });
-
