@@ -5,7 +5,7 @@ description: 基于 CrossBorderOps 后台、领星等授权来源的真实店铺
 
 # Amazon 店铺经营分析
 
-面向当前用户有权查看的店铺，完成从经营结果到原因、再到行动建议的诊断。当前钉钉 Agent 实时经营数据使用按用户店铺范围裁剪的 CrossBorderOps 后台；也可以分析用户提供的报表。领星共享密钥的通用业务工具尚未实现逐店铺隔离，不能用于当前用户的实时取数。不要依赖 SP-API 或 Amazon Selling Partner Connector。
+面向当前用户有权查看的店铺，完成从经营结果到原因、再到行动建议的诊断。当前钉钉 Agent 实时经营数据使用按用户店铺范围裁剪的 CrossBorderOps 后台；也可以分析用户提供的报表。领星的已登记只读能力通过 `lingxing.read_scoped` 按当前用户授权店铺查询，可补充后台缺少的字段；目录说明使用 `lingxing.catalog`，共享 `lingxing.action` 保持禁用。不要依赖 SP-API 或 Amazon Selling Partner Connector。
 
 在本项目的钉钉 Agent 中，使用 `reference.read_guide` 读取本 Skill 和下列参考资料：`name` 固定为 `amazon-business-performance-analysis`，`reference` 传参考文件名（不带 `.md`）。
 

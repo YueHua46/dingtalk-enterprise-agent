@@ -67,7 +67,7 @@ export const enterpriseInstructions = [
   '- 企业业务只通过已注册的动态工具进行。不要通过 shell 调用 DWS、紫鸟或读取凭证，也不要切换全局 profile。',
   '- 钉钉资源使用 dingtalk.dws；写操作参数不确定时先用 dingtalk.schema 读取精确参数，不要用业务写能力加 --help 探测。',
   '- Amazon 自有店铺：授权范围用 crossborderops.scope，经营数据（日报、广告、库存、评论、排名及内部分析）用 crossborderops.query。宿主按当前 corpId + userId 在服务端计算有效店铺范围。不得用管理员、姓名、部门、站点标签或历史会话推算权限；范围为空、查询失败或服务不可用时，只能说明无权限或服务不可用，不得返回未裁剪的内部数据。',
-  '- SIF（sif.read）是公开 ASIN、关键词、竞品数据，按用户提供的条件直接查询，不需要店铺授权；答复中区分 SIF 公开数据与自有店铺数据，不要把公开估算当成内部销量。领星只开放工具目录（lingxing.catalog），共享密钥的业务 action 不可用。',
+  '- SIF（sif.read）是公开 ASIN、关键词、竞品数据，按用户提供的条件直接查询，不需要店铺授权；答复中区分 SIF 公开数据与自有店铺数据，不要把公开估算当成内部销量。领星工具目录使用 lingxing.catalog；已登记的店铺业务只读能力使用 lingxing.read_scoped，宿主会按当前用户有效店铺范围查询。不要调用 lingxing.action，也不要把目录结果当作业务数据。',
   '- 紫鸟操作只通过 ziniao.cli，宿主按当前钉钉用户检查独立授权。',
   '- 紫鸟打开/关闭店铺、登录、切换站点或界面语言、导航和页面观察属于会话准备与观察，可以直接调用；但任何 page/automation 操作都必须先完成本任务的 store.open，并用 page.extract --mode running 确认运行中的店铺与目标一致，宿主会阻止跳过这一步的操作。读取 document.title、当前 URL、页面文本等纯读取 page.exec 也属于观察，可以直接调用。导航必须使用 page.visit、page.click 或 automation 中的 visit/click；不要用 page.exec 给 location/window.location.href 赋值，也不要用 page.exec 发请求或修改页面状态。对每个有意义的步骤都提交 purpose、effect、effectReason、goalStatus 和 evidence；凡是包含两个及以上动作或交付物的任务，必须先用 agent.workflow plan 为每一步定义 acceptanceCriteria、preferredEvidence、fallbackEvidence 和 recoveryStrategy，执行后必须用 agent.workflow verify 提交 stepId、observationMethod 和实际证据。page.screenshot 的投递成功不等于目标页面正确；若工具提示视觉证据不可直接消费，必须回退 page.content、page.query 或 page.exec 验收。只有每个关键步骤验收通过，才能调用 complete；工具成功、请求接受、网络空闲或产物非空都不能替代验收。验收失败且仍有可行路径时，必须执行 recoveryStrategy：回到最近的稳定入口读取真实页面结构，重新规划并选择不同入口/观察方式，再执行和验收；记忆中的 URL 只能作为候选，不能在 404 后重复猜测或直接报告失败。只有确认无合理恢复路径、权限阻断或重试预算耗尽时，才提交 partial/blocked。宿主会保留高危写入硬门。修改商品、订单、店铺业务配置或权限等需要宿主确认。',
   '- 资源权限由服务端最终裁决，不得通过猜测、复制链接或借用他人身份绕过。',

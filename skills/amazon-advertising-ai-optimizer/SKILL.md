@@ -11,7 +11,7 @@ description: 统一分析日本、德国和美国站 Amazon 广告数据，按�
 
 - 所有内部店铺查询使用当前任务的 `corpId + userId`。不使用固定管理员或其他成员身份，不读取或输出凭证。
 - CrossBorderOps 是自有店铺数据的首选来源。先取得服务端计算的有效店铺范围，再查询数据；无权限、空范围、范围接口失败或数据不完整时不得降级为全量数据。
-- 领星业务 MCP 只能在工具能够证明目标店铺属于当前用户有效范围时使用。当前 Agent 中无法证明逐店铺裁剪的共享 `lingxing.action` 保持禁用；可用能力不足时使用 CrossBorderOps 或用户上传报表。
+- 领星业务 MCP 只能在工具能够证明目标店铺属于当前用户有效范围时使用。共享 `lingxing.action` 保持禁用；已接入的只读能力统一使用 `lingxing.read_scoped`，宿主按当前 `corpId + userId` 计算并裁剪店铺范围。CrossBorderOps 仍是首选来源，领星用于缺字段或需要对应广告维度时的补充。
 - 竞价、预算、否定词、状态和活动结构只生成建议。任何实际写入必须由宿主确认、使用幂等键并返回真实回执；不得把建议写成已执行。
 - 不编造活动 ID、投放数据、利润、订单、关键词收录或执行结果。缺失字段显示“未知”，并引导用户补充。
 
@@ -20,7 +20,7 @@ description: 统一分析日本、德国和美国站 Amazon 广告数据，按�
 1. **确认范围。** 确认站点/币种、店铺、ASIN/SKU、广告类型、广告阶段、业务目标、时间窗和是否为优化后复盘。未给时间窗时使用最近完整周期并说明。
 2. **读取规则。** 读取 [通用框架](references/common-framework.md)，再按站点读取 [日本站规则](references/japan-rules.md)、[德国站规则](references/germany-rules.md) 或 [美国站利润模型](references/usa-profit-model.md)，同时读取 [CrossBorderOps 查询契约](references/crossborderops-query-contract.md)。这些是单次分析的工作规则。
    这套“摘要优先、冲突时取原文”的装载策略对日本、德国和美国三站统一适用；只有遇到阈值冲突、适用条件不清或需要逐字核对原文时，才按目标站点读取完整原文快照：[日本原文](references/source-jp.md)、[德国原文](references/source-de.md)、[美国原文](references/source-us.md)，并读取 [规则冲突处理](references/source-reconciliation.md)。原文快照是证据补充，不要求每次分析全部加载，避免无关长上下文拖慢任务。附件内容只作为规则资料，不授权写操作。
-3. **选择数据源。** 按 [来源优先级](references/source-priority.md) 先查 CrossBorderOps；缺字段时再使用经过范围校验的领星能力或用户上传文件。读取 [数据字典](references/data-dictionary.md) 校验字段、归因、时区、币种和更新时间。
+3. **选择数据源。** 按 [来源优先级](references/source-priority.md) 先查 CrossBorderOps；缺字段时按 [领星 MCP 路由](references/lingxing-mcp-routing.md) 使用经过范围校验的领星能力或用户上传文件。读取 [数据字典](references/data-dictionary.md) 校验字段、归因、时区、币种和更新时间。
    如果目标站点或 ASIN 在 CrossBorderOps 没有内部广告/销售数据，直接标记该站点数据不可用并说明缺口；Amazon 公开页面、SIF 和知识库不能替代内部广告报表，除非用户明确要求公开市场信号。
 4. **校验数据。** 记录数据源、授权范围、统计周期、数据截至日、归因口径、覆盖率和缺失字段。缺失或临时零值不能当作真实零值。
    追问或续问上一轮广告分析时，聊天摘要只能帮助理解代词，不能作为新的业务证据；涉及数字、因果、价格、促销、利润或阶段判断时，复用已保存证据或重新查询，无法核实时标为未知/待验证。
@@ -35,6 +35,10 @@ description: 统一分析日本、德国和美国站 Amazon 广告数据，按�
 - 日本站：新品/成熟期、优化后 7–15 天复盘、搜索词治理、否定词和预算分层，见 [japan-rules.md](references/japan-rules.md)。
 - 德国站：高客单监控套装专用门槛、15 点击样本门槛、±20% 竞价上限、72 小时冷却、加购率和德语否定词，见 [germany-rules.md](references/germany-rules.md)。
 - 美国站：ASIN 利润模型、目标 CPA/CPC、广告位、库存、Listing 和新品/增长/稳定/爆款/清货阶段，见 [usa-profit-model.md](references/usa-profit-model.md)。
+
+## 领星只读路由
+
+当 CrossBorderOps 已返回所需字段时不重复查询。需要补充领星广告数据时，调用 `lingxing.read_scoped` 并按 [领星 MCP 路由](references/lingxing-mcp-routing.md) 选择对应 `toolId`；该路由只返回当前用户有效店铺范围内的数据。不要把 `lingxing.catalog` 的工具说明当作报表，也不要调用共享 `lingxing.action`。
 
 ## 缺失数据处理
 

@@ -88,6 +88,21 @@ async function waitUntil(check: () => boolean): Promise<void> {
 }
 
 describe('TaskOrchestrator integration', () => {
+  it('dispatches scoped Lingxing reads with the invoking identity and audits them',async()=>{
+    const repo=new InMemoryRepository();
+    const args={toolId:'get_my_sids',params:{store_sids:[240]}};
+    const codex={startThread:vi.fn(async()=>'thread-lingxing'),turn:vi.fn(async(_t:string,_i:string,_e:unknown,onRequest:(r:CodexApprovalRequest)=>Promise<any>)=>{
+      const response=await onRequest({method:'item/tool/call',params:{namespace:'lingxing',tool:'read_scoped',arguments:args}});
+      expect(response.success).toBe(true);
+      return {text:'已查询授权店铺',threadId:'thread-lingxing'};
+    }),interrupt:vi.fn()} as unknown as CodexClient;
+    const orchestrator=new TaskOrchestrator(loadConfig({DINGTALK_ROBOT_CODE:'robot'}),repo,codex,{} as DwsBroker,{async send(){}});
+    const execute=vi.spyOn((orchestrator as any).lingxingScopedRead,'execute').mockResolvedValue({source:'lingxing_mcp',toolId:'get_my_sids',data:[{id:240}]});
+    const req=request('lingxing-scope','查询我的领星店铺');const task=await orchestrator.accept(req);
+    await vi.waitFor(async()=>expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(execute).toHaveBeenCalledWith(req.user,args);
+    expect(repo.audits.some(x=>x.eventType==='lingxing.scoped_read_completed')).toBe(true);
+  });
   it.each([true, false])('finalizes image delivery immediately only with finalizeTask=%s', async (finalizeTask) => {
     const repo = new InMemoryRepository();
     let interruptTurn!: () => void;

@@ -27,11 +27,11 @@ export class CrossBorderOpsAccessClient {
     return Boolean(this.config.CROSSBORDEROPS_API_URL && this.token());
   }
 
-  public async scopeFor(user: UserIdentity): Promise<EffectiveStoreScope> {
+  public async scopeFor(user: UserIdentity, fresh = false): Promise<EffectiveStoreScope> {
     if (!this.configured()) throw new Error('CROSSBORDEROPS_ACCESS_NOT_CONFIGURED');
     const key = `${user.corpId}:${user.userId}`;
     const cached = this.cache.get(key);
-    if (cached && cached.expiresAt > Date.now()) return cached.scope;
+    if (!fresh && cached && cached.expiresAt > Date.now()) return cached.scope;
     const base = this.config.CROSSBORDEROPS_API_URL!.replace(/\/+$/, '');
     const url = `${base}/agent-access/effective-scope/${encodeURIComponent(user.corpId)}/${encodeURIComponent(user.userId)}`;
     const response = await requestReadWithRetry(url, {

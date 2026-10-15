@@ -2,6 +2,8 @@ import { generatedDwsCapabilities } from './generated-dws-capabilities.js';
 import { CROSSBORDEROPS_DATASETS } from './crossborderops-data-client.js';
 import { ZINIAO_READ_CAPABILITIES } from './ziniao-policy.js';
 import { nativeReadOnlyMcpTools } from './mcp-tool-list.js';
+import { lingxingReadRegistry } from './lingxing-read-registry.js';
+import { LINGXING_SCOPED_READ_TOOLS } from './lingxing-scoped-read.js';
 import { AMAZON_OPERATIONS } from './amazon-tool.js';
 import type { RiskLevel } from './types.js';
 
@@ -59,6 +61,11 @@ const fixed: CapabilityDescriptor[] = [
     identity: 'scoped_service' as const, scope: '仅工具目录，不读取共享密钥业务数据', source: 'lingxing',
     freshness: 'live' as const, supports: ['工具发现'], skills: ['amazon-business-performance-analysis']
   })),
+  ...LINGXING_SCOPED_READ_TOOLS.map((tool) => ({
+    id: `lingxing.scoped.${tool}`, purpose: `${lingxingReadRegistry[tool]!.displayName}：${lingxingReadRegistry[tool]!.description}（当前用户授权店铺）`, risk: 'read' as const,
+    identity: 'scoped_service' as const, scope: '当前 corpId + userId 的 CrossBorderOps 有效店铺集合', source: 'lingxing',
+    freshness: 'reported' as const, supports: ['按店铺裁剪的领星业务数据'], skills: ['amazon-advertising-ai-optimizer', 'amazon-business-performance-analysis']
+  })),
   { id: 'analysis.table', purpose: '对保存证据表做精确分组、求和、比率和排序', risk: 'read', identity: 'none', scope: '当前任务证据', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
   { id: 'artifact.render_report', purpose: '从结构化事实生成报告', risk: 'read', identity: 'none', scope: '当前任务', source: 'artifact', freshness: 'static', supports: ['报告文件'], skills: [] },
   { id: 'analysis.python', purpose: '在任务沙箱中运行 Python，对已取得的证据文件做精确的派生计算或运行 Skill 分析脚本；代码与输出即计算证据', risk: 'read', identity: 'none', scope: '当前任务沙箱，无网络', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
@@ -104,7 +111,7 @@ function inputShapeFor(source: string): string {
     case 'ziniao': return '{capability: ID, args?: string[]}；由紫鸟适配器验证当前用户授权';
     case 'crossborderops': return '{dataset: ID, params: object}；corpId/userId 由宿主注入，店铺范围由服务端计算';
     case 'sif': return '{toolId: ID, params: object}';
-    case 'lingxing': return '{toolId: help|search, params: object}；仅工具目录';
+    case 'lingxing': return '目录使用 catalog {toolId: help|search, params: object}；业务使用 read_scoped {toolId: 已登记业务 ID, params: 官方参数及可选 store_sids}';
     case 'internet': return '{query: string}';
     case 'amazon': return '{asin 或 keywords, marketplace: 站点代码}；以各 amazon 子工具的参数定义为准';
     case 'skill': return '{name: Skill 名称, subSkill?: 名称, reference?: 名称}';

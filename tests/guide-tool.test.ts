@@ -32,7 +32,7 @@ describe('GuideTool', () => {
     const reference = await guide.execute({ name: 'amazon-business-performance-analysis', reference: 'lingxing-adapter' });
     expect(reference.reference).toBe('lingxing-adapter');
     expect(reference.text).toContain('lingxing.action');
-    expect(reference.text).toContain('已从 Agent 工具列表撤下');
+    expect(reference.text).toContain('lingxing.read_scoped');
     const backendReference = await guide.execute({ name: 'amazon-business-performance-analysis', reference: 'crossborderops-adapter' });
     expect(backendReference.text).toContain('business_complete');
     await expect(guide.execute({ name: 'amazon-business-performance-analysis', reference: '../data-contract' })).rejects.toThrow('GUIDE_REFERENCE_INVALID');
@@ -58,3 +58,4 @@ describe('GuideTool', () => {
     expect(index).toContain('amazon-product-research');
   });
 });
+

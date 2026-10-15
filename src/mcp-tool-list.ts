@@ -14,3 +14,5 @@ export const nativeReadOnlyMcpTools = {
     'ops_get_listing_keyword_distribution', 'ops_get_listing_traffic_structure', 'ads_get_asin_campaign_changes'
   ]
 } as const;
+
+export { LINGXING_SCOPED_READ_TOOLS } from './lingxing-scoped-read.js';

@@ -8,17 +8,26 @@ export function structuredEvidenceExcerpt(text: string, budget = 12_000): string
   if (!source || typeof source !== 'object' || !('data' in source)) return text.length <= budget ? text : JSON.stringify({excerpt: text.slice(0, budget-150), truncated: true, originalChars: text.length});
   const scope = source.scope as Record<string, unknown> | undefined;
   const compactScope = scope ? {has_access: scope.has_access, lingxing_sids: scope.lingxing_sids,
-    stores: Array.isArray(scope.stores) ? scope.stores.map((s: Record<string, unknown>) => ({sid: s.lingxing_sid, name: s.name, country: s.country})) : undefined} : undefined;
-  const result: Record<string, unknown> = {dataset: source.dataset, scope: compactScope, evidence: source.evidence};
+    stores: Array.isArray(scope.stores) ? scope.stores.map((s: Record<string, unknown>) => ({sid: s.lingxing_sid ?? s.sid, name: s.name, country: s.country})) : undefined} : undefined;
+  const result: Record<string, unknown> = {dataset: source.dataset, source: source.source, toolId: source.toolId,
+    coverage: source.coverage, scope: compactScope, evidence: source.evidence};
   const omissions: Record<string, {returned: number; retained: number}> = {};
-  const arrays: Array<{key: string; values: unknown[]; target: Record<string, unknown>}> = [];
-  if (Array.isArray(source.data)) {
-    arrays.push({key: 'data', values: source.data, target: result});
-  } else if (source.data && typeof source.data === 'object') {
+  const arrays: Array<{key: string; path: string; values: unknown[]; target: Record<string, unknown>}> = [];
+  function collect(value: unknown, target: Record<string, unknown>, key: string, path: string): void {
+    if (Array.isArray(value)) {
+      arrays.push({key, path, values: value, target});
+      target[key] = [];
+    } else if (value && typeof value === 'object') {
+      const nested: Record<string, unknown> = {};
+      target[key] = nested;
+      for (const [childKey, child] of Object.entries(value)) collect(child, nested, childKey, path ? `${path}.${childKey}` : childKey);
+    } else target[key] = value;
+  }
+  if (Array.isArray(source.data)) collect(source.data, result, 'data', 'data');
+  else if (source.data && typeof source.data === 'object') {
     const data: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(source.data)) {
-      if (Array.isArray(value)) arrays.push({key, values: value, target: data});
-      else data[key] = value;
+      collect(value, data, key, key);
     }
     result.data = data;
   } else result.data = source.data;
@@ -28,11 +37,11 @@ export function structuredEvidenceExcerpt(text: string, budget = 12_000): string
   for (const array of arrays) {
     const retained: unknown[] = [];
     array.target[array.key] = retained;
-    omissions[array.key] = {returned: array.values.length, retained: 0};
+    omissions[array.path] = {returned: array.values.length, retained: 0};
     for (const row of array.values) {
       retained.push(row);
       if (JSON.stringify(result).length > budget-100) { retained.pop(); break; }
-      omissions[array.key]!.retained++;
+      omissions[array.path]!.retained++;
     }
   }
   if (JSON.stringify(result).length > budget) {

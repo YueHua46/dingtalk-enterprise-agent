@@ -23,6 +23,7 @@ import { CrossBorderOpsAccessClient } from './crossborderops-access-client.js';
 import { CrossBorderOpsDataClient } from './crossborderops-data-client.js';
 import { CrossBorderOpsTool } from './crossborderops-tool.js';
 import { McpReadTool } from './mcp-read-tool.js';
+import { LINGXING_SCOPED_READ_TOOLS, LingxingScopedRead } from './lingxing-scoped-read.js';
 import { TaskWorkflow, listCapabilities, type ScreenshotDeliveryReceipt, type TaskCompletion } from './task-workflow.js';
 import { capabilityById } from './capability-catalog.js';
 import { recoveryToolAllowed, taskRecoveryPrompt, type TaskRecoveryRequest } from './task-recovery.js';
@@ -341,6 +342,7 @@ export class TaskOrchestrator {
   }
   private readonly amazonTool: AmazonTool;
   private readonly imageTool: ImageTool;
+  private readonly lingxingScopedRead: LingxingScopedRead;
   private readonly crossBorderOpsAccess: CrossBorderOpsAccessClient;
   private readonly crossBorderOpsTool: CrossBorderOpsTool;
   private readonly ziniaoBroker: ZiniaoBroker;
@@ -377,6 +379,7 @@ export class TaskOrchestrator {
     this.guideTool = new GuideTool(config);
     this.nativeWebTool = new NativeWebTool(config);
     this.amazonTool = new AmazonTool();
+    this.lingxingScopedRead = new LingxingScopedRead(config);
     this.crossBorderOpsAccess = new CrossBorderOpsAccessClient(config);
     this.crossBorderOpsTool = new CrossBorderOpsTool(new CrossBorderOpsDataClient(config));
     this.ziniaoBroker = ziniaoBroker ?? (config.ZINIAO_REMOTE_HOST ? new ZiniaoRemoteBroker(config) : new ZiniaoBroker(config));
@@ -1002,6 +1005,7 @@ export class TaskOrchestrator {
           '如果用户请求涉及 Amazon 广告分析，必须先调用 reference.read_guide 读取 amazon-advertising-ai-optimizer/SKILL.md、对应站点规则参考、query-contract 和 report-template，再开始 CrossBorderOps 查询。每个站点本回合至少保留对应规则读取证据；不得用历史摘要或记忆代替。',
           '站点规则是内部操作策略，不是 Amazon 平台规定；只在证据支持的站点、品类、阶段和样本门槛下适用，未知的成本、利润、搜索词或产品属性必须明确标为未知。',
           '广告分析优先使用 daily.availability 确定数据日期，再用 ads.metrics 对目标站点及时间窗按所需层级聚合，避免以分页原始明细代替整体统计。daily.product、ads.summary 和广告明细仅用于所需的补充核对。',
+          '领星按店铺业务使用 lingxing.read_scoped，支持广告活动/广告组/关键词/客户搜索词/商品/投放目标/广告组合/出单时段，以及 Listing、FBA 库存、产品表现、退货、绩效、利润、对账、买家之声等已登记只读能力。先用 capability.search 发现能力，用 lingxing.catalog search 查询官方参数；store_sids 是宿主附加筛选，其他参数严格按官方 schema，不会静默忽略。授权店铺用 get_my_sids；广告 SID 与 Profile ID 映射用 ad_auth_shops。CrossBorderOps 优先，缺字段时补充真实领星数据；分页和归因差异必须保留。',
           'daily.product 必须带用户明确的单个 asin，时间窗不超过 30 天；用户要求 14 天时不得自行扩大时间窗。',
           'daily.metrics 在当前部署不保证可用；若返回不支持，不要重复调用，改用上述广告数据集或 daily.product。',
           '先取最小汇总，再按异常下钻；不要重复同一失败请求。',
@@ -1975,6 +1979,19 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         return { contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : String(error) }], success: false };
       }
     }
+    if (request.params.namespace === 'lingxing' && request.params.tool === 'read_scoped') {
+      try {
+        const result = await this.lingxingScopedRead.execute(task.request.user, request.params.arguments);
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'lingxing.scoped_read_completed', payload: { toolId: (result as {toolId: string}).toolId } });
+        return { contentItems: [{ type: 'inputText', text: JSON.stringify(result) }], success: true };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+          eventType: 'lingxing.scoped_read_failed', payload: { reason: reason.slice(0, 240) } });
+        return { contentItems: [{ type: 'inputText', text: reason }], success: false };
+      }
+    }
     if (request.params.namespace === 'reference' && request.params.tool === 'read_guide') {
       try {
         const result = await this.guideTool.execute(request.params.arguments);
@@ -2163,7 +2180,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       }
     }
     if (request.params.namespace === 'lingxing' && request.params.tool === 'action') {
-      return { contentItems: [{ type: 'inputText', text: 'LINGXING_ACTION_SCOPE_NOT_ENFORCED: 领星共享密钥通用工具无法保证按当前用户店铺裁剪，请改用 crossborderops.query 查询已授权的自有店铺数据。' }], success: false };
+      return { contentItems: [{ type: 'inputText', text: 'LINGXING_ACTION_SCOPE_NOT_ENFORCED: 领星共享密钥通用工具无法保证按当前用户店铺裁剪，请改用 lingxing.read_scoped 或 crossborderops.query 查询已授权的自有店铺数据。' }], success: false };
     }
     if (request.params.namespace === 'ziniao' && request.params.tool === 'cli') {
       const ziniaoOpts = this.ziniaoGateOptions(task);
@@ -3333,6 +3350,10 @@ function toolDisplayLabel(request: CodexApprovalRequest): string {
     const toolId = safeLabel(args.toolId);
     return toolId ? '使用领星工具：' + toolId : '使用领星工具';
   }
+  if (namespace === 'lingxing' && tool === 'read_scoped') {
+    const toolId = safeLabel(args.toolId);
+    return toolId ? '按授权店铺读取领星数据：' + toolId : '按授权店铺读取领星数据';
+  }
   if (namespace === 'ziniao' && tool === 'cli') {
     const capability = safeLabel(args.capability);
     return capability ? '使用紫鸟工具：' + capability : '使用紫鸟工具';
@@ -3353,6 +3374,8 @@ function capabilityIdForTool(request: CodexApprovalRequest): string | undefined 
   if (namespace === 'ziniao' && tool === 'cli') return 'ziniao.cli';
   if (namespace === 'sif' && tool === 'read' && typeof args?.toolId === 'string') return `sif.${args.toolId}`;
   if (namespace === 'lingxing' && tool === 'catalog' && typeof args?.toolId === 'string') return `lingxing.${args.toolId}`;
+  if (namespace === 'lingxing' && tool === 'read_scoped' && typeof args?.toolId === 'string'
+    && (LINGXING_SCOPED_READ_TOOLS as readonly string[]).includes(args.toolId)) return `lingxing.scoped.${args.toolId}`;
   if (namespace === 'internet' && tool === 'search') return 'internet.search';
   if (namespace === 'amazon' && AMAZON_OPERATIONS.has(tool)) return `amazon.${tool}`;
   if (namespace === 'image' && tool === 'generate') return 'image.generate';
@@ -3369,11 +3392,14 @@ function capabilityIdForTool(request: CodexApprovalRequest): string | undefined 
 function evidenceDetailsForTool(request: CodexApprovalRequest, response: unknown, taskId: string): { scope?: string; period?: string; freshness?: string; coverage?: { mode?: string; basis?: string; total?: number; offset?: number; returned?: number; limit?: number; has_more?: boolean; next_offset?: number | null }; pagination?: { groupKey: string; total: number; offset: number; returned: number; dimensions?: string[]; fixedDimensions?: string[] }; members?: Array<{ key: string; country?: string }>; filterSite?: string } {
   const args = request.params.arguments as Record<string, unknown> | undefined;
   const params = args?.params && typeof args.params === 'object' ? args.params as Record<string, unknown> : {};
-  const period = [params.start_date, params.end_date].filter((value) => typeof value === 'string').join('..');
-  if (request.params.namespace !== 'crossborderops') return period ? { period } : {};
+  const period = typeof params.report_date === 'string' && params.report_date.includes(' - ')
+    ? params.report_date.replace(' - ', '..')
+    : [params.start_date ?? params.startDate ?? params.date_start ?? params.startTime ?? params.start, params.end_date ?? params.endDate ?? params.date_end ?? params.endTime ?? params.end].filter((value) => typeof value === 'string').join('..');
+  const scopedLingxing = request.params.namespace === 'lingxing' && request.params.tool === 'read_scoped';
+  if (request.params.namespace !== 'crossborderops' && !scopedLingxing) return period ? { period } : {};
   const first = (response as { contentItems?: Array<{ text?: string }> } | undefined)?.contentItems?.[0]?.text;
   try {
-    const parsed = first ? JSON.parse(first) as { total?: unknown; offset?: unknown; rows?: unknown; scope?: { lingxing_sids?: unknown[] }; evidence?: { data_as_of?: unknown; queried_at?: unknown }; data?: { period?: { start_date?: string; end_date?: string }; current_period?: { start_date?: string; end_date?: string }; total?: unknown; offset?: unknown; rows?: unknown; dimensions?: unknown; filters?: unknown; coverage?: unknown } } : {};
+    const parsed = first ? JSON.parse(first) as { total?: unknown; offset?: unknown; rows?: unknown; scope?: { lingxing_sids?: unknown[]; stores?: unknown[] }; evidence?: { data_as_of?: unknown; queried_at?: unknown }; data?: { period?: { start_date?: string; end_date?: string }; current_period?: { start_date?: string; end_date?: string }; total?: unknown; offset?: unknown; rows?: unknown; dimensions?: unknown; filters?: unknown; coverage?: unknown } } : {};
     if (request.params.tool === 'scope' && Number.isSafeInteger(parsed.total) && Number.isSafeInteger(parsed.offset) && Array.isArray(parsed.rows)) {
       return { pagination: { groupKey: 'crossborderops.scope', total: Number(parsed.total), offset: Number(parsed.offset),
         returned: parsed.rows.length, dimensions: ['store'] },

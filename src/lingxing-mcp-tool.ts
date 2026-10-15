@@ -64,6 +64,13 @@ export class LingxingMcpTool {
     };
   }
 
+  public async describe(toolId: string): Promise<any> {
+    const result = await this.withSession(call => call('search', {toolId}));
+    const envelope = parseToolText(result) as any;
+    if (envelope?.success === false || !envelope?.data || envelope.data.toolId !== toolId) throw new Error('LINGXING_SCHEMA_INVALID');
+    return envelope.data;
+  }
+
   public async execute(input: LingxingActionInput): Promise<unknown> {
     return this.withSession(async (call) => call('action', { toolId: input.toolId, params: input.params }));
   }
@@ -82,8 +89,8 @@ export class LingxingMcpTool {
   private async loadCatalog(): Promise<Map<string, CatalogEntry>> {
     return this.withSession(async (call) => {
       const entries = new Map<string, CatalogEntry>();
-      for (let offset = 0; offset < 10_000; offset += 50) {
-        const result = await call('help', { offset, limit: 50 });
+      for (let offset = 0; offset < 10_000; offset += 20) {
+        const result = await call('help', { offset, limit: 20 });
         const envelope = parseToolText(result);
         const data = envelope && typeof envelope === 'object' ? (envelope as { data?: unknown }).data : undefined;
         const page = data && typeof data === 'object' ? data as { total?: unknown; tools?: unknown } : {};

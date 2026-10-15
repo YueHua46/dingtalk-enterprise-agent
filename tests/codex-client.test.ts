@@ -26,7 +26,7 @@ describe('CodexClient startup configuration', () => {
     await client.startThread({ corpId: 'corp', userId: 'user' });
     const dynamicTools = request.mock.calls[0]?.[1]?.dynamicTools as Array<{ name: string }>;
     expect(dynamicTools.map((tool) => tool.name)).toContain('lingxing');
-    expect((dynamicTools.find((tool) => tool.name === 'lingxing') as any).tools.map((tool: any) => tool.name)).toEqual(['catalog']);
+    expect((dynamicTools.find((tool) => tool.name === 'lingxing') as any).tools.map((tool: any) => tool.name)).toEqual(['catalog', 'read_scoped']);
     expect(dynamicTools.map((tool) => tool.name)).toContain('crossborderops');
   });
   it('does not mistake commentary for the final answer', () => {

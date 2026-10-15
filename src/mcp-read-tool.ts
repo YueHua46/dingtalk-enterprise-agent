@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
 import { nativeReadOnlyMcpTools } from './mcp-tool-list.js';
+import { LINGXING_SCOPED_READ_TOOLS } from './lingxing-scoped-read.js';
 
 const endpoints = {
   sif: { url: 'https://mcp.sif.com/mcp', header: 'secret-key' },
@@ -11,9 +12,12 @@ export const mcpReadDynamicTools = [
     type: 'function', name: 'read', description: '调用已登记的 SIF 只读能力。先按业务目标选择 toolId，并提供该能力所需 params。',
     inputSchema: { type: 'object', additionalProperties: false, properties: { toolId: { type: 'string', enum: [...nativeReadOnlyMcpTools.sif] }, params: { type: 'object' } }, required: ['toolId'] }
   }] },
-  { type: 'namespace', name: 'lingxing', description: '领星共享密钥只能查看工具目录；业务数据须使用按用户授权范围裁剪的通道。', tools: [{
+  { type: 'namespace', name: 'lingxing', description: '领星工具目录可发现能力；业务只读数据通过按当前用户授权店铺范围裁剪的通道查询。', tools: [{
     type: 'function', name: 'catalog', description: '调用领星 help 或 search 查看工具目录，不执行共享密钥业务 action。',
     inputSchema: { type: 'object', additionalProperties: false, properties: { toolId: { type: 'string', enum: [...nativeReadOnlyMcpTools.lingxing] }, params: { type: 'object' } }, required: ['toolId'] }
+  }, {
+    type: 'function', name: 'read_scoped', description: '按当前钉钉用户在 CrossBorderOps 计算出的有效店铺范围读取已接入的领星店铺业务只读能力；toolId 必须是已登记能力。先用 catalog search 读取官方参数；params 严格遵守官方 Schema，另支持 store_sids 限定授权店铺子集。单店接口必须选单店；广告 profile_ids 由宿主映射和校验。结果保留原始分页，不能当作全量。',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { toolId: { type: 'string', enum: [...LINGXING_SCOPED_READ_TOOLS] }, params: { type: 'object' } }, required: ['toolId'] }
   }] }
 ];
 
