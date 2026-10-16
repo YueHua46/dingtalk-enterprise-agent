@@ -60,6 +60,7 @@ export interface TaskRecord {
   threadId?: string;
   cardBizId?: string;
   approvalCardBizId?: string;
+  clarificationCardBizId?: string;
   resultSummary?: string;
   resultVisibility?: 'surface' | 'private';
   errorCode?: string;

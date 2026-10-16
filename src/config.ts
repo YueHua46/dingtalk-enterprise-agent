@@ -27,6 +27,10 @@ const schema = z.object({
   DINGTALK_APPROVAL_CARD_CONTENT_VAR: z.string().min(1).default('content'),
   DINGTALK_APPROVAL_CARD_STATUS_VAR: z.string().min(1).default('status'),
   DINGTALK_APPROVAL_CARD_TTL_MS: z.coerce.number().int().positive().default(5 * 60 * 1000),
+  // Interactive clarification card based on the reusable single-choice template.
+  // It is opt-in so deployments without a published template keep the text fallback.
+  DINGTALK_CLARIFICATION_CARD_TEMPLATE_ID: z.preprocess(value => value === '' ? undefined : value, z.string().min(1).optional()),
+  DINGTALK_CLARIFICATION_CARD_TTL_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
   MODEL_PROVIDER: z.enum(['tokenshop', 'gemini']).default('tokenshop'),
   TOKENSHOP_MODEL_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.string().url().optional()),
   TOKENSHOP_MODEL_API_KEY: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),

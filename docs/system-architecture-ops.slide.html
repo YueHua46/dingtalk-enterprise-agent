@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<title>钉钉 AI 助手 · 分层架构</title>
+<style>
+  :root, [data-theme="dark"] {
+    --bg: #0a101e; --panel: #0f1729; --text: #e8eefb; --muted: #93a3bd; --line: #263450; --arrow: #8ea3c4;
+    --l1c: #38bdf8; --l1f: rgba(56,189,248,0.045); --l1l: rgba(56,189,248,0.18);
+    --l2c: #22d3ee; --l2f: rgba(34,211,238,0.045); --l2l: rgba(34,211,238,0.18);
+    --l3c: #34d399; --l3f: rgba(52,211,153,0.045); --l3l: rgba(52,211,153,0.18);
+    --l4c: #a78bfa; --l4f: rgba(167,139,250,0.05);  --l4l: rgba(167,139,250,0.2);
+    --l5c: #fbbf24; --l5f: rgba(251,191,36,0.045);  --l5l: rgba(251,191,36,0.2);
+    --l6c: #94a3b8; --l6f: rgba(148,163,184,0.04);  --l6l: rgba(148,163,184,0.16);
+    --ret: #22d3ee;
+  }
+  [data-theme="light"] {
+    --bg: #f6f8fc; --panel: #ffffff; --text: #1a2436; --muted: #5b6b85; --line: #dde5f0; --arrow: #7c8aa5;
+    --l1c: #0284c7; --l1f: rgba(2,132,199,0.05);  --l1l: rgba(2,132,199,0.22);
+    --l2c: #0891b2; --l2f: rgba(8,145,178,0.05);  --l2l: rgba(8,145,178,0.22);
+    --l3c: #059669; --l3f: rgba(5,150,105,0.05);  --l3l: rgba(5,150,105,0.22);
+    --l4c: #7c3aed; --l4f: rgba(124,58,237,0.05); --l4l: rgba(124,58,237,0.22);
+    --l5c: #d97706; --l5f: rgba(217,119,6,0.05);  --l5l: rgba(217,119,6,0.22);
+    --l6c: #64748b; --l6f: rgba(100,116,139,0.05);--l6l: rgba(100,116,139,0.2);
+    --ret: #0891b2;
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); }
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", "Hiragino Sans GB", sans-serif; }
+  svg text { font-family: inherit; }
+  .t-main { fill: var(--text); } .t-mut { fill: var(--muted); }
+  .bl1 { fill: var(--l1f); stroke: var(--l1l); stroke-width: 1; }
+  .bl2 { fill: var(--l2f); stroke: var(--l2l); stroke-width: 1; }
+  .bl3 { fill: var(--l3f); stroke: var(--l3l); stroke-width: 1; }
+  .bl4 { fill: var(--l4f); stroke: var(--l4l); stroke-width: 1; }
+  .bl5 { fill: var(--l5f); stroke: var(--l5l); stroke-width: 1; }
+  .bl6 { fill: var(--l6f); stroke: var(--l6l); stroke-width: 1; }
+  .oc1 { fill: none; stroke: var(--l1c); stroke-width: 1.3; }
+  .oc2 { fill: none; stroke: var(--l2c); stroke-width: 1.3; }
+  .oc3 { fill: none; stroke: var(--l3c); stroke-width: 1.3; }
+  .oc4 { fill: none; stroke: var(--l4c); stroke-width: 1.3; }
+  .oc5 { fill: none; stroke: var(--l5c); stroke-width: 1.3; }
+  .oc6 { fill: none; stroke: var(--l6c); stroke-width: 1.3; }
+  .tc1 { fill: var(--l1c); } .tc2 { fill: var(--l2c); } .tc3 { fill: var(--l3c); }
+  .tc4 { fill: var(--l4c); } .tc5 { fill: var(--l5c); } .tc6 { fill: var(--l6c); }
+  .bx { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+  .arrow { stroke: var(--arrow); stroke-width: 1.6; fill: none; }
+  .arrh  { fill: var(--arrow); }
+  .return { stroke: var(--ret); stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; }
+  .arrh-ret { fill: var(--ret); }
+  .frame { padding: 24px; }
+  .title { font-size: 24px; font-weight: 700; color: var(--text); margin: 0 0 2px 8px; }
+  .sub { font-size: 13px; color: var(--muted); margin: 0 0 14px 8px; }
+  svg.arch { width: 100%; height: auto; display: block; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="title">钉钉 AI 助手 · 分层架构</div>
+  <div class="sub">自上而下：① 用户层（谁在用）→ ② 接入层（消息进出）→ ③ 编排层（中枢调度）→ ④ 智能层（AI 思考）→ ⑤ 工具层（干活的手）→ ⑥ 基础层（底座支撑）｜ 右侧青色虚线 = 进度、确认卡和结果回到原聊天</div>
+  <svg class="arch" viewBox="0 0 1200 732" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="钉钉 AI 助手分层架构图">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path class="arrh" d="M0,0 L10,5 L0,10 z"></path>
+      </marker>
+      <marker id="arrRet" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path class="arrh-ret" d="M0,0 L10,5 L0,10 z"></path>
+      </marker>
+    </defs>
+
+    <!-- ① 用户层 -->
+    <rect class="bl1" x="32" y="20" width="1136" height="74" rx="16"></rect>
+    <rect class="oc1" x="48" y="35" width="140" height="44" rx="10"></rect>
+    <text class="tc1" x="118" y="56" font-size="14" font-weight="700" text-anchor="middle">① 用户层</text>
+    <text class="t-mut" x="118" y="72" font-size="10.5" text-anchor="middle">谁在用</text>
+    <rect class="bx" x="210" y="31" width="790" height="52" rx="10"></rect>
+    <text x="232" y="63" font-size="14.5">
+      <tspan class="t-main" font-weight="700">👥 运营同事（你）</tspan>
+      <tspan class="t-mut" font-size="12.5">　——　钉钉私聊，或群里 @机器人，用大白话提需求：「查上周日本站销量」「导出发货单」「改一下 Listing」</tspan>
+    </text>
+
+    <line class="arrow" x1="605" y1="98" x2="605" y2="116" marker-end="url(#arr)"></line>
+    <text class="t-mut" x="620" y="111" font-size="11.5">发消息</text>
+
+    <!-- ② 接入层 -->
+    <rect class="bl2" x="32" y="122" width="1136" height="92" rx="16"></rect>
+    <rect class="oc2" x="48" y="146" width="140" height="44" rx="10"></rect>
+    <text class="tc2" x="118" y="167" font-size="14" font-weight="700" text-anchor="middle">② 接入层</text>
+    <text class="t-mut" x="118" y="183" font-size="10.5" text-anchor="middle">消息出入口</text>
+    <rect class="bx" x="210" y="133" width="790" height="70" rx="10"></rect>
+    <text class="t-main" x="232" y="156" font-size="15" font-weight="700">🤖 钉钉机器人（前台）</text>
+    <text class="t-mut" x="232" y="178" font-size="12">秒回接单 · 告诉你排第几位 · 干得久就播报进度（超过 15 秒）· 结果发回原会话</text>
+    <text class="t-mut" x="232" y="196" font-size="12">底层：钉钉 Stream 长连接 + AI 流式卡片（进度和结果都更新在同一张卡片上）</text>
+
+    <line class="arrow" x1="605" y1="218" x2="605" y2="236" marker-end="url(#arr)"></line>
+    <text class="t-mut" x="620" y="231" font-size="11.5">转交任务</text>
+
+    <!-- ③ 编排层 -->
+    <rect class="bl3" x="32" y="242" width="1136" height="96" rx="16"></rect>
+    <rect class="oc3" x="48" y="268" width="140" height="44" rx="10"></rect>
+    <text class="tc3" x="118" y="289" font-size="14" font-weight="700" text-anchor="middle">③ 编排层</text>
+    <text class="t-mut" x="118" y="305" font-size="10.5" text-anchor="middle">中枢调度</text>
+    <rect class="bx" x="210" y="253" width="389" height="76" rx="10"></rect>
+    <text class="t-main" x="232" y="279" font-size="15" font-weight="700">🧭 Agent 网关（Gateway）</text>
+    <text class="t-mut" x="232" y="301" font-size="11.5">任务编排 · 排队叫号（30 人并发）· 进度播报</text>
+    <text class="t-mut" x="232" y="321" font-size="11.5">写操作发确认卡，只认发起人本人，超时不重试</text>
+    <rect class="bx" x="611" y="253" width="389" height="76" rx="10"></rect>
+    <text class="t-main" x="633" y="279" font-size="15" font-weight="700">🛡️ 安全策略（贯穿全程）</text>
+    <text class="t-mut" x="633" y="301" font-size="11.5">以你本人身份干活（corpId + userId），权限不越界</text>
+    <text class="t-mut" x="633" y="321" font-size="11.5">危险操作必须你确认 · 全程审计留痕</text>
+
+    <line class="arrow" x1="605" y1="342" x2="605" y2="360" marker-end="url(#arr)"></line>
+    <text class="t-mut" x="620" y="355" font-size="11.5">交给大脑思考</text>
+
+    <!-- ④ 智能层 -->
+    <rect class="bl4" x="32" y="366" width="1136" height="96" rx="16"></rect>
+    <rect class="oc4" x="48" y="392" width="140" height="44" rx="10"></rect>
+    <text class="tc4" x="118" y="413" font-size="14" font-weight="700" text-anchor="middle">④ 智能层</text>
+    <text class="t-mut" x="118" y="429" font-size="10.5" text-anchor="middle">会思考</text>
+    <rect class="bx" x="210" y="377" width="255" height="76" rx="10"></rect>
+    <text class="t-main" x="232" y="403" font-size="14.5" font-weight="700">🧠 Codex App Server</text>
+    <text class="t-mut" x="232" y="425" font-size="11.5">听懂需求 → 拆成步骤 → 定方案</text>
+    <text class="t-mut" x="232" y="445" font-size="11.5">一个会话一个线程，互不干扰</text>
+    <rect class="bx" x="477" y="377" width="255" height="76" rx="10"></rect>
+    <text class="t-main" x="499" y="403" font-size="14.5" font-weight="700">⚡ 大模型（GPT / Gemini）</text>
+    <text class="t-mut" x="499" y="425" font-size="11.5">底层思考与生成</text>
+    <text class="t-mut" x="499" y="445" font-size="11.5">两个渠道可切换，密钥不混用</text>
+    <rect class="bx" x="744" y="377" width="255" height="76" rx="10"></rect>
+    <text class="t-main" x="766" y="403" font-size="14.5" font-weight="700">📖 Skills（业务手册）</text>
+    <text class="t-mut" x="766" y="425" font-size="11.5">Amazon 运营 · 紫鸟操作</text>
+    <text class="t-mut" x="766" y="445" font-size="11.5">公司流程 SOP · 知识库</text>
+
+    <line class="arrow" x1="605" y1="466" x2="605" y2="484" marker-end="url(#arr)"></line>
+    <text class="t-mut" x="620" y="479" font-size="11.5">挑选并调用工具</text>
+
+    <!-- ⑤ 工具层 -->
+    <rect class="bl5" x="32" y="490" width="1136" height="124" rx="16"></rect>
+    <rect class="oc5" x="48" y="530" width="140" height="44" rx="10"></rect>
+    <text class="tc5" x="118" y="551" font-size="14" font-weight="700" text-anchor="middle">⑤ 工具层</text>
+    <text class="t-mut" x="118" y="567" font-size="10.5" text-anchor="middle">会干活</text>
+    <rect class="bx" x="210" y="501" width="188" height="100" rx="10"></rect>
+    <text class="t-main" x="228" y="527" font-size="14" font-weight="700">💼 DWS（钉钉办公）</text>
+    <text class="t-mut" x="228" y="551" font-size="11.5">文档 · 日历 · 审批 · 邮件</text>
+    <text class="t-mut" x="228" y="571" font-size="11.5">用你本人身份调用</text>
+    <rect class="bx" x="410" y="501" width="188" height="100" rx="10"></rect>
+    <text class="t-main" x="428" y="527" font-size="14" font-weight="700">🔌 MCP（数据服务）</text>
+    <text class="t-mut" x="428" y="551" font-size="11.5">领星 ERP：发货单 · 库存</text>
+    <text class="t-mut" x="428" y="571" font-size="11.5">SIF：ASIN · 竞品分析</text>
+    <rect class="bx" x="610" y="501" width="188" height="100" rx="10"></rect>
+    <text class="t-main" x="628" y="527" font-size="14" font-weight="700">🌐 紫鸟 CLI（店铺）</text>
+    <text class="t-mut" x="628" y="551" font-size="11.5">亚马逊店铺后台操作</text>
+    <text class="t-mut" x="628" y="571" font-size="11.5">一次只跑一个，自动排队</text>
+    <rect class="bx" x="810" y="501" width="188" height="100" rx="10"></rect>
+    <text class="t-main" x="828" y="527" font-size="14" font-weight="700">🛠️ 自研工具</text>
+    <text class="t-mut" x="828" y="551" font-size="11.5">CrossBorderOps 数据</text>
+    <text class="t-mut" x="828" y="571" font-size="11.5">Listing · 生图 · 报表</text>
+
+    <!-- ⑥ 基础层 -->
+    <rect class="bl6" x="32" y="634" width="1136" height="78" rx="16"></rect>
+    <rect class="oc6" x="48" y="651" width="140" height="44" rx="10"></rect>
+    <text class="tc6" x="118" y="672" font-size="14" font-weight="700" text-anchor="middle">⑥ 基础层</text>
+    <text class="t-mut" x="118" y="688" font-size="10.5" text-anchor="middle">支撑以上全部</text>
+    <rect class="bx" x="210" y="645" width="188" height="54" rx="10"></rect>
+    <text class="t-main" x="228" y="667" font-size="13.5" font-weight="700">📔 PostgreSQL</text>
+    <text class="t-mut" x="228" y="688" font-size="11.5">任务 · 审批 · 审计台账</text>
+    <rect class="bx" x="410" y="645" width="188" height="54" rx="10"></rect>
+    <text class="t-main" x="428" y="667" font-size="13.5" font-weight="700">🚦 Redis 队列</text>
+    <text class="t-mut" x="428" y="688" font-size="11.5">排队 · 30 人并发</text>
+    <rect class="bx" x="610" y="645" width="188" height="54" rx="10"></rect>
+    <text class="t-main" x="628" y="667" font-size="13.5" font-weight="700">🦠 ClamAV</text>
+    <text class="t-mut" x="628" y="688" font-size="11.5">附件病毒扫描</text>
+    <rect class="bx" x="810" y="645" width="188" height="54" rx="10"></rect>
+    <text class="t-main" x="828" y="667" font-size="13.5" font-weight="700">💾 自动备份</text>
+    <text class="t-mut" x="828" y="688" font-size="11.5">每 15 分钟 · 留 90 天</text>
+
+    <!-- 回程线 -->
+    <line class="return" x1="1078" y1="290" x2="1078" y2="64" marker-end="url(#arrRet)"></line>
+    <text class="tc2" x="1094" y="84" font-size="12" font-weight="700">回到原聊天</text>
+    <text class="t-mut" x="1094" y="110" font-size="11.5">进度播报</text>
+    <text class="t-mut" x="1094" y="130" font-size="11.5">确认卡</text>
+    <text class="t-mut" x="1094" y="150" font-size="11.5">最终结果</text>
+  </svg>
+</div>
+<script>
+(function () {
+  try {
+    var t = new URLSearchParams(location.search).get('theme');
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  } catch (_) {}
+})();
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import { DWClient, EventAck, TOPIC_CARD, TOPIC_ROBOT, type DWClientDownStream } 
 import type { Config } from './config.js';
 import { requestId } from './security.js';
 import type { AgentRequest, ConversationSurface } from './types.js';
+import { isReferencedTaskCancellation } from './policy.js';
 
 export interface IncomingHandler {
   (request: AgentRequest): Promise<void>;
@@ -17,8 +18,22 @@ export interface CardCallbackEvent {
   challengeId?: string;
 }
 
+export interface ClarificationCardCallbackEvent {
+  corpId?: string;
+  userId: string;
+  outTrackId: string;
+  action: 'submit' | 'cancel';
+  choiceIndex?: number;
+  input?: string;
+  choiceText?: string;
+}
+
 export interface CardActionHandler {
   (event: CardCallbackEvent): Promise<void>;
+}
+
+export interface ClarificationCardActionHandler {
+  (event: ClarificationCardCallbackEvent): Promise<void>;
 }
 
 export interface DingTalkStreamClient {
@@ -37,6 +52,7 @@ export class DingTalkStreamAdapter {
   private client?: DingTalkStreamClient;
   private latestWebhook = new Map<string, string>();
   private cardActionHandler?: CardActionHandler;
+  private clarificationCardActionHandler?: ClarificationCardActionHandler;
 
   public constructor(
     private readonly config: Config,
@@ -46,6 +62,10 @@ export class DingTalkStreamAdapter {
 
   public setCardActionHandler(handler: CardActionHandler): void {
     this.cardActionHandler = handler;
+  }
+
+  public setClarificationCardActionHandler(handler: ClarificationCardActionHandler): void {
+    this.clarificationCardActionHandler = handler;
   }
 
   public async start(): Promise<void> {
@@ -105,6 +125,12 @@ export class DingTalkStreamAdapter {
       client.socketCallBackResponse(downstream.headers.messageId, { status: EventAck.SUCCESS });
       const event = parseCardCallback(downstream);
       if (!event) {
+        const clarification = parseClarificationCardCallback(downstream);
+        if (clarification && this.clarificationCardActionHandler) {
+          try { await this.clarificationCardActionHandler(clarification); }
+          catch (error) { console.error('Clarification card handling failed:', error instanceof Error ? error.message : String(error)); }
+          return;
+        }
         console.warn(JSON.stringify({ event: 'approval.card_callback_unparsed', ...cardCallbackDiagnostic(downstream) }));
         return;
       }
@@ -216,7 +242,7 @@ export function parseRobotMessage(downstream: DWClientDownStream): {
     // orchestrator, which resolves the quote using the sender's DWS identity
     // and refuses to cancel anything when no matching quote exists.
     if (payload.conversationType === '2' && payload.isInAtList === false
-      && normalizedText !== '取消') return undefined;
+      && !isReferencedTaskCancellation(normalizedText)) return undefined;
     return {
       envelope: payload,
       text: normalizedText,
@@ -265,6 +291,36 @@ export function parseCardCallback(downstream: DWClientDownStream): CardCallbackE
   const valueObject = parseCardObject(value);
   const challengeId = firstString(params.challengeId, valueObject?.challengeId, data?.challengeId, content?.challengeId);
   return { userId, outTrackId, action, ...(challengeId ? { challengeId } : {}) };
+}
+
+/** Parse the dynamic single-choice clarification template callback. */
+export function parseClarificationCardCallback(downstream: DWClientDownStream): ClarificationCardCallbackEvent | undefined {
+  let payload: any;
+  try { payload = JSON.parse(downstream.data); } catch { return undefined; }
+  const data = parseCardObject(payload?.cardCallbackData) ?? payload;
+  const content = parseCardObject(data?.content) ?? {};
+  const privateData = parseCardObject(content?.cardPrivateData) ?? parseCardObject(data?.cardPrivateData) ?? {};
+  const params = parseCardObject(privateData?.params) ?? {};
+  const userId = firstString(data?.userId, data?.user_id, content?.userId, content?.user_id);
+  const outTrackId = firstString(data?.outTrackId, data?.out_track_id, data?.instanceId, data?.instance_id, content?.outTrackId, content?.instanceId);
+  if (!userId || !outTrackId) return undefined;
+  const actionIds = Array.isArray(privateData?.actionIds) ? privateData.actionIds : Array.isArray(params.actionIds) ? params.actionIds : Array.isArray(data?.actionIds) ? data.actionIds : [];
+  const actionId = firstString(params.actionId, params.action, actionIds[0], data?.actionId);
+  const isCancel = actionId === 'single_button_node_cancel' || /cancel|取消/i.test(String(actionId ?? ''));
+  const isSubmit = actionId === 'single_button_node_oclw9159003' || /submit|continue|继续/i.test(String(actionId ?? ''));
+  if (!isCancel && !isSubmit) return undefined;
+  const rawIndex = params.singleCheckbox ?? params.singleCheckboxIndex ?? params.singleCheckboxItemsIndex ?? privateData?.singleCheckbox;
+  const numericIndex = typeof rawIndex === 'number' ? rawIndex : typeof rawIndex === 'string' && /^\d+$/.test(rawIndex) ? Number(rawIndex) : undefined;
+  const choiceIndex = Number.isSafeInteger(numericIndex) && numericIndex! >= 0 ? numericIndex : undefined;
+  const input = firstString(params.input, privateData?.input, data?.input);
+  let choiceText: string | undefined;
+  const items = Array.isArray(params.singleCheckboxItems) ? params.singleCheckboxItems : Array.isArray(privateData?.singleCheckboxItems) ? privateData.singleCheckboxItems : [];
+  if (choiceIndex !== undefined && items[choiceIndex]) {
+    const candidate = items[choiceIndex]?.text;
+    choiceText = typeof candidate === 'string' ? candidate : undefined;
+  }
+  const corpId = firstString(data?.corpId, data?.corp_id, data?.chatbotCorpId, content?.corpId, content?.corp_id);
+  return { ...(corpId ? { corpId } : {}), userId, outTrackId, action: isCancel ? 'cancel' : 'submit', ...(choiceIndex !== undefined ? { choiceIndex } : {}), ...(input ? { input } : {}), ...(choiceText ? { choiceText } : {}) };
 }
 
 function parseCardObject(value: unknown): Record<string, any> | undefined {

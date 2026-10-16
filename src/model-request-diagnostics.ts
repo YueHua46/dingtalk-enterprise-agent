@@ -1,3 +1,20 @@
+/** Transport metadata only. Error messages/stacks can contain upstream URLs,
+ * credentials or business payloads, so log only known names and codes. */
+export function modelTransportDiagnostics(error: unknown) {
+  const causes: Array<{name:string;code?:string}> = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current) && causes.length < 4) {
+    seen.add(current);
+    const value = current as {name?:unknown;code?:unknown;cause?:unknown};
+    const name = typeof value.name === 'string' && ['Error','TypeError','AbortError','TimeoutError','SocketError','HeadersTimeoutError','BodyTimeoutError'].includes(value.name) ? value.name : 'other';
+    const code = typeof value.code === 'string' && /^(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|ERR_STREAM_PREMATURE_CLOSE|Z_DATA_ERROR|Z_BUF_ERROR|ABORT_ERR)$/.test(value.code) ? value.code : undefined;
+    causes.push({name,...(code ? {code} : {})});
+    current = value.cause;
+  }
+  return {transportCauses:causes};
+}
+
 /** Structural diagnostics only: never retain prompt text, arbitrary keys,
  * tool names/arguments, schema contents, URLs, credentials, or model output. */
 export function modelRequestDiagnostics(body: Record<string,unknown>, expectedModel?: string) {

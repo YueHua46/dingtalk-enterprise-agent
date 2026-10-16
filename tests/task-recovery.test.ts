@@ -26,6 +26,15 @@ async function fixture() {
 }
 
 describe('explicit recovery safety and atomic preparation',()=>{
+  it('allows a completed input-read registration and its checkpoint',async()=>{
+    const {repo,task,workflow}=await fixture();
+    workflow.evidence.push({id:'read',capabilityId:'artifact.read',source:'artifact',status:'success',observedAt:'2026-10-16'});
+    workflow.toolCheckpoints!.read={capabilityId:'artifact.read',evidenceId:'read',result:'saved read',completedAt:'2026-10-16'};
+    await repo.saveWorkflow(task.id,workflow);
+    for(const eventType of ['tool.call_started','tool.call_finished'])await repo.audit({requestId:'original',taskId:task.id,user:request.user,eventType,
+      payload:{namespace:'artifact',tool:'record_read',argumentHash:'input-read'}});
+    await expect(repo.prepareTaskRecovery(task.id,input)).resolves.toBeDefined();
+  });
   it('only one concurrent request queues the original task and preserves all evidence and review budgets',async()=>{
     const {repo,task,workflow}=await fixture();
     const outcomes=await Promise.allSettled([repo.prepareTaskRecovery(task.id,input),repo.prepareTaskRecovery(task.id,input)]);
@@ -74,6 +83,7 @@ describe('explicit recovery safety and atomic preparation',()=>{
       ['crossborderops','query','crossborderops.ads.metrics',true],['reference','read_guide','reference.read_guide',true],
       ['analysis','python','analysis.python',true],['artifact','render_document','artifact.render_document',true],
       ['artifact','submit','artifact.submit',true],['amazon','update_bid','amazon.update_bid',false],
+      ['artifact','record_read',undefined,true],['artifact','input',undefined,false],
       ['dingtalk','send','dingtalk.send',false],['agent','memory','agent.memory',false],['unknown','write',undefined,false]
     ] as const) expect(recoveryToolAllowed(namespace,tool,capability)).toBe(allowed);
   });

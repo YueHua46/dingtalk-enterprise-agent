@@ -181,6 +181,23 @@ describe('DingTalk native AI streaming card', () => {
     expect(body.cardData.cardParamMap).toMatchObject({ status: 'pending', flowStatus: '2', challengeId: 'challenge-1' });
   });
 
+  it('delivers dynamic clarification options and disables the resolved card', async () => {
+    const calls: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (url.endsWith('/oauth2/accessToken')) return new Response(JSON.stringify({accessToken:'token',expireIn:7200}));
+      calls.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({success:true}));
+    }));
+    const broker = new DingTalkNativeCardBroker({DINGTALK_CLIENT_ID:'app',DINGTALK_CLIENT_SECRET:'secret',DINGTALK_ROBOT_CODE:'robot',DINGTALK_CLARIFICATION_CARD_TEMPLATE_ID:'choice.schema'} as any);
+    const options = [{value:0,text:'稳定盈利',checked:false},{value:1,text:'清库存',checked:false}];
+    const id = await broker.createClarificationCard({type:'group',id:'group'}, {title:'目标是什么？',choiceLabel:'业务目标',freeTextLabel:'补充说明',freeTextPlaceholder:'可选',continueText:'继续',cancelText:'取消',lastMessage:'目标影响建议',singleCheckboxItems:options});
+    expect(calls[0]).toMatchObject({outTrackId:id,callbackType:'STREAM',openSpaceId:'dtv1.card//IM_GROUP.group',imGroupOpenSpaceModel:{supportForward:false},imGroupOpenDeliverModel:{robotCode:'robot'}});
+    expect(JSON.parse(calls[0].cardData.cardParamMap.singleCheckboxItems)).toEqual(options);
+    expect(calls[0].cardData.cardParamMap.submitBtnStatus).toBe('normal');
+    await broker.updateClarificationCard(id,'done','已收到选择');
+    expect(calls[1]).toMatchObject({outTrackId:id,cardData:{cardParamMap:{submitBtnStatus:'disabled',flowStatus:'3'}}});
+  });
+
   it('renders approval creation time in Beijing time even when the host runs in UTC', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {

@@ -35,7 +35,7 @@ import { ActionSummarizer } from './action-summarizer.js';
 import { ZINIAO_BUSY, ZINIAO_CANCELLED, ZINIAO_LEASE_LOST, ZINIAO_QUEUE_TIMEOUT } from './ziniao-gate.js';
 import { CardPresentation } from './card-presentation.js';
 import * as md from './markdown.js';
-import { isCancellation, isConfirmation, parseTaskControl } from './policy.js';
+import { isCancellation, isConfirmation, isReferencedTaskCancellation, parseTaskControl } from './policy.js';
 import { actionHash, sha256 } from './security.js';
 import { buildQueryIntent, resolveQueryIntent, routingHint, toolPreferences, type QueryIntent } from './query-intent.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -67,6 +67,8 @@ export interface MessageSender {
    *  interactive card channel is unavailable (text fallback keeps working). */
   beginApprovalCard?(task: TaskRecord, action: ToolAction, challenge: ApprovalChallenge): Promise<string | undefined>;
   updateApprovalCard?(bizId: string, content: string, status: string, challengeId?: string): Promise<void>;
+  beginClarificationCard?(task: TaskRecord, clarification: { question: string; reason: string; options?: Array<{ value: number; text: string; checked: boolean }> }): Promise<string | undefined>;
+  updateClarificationCard?(bizId: string, status: 'pending' | 'done' | 'cancelled', message?: string): Promise<void>;
 }
 
 const MODEL_RETRY_DELAYS_MS = [1_000, 3_000, 7_000, 15_000, 20_000] as const;
@@ -178,10 +180,6 @@ function extractTaskIdFromQuotedText(text: string | undefined): string | undefin
   if (!text) return undefined;
   const match = /(?:任务(?:编号|ID)?|task(?:\s*id)?)\s*[：:#`\s]*([0-9A-Za-z][0-9A-Za-z_-]{2,127})/i.exec(text);
   return match?.[1];
-}
-
-function quotedControlText(text: string): string {
-  return text.replace(/^\s*(?:(?:<@[^>]+>|@[\p{L}\p{N}_-]+)\s*)+/u, '').trim();
 }
 
 type ZiniaoStoreIdentity = { storeId?: string; storeName?: string };
@@ -476,7 +474,55 @@ export class TaskOrchestrator {
     const current = await this.repo.findTask(task.id);
     if (current?.status !== 'waiting_clarification') return;
     await this.repo.updateTask(task.id, 'failed', { errorCode: 'CLARIFICATION_EXPIRED' });
+    if (task.clarificationCardBizId && this.sender.updateClarificationCard) await this.sender.updateClarificationCard(task.clarificationCardBizId, 'cancelled', '等待补充信息已超时，请重新发起。').catch(() => undefined);
     await this.deliverTask(task, '等待补充信息已超过 24 小时，本次任务结束。需要时请重新发起。', '等待补充信息已超时，请重新发起。', 3, '任务已结束');
+  }
+
+  private async beginClarificationCard(task: TaskRecord, clarification: { question: string; reason: string; options?: Array<{ value: number; text: string; checked: boolean }> }): Promise<boolean> {
+    if (!this.sender.beginClarificationCard) return false;
+    try {
+      const bizId = await this.sender.beginClarificationCard(task, clarification);
+      if (!bizId) return false;
+      await this.repo.setClarificationCard(task.id, bizId);
+      task.clarificationCardBizId = bizId;
+      return true;
+    } catch (error) {
+      await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
+        eventType: 'clarification.card_create_failed', payload: { reason: safeDeliveryError(error) } });
+      return false;
+    }
+  }
+
+  /** Called only from the DingTalk card callback stream. The callback is
+   * reduced to the same persisted clarification answer path as a text reply,
+   * so the normal initiator/surface/TTL/idempotency checks remain in force. */
+  public async handleClarificationCardClick(event: { corpId?: string; userId: string; outTrackId: string; action: 'submit' | 'cancel'; choiceIndex?: number; input?: string; choiceText?: string }): Promise<boolean> {
+    const task = await this.repo.findTaskByClarificationCard({ ...(event.corpId ? {corpId: event.corpId} : {}), userId: event.userId }, event.outTrackId);
+    if (!task || task.status !== 'waiting_clarification') return false;
+    const state = await this.repo.getWorkflow(task.id);
+    const clarification = state?.clarification;
+    if (!state || !clarification || Date.parse(clarification.expiresAt) <= Date.now()) { await this.expireClarification(task); return true; }
+    const choice = Number.isInteger(event.choiceIndex) ? clarification.options?.[event.choiceIndex!] : undefined;
+    const answer = [choice?.text, event.input?.trim().slice(0, 4000)].filter(Boolean).join('；');
+    if (event.action !== 'cancel' && !answer) {
+      await this.sender.send(task.request.surface, '请选择一个选项或填写补充说明，再点击继续。', '需要补充信息');
+      return true;
+    }
+    return this.resumeClarification(task, clarification.createdAt, answer || '取消', event.action === 'cancel');
+  }
+
+  private async resumeClarification(task: TaskRecord, createdAt: string, answer: string, cancelled: boolean): Promise<boolean> {
+    if (!await this.repo.consumeClarification(task.id, createdAt, answer, cancelled)) return true;
+    this.clearClarificationTimer(task.id);
+    if (task.clarificationCardBizId && this.sender.updateClarificationCard) await this.sender.updateClarificationCard(task.clarificationCardBizId, cancelled ? 'cancelled' : 'done', cancelled ? '已取消，本次任务结束。' : '已收到补充信息，继续处理。').catch(() => undefined);
+    if (cancelled) {
+      await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
+    } else {
+      const surfaceId = await this.repo.ensureSurface(task.request.user, task.request.surface);
+      await this.schedule(task.request.user, {...task, status: 'queued'}, surfaceId);
+      await this.sender.send(task.request.surface, '已收到补充信息，继续处理原任务。', '继续处理');
+    }
+    return true;
   }
 
   public async pingQueue(): Promise<void> {
@@ -497,10 +543,9 @@ export class TaskOrchestrator {
     }
 
     // A quoted task card/request can be cancelled without copying its UUID.
-    // Keep this deliberately narrow: only the exact bare command "取消" is
-    // interpreted as a quoted-task control message, and the repository lookup
+    // Only exact cancellation phrases are task controls; repository lookup
     // enforces the current user and originating conversation surface.
-    if (quotedControlText(request.text) === '取消') {
+    if (isReferencedTaskCancellation(request.text)) {
       const resolved = await this.resolveReferencedCancellationTask(request);
       const referenced = resolved.task;
       if (!referenced) {
@@ -582,19 +627,9 @@ export class TaskOrchestrator {
       const firstDelivery = await this.repo.markInbox(request.messageId, 24 * 60 * 60 * 1000);
       if (!firstDelivery) return true;
       if (isCancellation(request.text, waiting.id) || isCancellation(request.text)) {
-        this.clearClarificationTimer(waiting.id);
-        await this.repo.updateTask(waiting.id, 'cancelled');
-        await this.deliverTask(waiting, cancelledTaskMessage(), '已取消。', 3, '已取消');
-        return true;
+        return this.resumeClarification(waiting, clarification.createdAt, '取消', true);
       }
-      clarification.answer = request.text;
-      await this.repo.saveWorkflow(waiting.id, state);
-      await this.repo.updateTask(waiting.id, 'queued');
-      this.clearClarificationTimer(waiting.id);
-      const surfaceId = await this.repo.ensureSurface(waiting.request.user, waiting.request.surface);
-      await this.schedule(waiting.request.user, { ...waiting, status: 'queued' }, surfaceId);
-      await this.sender.send(request.surface, '已收到补充信息，继续处理原任务。', '继续处理');
-      return true;
+      return this.resumeClarification(waiting, clarification.createdAt, request.text, false);
     }
 
     const control = parseTaskControl(request.text);
@@ -724,6 +759,10 @@ export class TaskOrchestrator {
       return;
     }
     this.cancelledTasks.add(task.id);
+    // Interrupt before any card/network updates, which may take seconds.
+    const key = task.request.user.corpId + ':' + task.request.user.userId;
+    const threadId = task.threadId ?? this.activeThreads.get(key);
+    const interruption = threadId ? this.codex.interrupt(threadId).catch(() => undefined) : Promise.resolve();
     const pending = this.approvals.get(task.id);
     if (pending) {
       clearTimeout(pending.timer);
@@ -732,10 +771,9 @@ export class TaskOrchestrator {
       pending.resolve(pending.method === 'business' ? false : approvalResponse(pending.method, false));
     }
     await this.repo.updateTask(task.id, 'cancelled');
+    if (task.clarificationCardBizId && this.sender.updateClarificationCard) await this.sender.updateClarificationCard(task.clarificationCardBizId, 'cancelled', '已取消，本次任务结束。').catch(() => undefined);
     await this.finishApprovalCard(task.id, 'cancelled');
-    const key = task.request.user.corpId + ':' + task.request.user.userId;
-    const threadId = task.threadId ?? this.activeThreads.get(key);
-    if (threadId) await this.codex.interrupt(threadId).catch(() => undefined);
+    await interruption;
     await this.drainCardWrites(task.id);
     await this.deliverTask(task, cancelledTaskMessage(), '已取消。', 3, '已取消');
     await this.repo.audit({ requestId: request.requestId, taskId: task.id, user: request.user, eventType: 'task.cancelled_by_quote', payload: { messageId: request.messageId } });
@@ -1034,6 +1072,7 @@ export class TaskOrchestrator {
           '先取最小汇总，再按异常下钻；不要重复同一失败请求。',
           '广告分析的内部广告、销售和库存事实不能用 Amazon 公开页面、SIF 或知识库替代；这些来源只能在用户明确要求公开市场信号时使用。若目标站点/ASIN没有内部数据，直接说明“没有该站点内部数据”，不要继续无关搜索。',
         ].join('\\n') : '',
+        '运营原始值保护：PDF actions.object 必须用 observation 来源的实际名称/标识 fact_bindings 引用，不能改成中文概括。关键词/搜索词/ASIN/匹配方式、活动和广告组保留原文，中文解释另列；当前出价/原预算/实际CPC也用事实绑定，建议值单列。若已取得日报与广告明细，先对账相同店铺、ASIN、期间和广告范围；冲突须分别展示来源值和缺口，不能静默择一称整体，不能以SP子集冒充所有广告，不能把活动级指标冒充单ASIN指标。',
         skillIndex ? '已安装 Skill 索引（按需用 reference.read_guide 读取）：\n' + skillIndex : '',
         computeAvailable ? '证据与计算：完整结果保存在 evidence/。evidence/index.json 是 JSON 数组，每项含 file、evidenceId、capabilityId、query（完整查询参数对象）、sha256、kind、rootKeys、tables（path、rows、fields 类型）及 context。路径相对任务根目录，结果通常在 data.rows，以 tables 为准。服务端已有指标直接引用；常规聚合/比率/排序优先 analysis.table，复杂分析用 analysis.python。计算输出也保存为证据文件。先一次性明确所需维度和计算，复用已得结果，避免每个对象一轮试算。报告和聊天引用同一组计算结果，不重新抄算。工具额度按阶段独立，接近额度时收敛；收尾和文件交付保留独立额度。' : '精确计算：本任务没有计算沙箱，派生数值需逐项核对后再写入答复。',
         computeAvailable ? 'PDF 文件事实约束（聊天不强制使用文档绑定语法）：正文观测数字、对象 ID 和含数字名称必须用 fact_bindings 与 {{fact:id}} 引用，表格和图表用 render_document 块的 source；派生指标先用 analysis.table 或 analysis.python。只写与用户问题相关的结论和建议，缺失范围、成本、搜索词、配置或跨期数据明确披露。已有证据不重复查询，百分号只附加。只有用户明确要求 PDF 且计划 delivery.format=pdf 时才渲染和提交文件；新 PDF 首选 artifact.render_document 按需组合块；旧模板仅兼容历史任务，PDF 只包含必要内容，聊天默认使用 brief/standard 简洁回答。' : '',
@@ -1118,7 +1157,7 @@ export class TaskOrchestrator {
             }
             const resumable = lane === 'discovery' || lane === 'preparation' || lane === 'computation'
               || lane === 'rendering' || lane === 'review' || lane === 'delivery' || (namespace === 'agent' && tool === 'workflow')
-              || capabilityById(capabilityIdForTool(approval) ?? '')?.risk === 'read';
+              || recoveryToolAllowed(namespace, tool, capabilityIdForTool(approval));
             // Unknown or externally mutating operations retain the existing safety barrier.
             if (!resumable) recoveryUnsafe = true;
             await this.repo.saveWorkflow(task.id, workflow.state);
@@ -1347,10 +1386,13 @@ export class TaskOrchestrator {
           repairTurnCount += 1;
           await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user, surfaceId,
             eventType: 'workflow.repair_turn', payload: { repairTurnCount, reviewProfile } });
+          const stepRepair = outcome.feedback.includes('WORKFLOW_STEPS_UNVERIFIED');
           result = await runRecoverableTurn([
             '你的最终答复还不能交付，原因如下：',
             outcome.feedback,
-            '请按上述意见修正（需要补充数据时先调用工具取证），然后调用 agent.workflow 的 complete 提交修正后的完整答复；也可以直接输出修正后的完整最终答复。'
+            stepRepair
+              ? '不要重新调用 agent.workflow 的 plan，也不要重置或改写现有计划；逐一对现有 critical steps 调用 agent.workflow verify，使用已经取得的证据完成验收，然后调用 complete。'
+              : '请按上述意见修正（需要补充数据时先调用工具取证），然后调用 agent.workflow 的 complete 提交修正后的完整答复；也可以直接输出修正后的完整最终答复。'
           ].join('\n'));
         }
       }
@@ -1367,6 +1409,7 @@ export class TaskOrchestrator {
       if (workflow.state.clarification && !workflow.state.clarification.answer) {
         await this.repo.updateTask(task.id, 'waiting_clarification', { threadId });
         await this.scheduleClarificationExpiry(task);
+        await this.beginClarificationCard(task, workflow.state.clarification);
         await this.deliverTask(task, workflow.state.clarification.question, workflow.state.clarification.question, 3, '需要补充信息');
         return;
       }
@@ -1552,6 +1595,10 @@ export class TaskOrchestrator {
   private async handleCodexRequest(task: TaskRecord, threadId: string, request: CodexApprovalRequest, workflow: TaskWorkflow,
     evidenceExcerpts: Map<string, string>, onKnowledgeProgress?: (stage: string) => void,
     taskDeadlineAt?: number, queryIntent?: QueryIntent): Promise<unknown> {
+    if (this.cancelledTasks.has(task.id)) throw new Error('TASK_CANCELLED');
+    if (workflow.state.clarification && !workflow.state.clarification.answer) {
+      return { contentItems: [{ type: 'inputText', text: 'WORKFLOW_CLARIFICATION_PENDING: 已登记关键澄清，请结束本回合等待发起人回答。不得继续执行依赖该回答的工具。' }], success: false };
+    }
     if (request.method === 'mcpServer/elicitation/request') {
       const accepted = isWhitelistedReadOnlyMcpElicitation(request);
       await this.repo.audit({
@@ -1610,7 +1657,7 @@ export class TaskOrchestrator {
           fact_manifest:facts.map(({id,evidenceId,field,display})=>({id,evidenceId,field,display})),
           next:'检查实际 PDF 页面 previews，确认排版后只提交 path 对应 PDF 到 artifact.submit；HTML 是保留源文件，预览不自动发送。需要修改时用 revise_document + draft_id + changes。'})}],success:true};
       } catch(error) {
-        return {contentItems:[{type:'inputText',text:(error instanceof Error?error.message:String(error))+(draftId?`\n草稿已保存，draft_id=${draftId}。用 artifact.revise_document 局部修正；文件尚未发送。`:'')}],success:false};
+        return {contentItems:[{type:'inputText',text:(error instanceof Error?error.message:String(error))+(draftId?`\n草稿已保存，draft_id=${draftId}。用 artifact.revise_document 局部修正；文件尚未发送。`:'\n若为结构校验错误，按报错 path 修正；每个内容块必须显式填写 id 和 type（summary/text/metrics/actions/callout/table/chart），不要仅凭 id 推断类型。结构未通过时草稿未保存，不存在可用的新 draft_id。')}],success:false};
       }
     }
     if (request.params.namespace === 'artifact' && request.params.tool === 'submit') {
@@ -1885,7 +1932,7 @@ export class TaskOrchestrator {
             await this.repo.audit({ requestId: task.request.requestId, taskId: task.id, user: task.request.user,
               eventType: 'workflow.shadow_clarification', payload: { reason: safeLabel(args.reason) } });
             result = { shadow: true, clarificationNotSent: true };
-          } else result = workflow.clarify(args.question, args.reason);
+          } else result = workflow.clarify(args.question, args.reason, this.config.DINGTALK_CLARIFICATION_CARD_TTL_MS, args.options);
         }
         else throw new Error('WORKFLOW_OPERATION_INVALID: operation 只能是 plan、clarify、verify 或 complete');
         await this.repo.saveWorkflow(task.id, workflow.state);
@@ -2464,8 +2511,10 @@ export class TaskOrchestrator {
       const reviewProfile = reviewProfileFor(workflow);
       const joint = workflow.state.reviewedDeliveryAnswer;
       const artifactReview = joint && workflow.state.artifactReviews?.[joint.artifactSha256];
+      const unchangedDeliveredPdf = workflow.state.contract?.delivery?.format === 'pdf'
+        && workflow.state.documentDraft?.compiled && workflow.state.documentDraft.artifactSha256 === joint?.artifactSha256;
       if (joint && completion.status === 'answered' && completion.answer === joint.answer
-        && joint.evidenceKey === sha256(workflow.state.evidence.filter(item => item.status === 'success' && !item.capabilityId.startsWith('artifact.')))
+        && (unchangedDeliveredPdf || joint.evidenceKey === sha256(workflow.state.evidence.filter(item => item.status === 'success' && !item.capabilityId.startsWith('artifact.'))))
         && artifactReview?.status === 'pass' && artifactReview.answerKey === sha256(joint.answer)
         && workflow.state.evidence.some(item => item.id === joint.deliveryEvidenceId && item.capabilityId === 'artifact.submit'
           && item.status === 'success' && item.scope === `task:${task.id}/output:${joint.artifactSha256}`)) {
@@ -3408,6 +3457,7 @@ function capabilityIdForTool(request: CodexApprovalRequest): string | undefined 
   if (namespace === 'reference' && tool === 'list_guides') return 'reference.list_guides';
   if (namespace === 'agent' && tool === 'memory') return 'agent.memory';
   if (namespace === 'analysis' && ['python', 'table'].includes(tool)) return `analysis.${tool}`;
+  if (namespace === 'artifact' && tool === 'record_read') return 'artifact.read';
   if (namespace === 'artifact' && ['render_document','revise_document'].includes(tool)) return `artifact.${tool}`;
   if (namespace === 'artifact' && tool === 'submit') return 'artifact.submit';
   return undefined;

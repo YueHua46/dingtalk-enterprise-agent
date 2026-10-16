@@ -21,6 +21,12 @@ export function isCancellation(text: string, taskId?: string): boolean {
   return /^\s*取消(?:当前任务)?\s*$/.test(text);
 }
 
+/** Exact control phrases only; quoted task lookup supplies identity and scope. */
+export function isReferencedTaskCancellation(text: string): boolean {
+  const normalized=text.replace(/^\s*(?:(?:<@[^>]+>|@[\p{L}\p{N}_-]+)\s*)+/u,'').trim();
+  return /^(?:取消(?:任务|该任务|这个任务)?|终止任务|停止任务)[。！!]?$/u.test(normalized);
+}
+
 export function parseTaskControl(text: string): { action: 'confirm' | 'cancel'; taskId: string; challengeId?: string } | undefined {
   const match = /^\s*(确认|取消)\s+([0-9a-zA-Z_-]+)(?:\s+([0-9a-zA-Z_-]+))?\s*$/.exec(text);
   if (!match) return undefined;

@@ -1,6 +1,6 @@
 # Agent 通用单选澄清卡
 
-模板文件：[agent-clarification-choice-dynamic.json](../templates/agent-clarification-choice-dynamic.json)
+模板文件：[agent-clarification-choice-dynamic.json](../templates/agent-clarification-choice-dynamic.json)。如果使用最新的“样式修正版”导出文件，字段契约保持一致，直接在配置中填入发布后的模板 ID 即可。
 
 ## 导入
 
@@ -13,7 +13,15 @@
 - 补充说明输入位于选项之后，文案由 `freeTextLabel` 和 `freeTextPlaceholder` 提供。
 - 底部有 `continueText` 和 `cancelText` 两个动作，分别使用动作 ID `single_button_node_oclw9159003` 和 `single_button_node_cancel`。
 
-模板使用钉钉原生 `Input`、`CheckboxList` 和 `SingleButton`，投放时使用机器人 `robotCode`。选项和输入值会在动作回调中一起返回。
+模板使用钉钉原生 `Input`、`CheckboxList` 和 `SingleButton`，投放时使用机器人 `robotCode`。选项和输入值会在动作回调中一起返回。Agent 已接入这张卡：只有模型调用 `agent.workflow` 的 `clarify`，并判断用户独有的关键选择会实质改变对象、业务目标、验收结果或操作目标，且不存在安全合理默认值时才投放。可用合理默认值的低风险问题继续自动处理，模板未配置时回退为原有文字澄清。先读取相关 Skill 和可核查的数据，通常最多问一轮，必要时第二轮；用户明确要求 PDF 时直接生成 PDF。
+
+## Agent 配置
+
+发布模板后设置 `DINGTALK_CLARIFICATION_CARD_TEMPLATE_ID`。可选的 `DINGTALK_CLARIFICATION_CARD_TTL_MS` 默认 24 小时。模板动作 ID 必须保持 `single_button_node_oclw9159003`（继续）和 `single_button_node_cancel`（取消），回调类型使用 `STREAM`。
+
+模型需要提供选项时，在 `agent.workflow` 的 `clarify` 中传入 `options`（2–4 个 `{value,text,checked?}`）；不传时只保留补充说明，不捏造推荐方案。宿主使用已保存的选项解释选择索引，不信任回调带回的选项文案。没有选择也没有填写时继续等待。卡片通过唯一实例 ID 找到原任务，校验发起人身份；企业与原会话从已保存任务绑定，回调带企业字段时额外校验。使用数据库事务原子消费任务状态，防止重复点击或文字/卡片同时回答引起重复恢复。选择卡片不会授权任何业务写操作；预算、竞价、否定词、权限等高危写入仍走独立的宿主确认卡。
+
+升级部署须先运行数据库迁移（新增 `024_clarification_card.sql`），再启用模板配置。卡片提交、取消或过期后按钮禁用；服务重启后保留待澄清状态及剩余有效期，不自动继续。
 
 ## 创建时的数据
 

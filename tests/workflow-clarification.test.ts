@@ -46,4 +46,61 @@ describe('workflow clarification', () => {
     expect(sent).not.toContain('忽略模型未校验的文本');
     await orchestrator.stop();
   });
+
+  it('uses a clarification card when available and resumes from its callback', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const cards: Array<{ status: string; message?: string }> = [];
+    let turn = 0;
+    const codex = {
+      startThread: vi.fn(async () => 'thread-card'),
+      turn: vi.fn(async (_id: string, _prompt: string, _events: unknown, onTool: (value: unknown) => Promise<any>) => {
+        turn += 1;
+        if (turn === 1) {
+          const reply = await onTool({ method: 'item/tool/call', params: { namespace: 'agent', tool: 'workflow', arguments: {
+            operation: 'clarify', question: '广告分析重点是什么？', reason: '重点会改变报告结构',
+            options: [{ value: 0, text: '整体表现' }, { value: 1, text: '优先处理浪费' }]
+          } } });
+          expect(reply.success).toBe(true);
+          return { text: '等待选择', threadId: 'thread-card' };
+        }
+        const reply = await onTool({ method: 'item/tool/call', params: { namespace: 'agent', tool: 'workflow', arguments: { operation: 'complete', completion: { status: 'answered', answer: '已按选择继续', factEvidence: {}, missingFacts: [] } } } });
+        expect(reply.success).toBe(true);
+        return { text: '忽略', threadId: 'thread-card' };
+      }),
+      interrupt: vi.fn(async () => undefined)
+    };
+    const orchestrator = new TaskOrchestrator(config, repo, codex as any, {} as any, {
+      async send(_surface, markdown) { sent.push(markdown); },
+      async beginClarificationCard() { return 'clarify-card-1'; },
+      async updateClarificationCard(_id, status, message) { cards.push({ status, message }); }
+    });
+    vi.spyOn((orchestrator as any).evidenceReviewer, 'review').mockResolvedValue({ status: 'pass', issues: [], reason: 'reviewed' });
+    const task = await orchestrator.accept(request('start-card', '分析德国站广告'));
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('waiting_clarification'));
+    expect((await repo.findTask(task!.id))?.clarificationCardBizId).toBe('clarify-card-1');
+    expect(await orchestrator.handleClarificationCardClick({ corpId: 'other-corp', userId: 'user-1', outTrackId: 'clarify-card-1', action: 'submit', choiceIndex: 1 })).toBe(false);
+    expect(await orchestrator.handleClarificationCardClick({ corpId: 'corp', userId: 'other-user', outTrackId: 'clarify-card-1', action: 'submit', choiceIndex: 1 })).toBe(false);
+    expect(await orchestrator.handleClarificationCardClick({ userId: 'user-1', outTrackId: 'clarify-card-1', action: 'submit', choiceText: '伪造选项' })).toBe(true);
+    expect((await repo.findTask(task!.id))?.status).toBe('waiting_clarification');
+    expect(await orchestrator.handleClarificationCardClick({ userId: 'user-1', outTrackId: 'clarify-card-1', action: 'submit', choiceIndex: 1, choiceText: '伪造选项' })).toBe(true);
+    await vi.waitFor(async () => expect((await repo.findTask(task!.id))?.status).toBe('completed'));
+    expect(cards.some((item) => item.status === 'done')).toBe(true);
+    expect(sent).toContain('已按选择继续');
+    expect((await repo.getWorkflow(task!.id))?.clarification?.answer).toBe('优先处理浪费');
+    expect(await orchestrator.handleClarificationCardClick({ userId: 'user-1', outTrackId: 'clarify-card-1', action: 'submit', choiceIndex: 1 })).toBe(false);
+    await orchestrator.stop();
+  });
+
+  it('atomically accepts one answer and rejects an expired or superseded question', async () => {
+    const repo = new InMemoryRepository();
+    const task = await repo.createTask(request('atomic', '分析广告'), 'surface');
+    const now = new Date().toISOString();
+    await repo.saveWorkflow(task.id, { evidence: [], revision: 1, clarification: { question: '目标？', reason: '目标影响取舍', createdAt: now, expiresAt: new Date(Date.now() + 60000).toISOString() } });
+    await repo.updateTask(task.id, 'waiting_clarification');
+    expect(await repo.consumeClarification(task.id, 'old-question', 'answer', false)).toBe(false);
+    const result = await Promise.all([repo.consumeClarification(task.id, now, '盈利', false), repo.consumeClarification(task.id, now, '清库存', false)]);
+    expect(result.filter(Boolean)).toHaveLength(1);
+    expect((await repo.getWorkflow(task.id))?.clarification?.answer).toBe('盈利');
+  });
 });

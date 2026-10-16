@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TOPIC_ROBOT } from 'dingtalk-stream';
-import { DingTalkStreamAdapter, parseCardCallback, parseRobotMessage } from '../src/dingtalk-stream.js';
+import { DingTalkStreamAdapter, parseCardCallback, parseClarificationCardCallback, parseRobotMessage } from '../src/dingtalk-stream.js';
 import { loadConfig } from './test-config.js';
 
 function downstream(payload: unknown): any {
@@ -59,7 +59,7 @@ describe('DingTalk message normalization', () => {
     expect(rich?.attachments).toHaveLength(1);
   });
 
-  it('ignores explicit non-at group messages and keeps quoted context', () => {
+  it.each(['取消','取消任务','终止任务'])('accepts unmentioned group control %s and keeps quoted context', (cancelText) => {
     const ignored = parseRobotMessage(downstream({
       ...base,
       isInAtList: false,
@@ -72,14 +72,14 @@ describe('DingTalk message normalization', () => {
       ...base,
       isInAtList: false,
       msgtype: 'text',
-      text: { content: '取消' },
+      text: { content: cancelText },
       content: {
         originalMsgId: 'quoted-task-card-message-id',
         quoteContent: { text: { content: '正在整理回答' } }
       }
     }));
     expect(quotedBareCancel).toMatchObject({
-      text: '取消',
+      text: cancelText,
       quotedMessageId: 'quoted-task-card-message-id'
     });
 
@@ -277,5 +277,22 @@ describe('card callback normalization', () => {
     expect(parseCardCallback(downstream({ userId: 'user-1', value: { action: 'agree' } }))).toBeUndefined();
     expect(parseCardCallback(downstream({ userId: 'user-1', outTrackId: 'track-1', value: { action: 'refresh' } }))).toBeUndefined();
     expect(parseCardCallback(downstream('not-json'))).toBeUndefined();
+  });
+
+  it('extracts clarification choice, free text, and cancel actions', () => {
+    const selected = parseClarificationCardCallback(downstream({
+      corpId: 'corp-1', userId: 'user-1', outTrackId: 'clarify-1',
+      content: { cardPrivateData: { actionIds: ['single_button_node_oclw9159003'], params: {
+        singleCheckbox: 1, input: '重点看预算浪费', singleCheckboxItems: [
+          { value: 0, text: '整体表现' }, { value: 1, text: '优先问题' }
+        ]
+      } } }
+    }));
+    expect(selected).toEqual({ corpId: 'corp-1', userId: 'user-1', outTrackId: 'clarify-1', action: 'submit', choiceIndex: 1, input: '重点看预算浪费', choiceText: '优先问题' });
+    const cancelled = parseClarificationCardCallback(downstream({
+      corpId: 'corp-1', userId: 'user-1', outTrackId: 'clarify-1',
+      content: { cardPrivateData: { actionIds: ['single_button_node_cancel'], params: {} } }
+    }));
+    expect(cancelled).toEqual({ corpId: 'corp-1', userId: 'user-1', outTrackId: 'clarify-1', action: 'cancel' });
   });
 });

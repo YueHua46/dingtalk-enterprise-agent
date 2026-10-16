@@ -755,6 +755,33 @@ describe('TaskOrchestrator integration', () => {
     expect(repo.audits.filter((item: any) => item.eventType === 'model.retry_scheduled')).toHaveLength(2);
   });
 
+  it('continues from a read checkpoint after a stream disconnect without reading the input twice', async () => {
+    const repo = new InMemoryRepository();
+    const sent: string[] = [];
+    const inspectInput = vi.fn(async () => ({name:'product.jpg',sha256:'input-sha',size:10}));
+    let calls=0;
+    const codex = {
+      usesWorker:()=>true,
+      startThread:vi.fn(async ()=>'thread-read-recovery'),
+      inspectInput,
+      turn:vi.fn(async (_thread:string,prompt:string,_events:unknown,onRequest:(r:CodexApprovalRequest)=>Promise<any>)=>{
+        const result=await onRequest({method:'item/tool/call',params:{namespace:'artifact',tool:'record_read',
+          arguments:{path:'input/product.jpg',excerpt:'监控摄像机套装'}}});
+        expect(result.success).toBe(true);
+        if(calls++===0)throw new Error('stream disconnected before completion: Transport error');
+        expect(prompt).toContain('从已保存检查点继续');
+        return {text:'已复用证据继续完成',threadId:'thread-read-recovery'};
+      }),interrupt:vi.fn(async()=>undefined)
+    } as unknown as CodexClient;
+    const orchestrator=new TaskOrchestrator(loadConfig({DINGTALK_ROBOT_CODE:'robot'}),repo,codex,{} as DwsBroker,
+      {async send(_surface,markdown){sent.push(markdown);}},undefined,undefined,undefined,async()=>{});
+    const task=await orchestrator.accept(request('read-recovery','分析输入文件'));
+    await waitUntil(()=>sent.includes('已复用证据继续完成'));
+    expect(inspectInput).toHaveBeenCalledTimes(1);
+    expect((await repo.findTask(task!.id))?.status).toBe('completed');
+    expect(repo.audits.some((x:any)=>x.eventType==='workflow.checkpoint_reused'&&x.payload.capabilityId==='artifact.read')).toBe(true);
+  });
+
   it('allows bounded continuation after preparation tool activity', async () => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
@@ -1442,7 +1469,7 @@ describe('TaskOrchestrator integration', () => {
     expect(stored?.status).toBe('cancelled');
   });
 
-  it('cancels a task by quoting its task card and sending bare cancel', async () => {
+  it.each(['取消','取消任务','<@robot-open-id> 取消任务','停止任务','终止任务。'])('cancels the quoted task directly on %s', async (command) => {
     const repo = new InMemoryRepository();
     const sent: string[] = [];
     const codex = { interrupt: vi.fn(async () => undefined) } as unknown as CodexClient;
@@ -1454,15 +1481,18 @@ describe('TaskOrchestrator integration', () => {
     const surfaceId = await repo.ensureSurface(original.user, original.surface);
     const task = await repo.createTask(original, surfaceId);
     await repo.setTaskCard(task.id, 'quoted-task-card');
+    await repo.updateTask(task.id,'running',{threadId:'running-quoted-thread'});
 
     const handled = await orchestrator.handleControl({
-      ...request('quoted-cancel', '<@robot-open-id> 取消'),
+      ...request('quoted-cancel', command),
       quotedMessageId: 'quoted-task-card'
     });
 
     expect(handled).toBe(true);
     expect((await repo.findTask(task.id))?.status).toBe('cancelled');
     expect(sent.join('\n')).toContain('已取消');
+    expect(codex.interrupt).toHaveBeenCalledWith('running-quoted-thread');
+    expect(repo.tasks.size).toBe(1);
   });
 
   it('cancels a task by quoting its original request message', async () => {

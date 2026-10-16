@@ -170,6 +170,47 @@ export class DingTalkNativeCardBroker {
     });
   }
 
+  /** Create the reusable single-choice clarification card. The template is
+   * expected to expose the dynamic cardData fields documented in
+   * templates/agent-clarification-choice-dynamic.json. */
+  public async createClarificationCard(surface: ConversationSurface, data: {
+    title: string; choiceLabel: string; freeTextLabel: string; freeTextPlaceholder: string;
+    continueText: string; cancelText: string; lastMessage: string;
+    singleCheckboxItems: Array<{ value: number; text: string; checked: boolean }>;
+  }): Promise<string> {
+    if (!this.config.DINGTALK_CLARIFICATION_CARD_TEMPLATE_ID) throw new Error('CLARIFICATION_CARD_TEMPLATE_ID_NOT_CONFIGURED');
+    const outTrackId = randomUUID();
+    const cardParamMap: Record<string, string> = {
+      title: data.title, choiceLabel: data.choiceLabel, freeTextLabel: data.freeTextLabel,
+      freeTextPlaceholder: data.freeTextPlaceholder, continueText: data.continueText,
+      cancelText: data.cancelText, lastMessage: data.lastMessage,
+      singleCheckboxItems: JSON.stringify(data.singleCheckboxItems),
+      submitBtnStatus: 'normal', input: '', errMsg: '',
+      flowStatus: '2'
+    };
+    const body: Record<string, unknown> = {
+      cardTemplateId: this.config.DINGTALK_CLARIFICATION_CARD_TEMPLATE_ID,
+      outTrackId, callbackType: 'STREAM', userIdType: 1,
+      cardData: { cardParamMap }, openSpaceId: this.openSpaceId(surface)
+    };
+    if (surface.type === 'group') {
+      body.imGroupOpenSpaceModel = { supportForward: false };
+      body.imGroupOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE };
+    } else {
+      body.imRobotOpenSpaceModel = { supportForward: false };
+      body.imRobotOpenDeliverModel = { robotCode: this.config.DINGTALK_ROBOT_CODE, spaceType: 'IM_ROBOT' };
+    }
+    await this.request('/v1.0/card/instances/createAndDeliver', { method: 'POST', body });
+    return outTrackId;
+  }
+
+  public async updateClarificationCard(outTrackId: string, status: 'pending' | 'done' | 'cancelled', message = ''): Promise<void> {
+    await this.request('/v1.0/card/instances', {
+      method: 'PUT',
+      body: { outTrackId, cardData: { cardParamMap: { lastMessage: message, title: message, submitBtnStatus: status === 'pending' ? 'normal' : 'disabled', flowStatus: status === 'pending' ? '2' : '3' } }, cardUpdateOptions: { updateCardDataByKey: true } }
+    });
+  }
+
   private openSpaceId(surface: ConversationSurface): string {
     return 'dtv1.card//' + (surface.type === 'group' ? 'IM_GROUP.' : 'IM_ROBOT.') + surface.id;
   }

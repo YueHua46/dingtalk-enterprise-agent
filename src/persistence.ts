@@ -28,6 +28,9 @@ export interface Repository {
   findTaskByMessageReference(user: UserIdentity, surface: ConversationSurface, referenceId: string): Promise<TaskRecord | undefined>;
   setTaskCard(id: string, bizId: string): Promise<void>;
   setApprovalCard(id: string, bizId: string): Promise<void>;
+  setClarificationCard(id: string, bizId: string): Promise<void>;
+  findTaskByClarificationCard(user: {corpId?: string; userId: string}, bizId: string): Promise<TaskRecord | undefined>;
+  consumeClarification(id: string, createdAt: string, answer: string, cancelled: boolean): Promise<boolean>;
   listRecoverableTasks(): Promise<TaskRecord[]>;
   saveApproval(challenge: ApprovalChallenge, method: string): Promise<void>;
   getApproval(taskId: string): Promise<StoredApproval | undefined>;
@@ -218,7 +221,7 @@ export class InMemoryRepository implements Repository {
         && task.request.user.userId === user.userId
         && task.request.surface.type === surface.type
         && task.request.surface.id === surface.id
-        && [task.request.messageId, task.cardBizId, task.approvalCardBizId].includes(referenceId))
+        && [task.request.messageId, task.cardBizId, task.approvalCardBizId, task.clarificationCardBizId].includes(referenceId))
       .sort((left, right) => right.createdAt - left.createdAt)[0];
   }
 
@@ -258,6 +261,26 @@ export class InMemoryRepository implements Repository {
   public async setApprovalCard(id: string, bizId: string): Promise<void> {
     const task = this.tasks.get(id);
     if (task && !task.approvalCardBizId) task.approvalCardBizId = bizId;
+  }
+
+  public async setClarificationCard(id: string, bizId: string): Promise<void> {
+    const task = this.tasks.get(id);
+    if (task) task.clarificationCardBizId = bizId;
+  }
+
+  public async findTaskByClarificationCard(user: {corpId?: string; userId: string}, bizId: string): Promise<TaskRecord | undefined> {
+    return [...this.tasks.values()].find((task) => task.clarificationCardBizId === bizId
+      && (!user.corpId || task.request.user.corpId === user.corpId) && task.request.user.userId === user.userId);
+  }
+
+  public async consumeClarification(id: string, createdAt: string, answer: string, cancelled: boolean): Promise<boolean> {
+    const task = this.tasks.get(id);
+    const state = this.workflows.get(id);
+    const question = state?.clarification;
+    if (task?.status !== 'waiting_clarification' || !question || question.answer || question.createdAt !== createdAt || Date.parse(question.expiresAt) <= Date.now()) return false;
+    question.answer = answer;
+    task.status = cancelled ? 'cancelled' : 'queued';
+    return true;
   }
 
   public async listRecoverableTasks(): Promise<TaskRecord[]> {
@@ -336,7 +359,8 @@ export class PgRepository implements Repository {
         id:row.id,request:row.request_payload,status:row.status,createdAt:row.created_at.getTime(),
         ...(row.codex_thread_id ? {threadId:row.codex_thread_id} : {}),
         ...(row.card_biz_id ? {cardBizId:row.card_biz_id} : {}),
-        ...(row.approval_card_biz_id ? {approvalCardBizId:row.approval_card_biz_id} : {}),
+      ...(row.approval_card_biz_id ? {approvalCardBizId:row.approval_card_biz_id} : {}),
+      ...(row.clarification_card_biz_id ? {clarificationCardBizId:row.clarification_card_biz_id} : {}),
         ...(row.result_summary ? {resultSummary:row.result_summary} : {}),
         ...(row.result_visibility !== 'unknown' ? {resultVisibility:row.result_visibility} : {}),
         ...(row.error_code ? {errorCode:row.error_code} : {})
@@ -523,10 +547,11 @@ export class PgRepository implements Repository {
       codex_thread_id: string | null;
       card_biz_id: string | null;
       approval_card_biz_id: string | null;
+      clarification_card_biz_id: string | null;
       result_summary: string | null;
       result_visibility: 'surface' | 'private' | 'unknown';
       error_code: string | null;
-    }>('SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,approval_card_biz_id,result_summary,result_visibility,error_code FROM tasks WHERE id=$1', [id]);
+    }>('SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,approval_card_biz_id,clarification_card_biz_id,result_summary,result_visibility,error_code FROM tasks WHERE id=$1', [id]);
     const row = result.rows[0];
     if (!row) return undefined;
     return {
@@ -537,6 +562,7 @@ export class PgRepository implements Repository {
       ...(row.codex_thread_id ? { threadId: row.codex_thread_id } : {}),
       ...(row.card_biz_id ? { cardBizId: row.card_biz_id } : {}),
       ...(row.approval_card_biz_id ? { approvalCardBizId: row.approval_card_biz_id } : {}),
+      ...(row.clarification_card_biz_id ? { clarificationCardBizId: row.clarification_card_biz_id } : {}),
       ...(row.result_summary ? { resultSummary: row.result_summary } : {}),
       ...(row.result_visibility !== 'unknown' ? { resultVisibility: row.result_visibility } : {}),
       ...(row.error_code ? { errorCode: row.error_code } : {})
@@ -554,6 +580,7 @@ export class PgRepository implements Repository {
            t.request_payload->>'messageId'=$5
            OR t.card_biz_id=$5
            OR t.approval_card_biz_id=$5
+           OR t.clarification_card_biz_id=$5
          )
        ORDER BY t.created_at DESC
        LIMIT 1`,
@@ -616,6 +643,37 @@ export class PgRepository implements Repository {
     await this.pool.query('UPDATE tasks SET approval_card_biz_id=$2 WHERE id=$1 AND approval_card_biz_id IS NULL', [id, bizId]);
   }
 
+  public async setClarificationCard(id: string, bizId: string): Promise<void> {
+    await this.pool.query('UPDATE tasks SET clarification_card_biz_id=$2 WHERE id=$1', [id, bizId]);
+  }
+
+  public async findTaskByClarificationCard(user: {corpId?: string; userId: string}, bizId: string): Promise<TaskRecord | undefined> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT t.id FROM tasks t
+       WHERE ($1::text IS NULL OR t.corp_id=$1) AND t.user_id=$2 AND t.clarification_card_biz_id=$3
+       LIMIT 1`, [user.corpId ?? null, user.userId, bizId]);
+    return result.rows[0] ? this.findTask(result.rows[0].id) : undefined;
+  }
+
+  public async consumeClarification(id: string, createdAt: string, answer: string, cancelled: boolean): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query('SELECT status FROM tasks WHERE id=$1 FOR UPDATE', [id]);
+      const saved = await client.query<{state: WorkflowState}>('SELECT state FROM task_workflows WHERE task_id=$1 FOR UPDATE', [id]);
+      const state = saved.rows[0]?.state;
+      const question = state?.clarification;
+      if (locked.rows[0]?.status !== 'waiting_clarification' || !question || question.answer || question.createdAt !== createdAt || Date.parse(question.expiresAt) <= Date.now()) {
+        await client.query('ROLLBACK'); return false;
+      }
+      question.answer = answer;
+      await client.query('UPDATE task_workflows SET state=$2,updated_at=now() WHERE task_id=$1', [id, JSON.stringify(state)]);
+      await client.query('UPDATE tasks SET status=$2 WHERE id=$1', [id, cancelled ? 'cancelled' : 'queued']);
+      await client.query('COMMIT'); return true;
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
+  }
+
   public async listRecoverableTasks(): Promise<TaskRecord[]> {
     const result = await this.pool.query<{
       id: string;
@@ -625,7 +683,8 @@ export class PgRepository implements Repository {
       codex_thread_id: string | null;
       card_biz_id: string | null;
       approval_card_biz_id: string | null;
-    }>("SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,approval_card_biz_id FROM tasks WHERE status IN ('queued','running','waiting_oauth','waiting_confirmation') ORDER BY created_at");
+      clarification_card_biz_id: string | null;
+    }>("SELECT id,request_payload,status,created_at,codex_thread_id,card_biz_id,approval_card_biz_id,clarification_card_biz_id FROM tasks WHERE status IN ('queued','running','waiting_oauth','waiting_confirmation') ORDER BY created_at");
     return result.rows.map((row) => ({
       id: row.id,
       request: row.request_payload,
@@ -633,7 +692,8 @@ export class PgRepository implements Repository {
       createdAt: row.created_at.getTime(),
       ...(row.codex_thread_id ? { threadId: row.codex_thread_id } : {}),
       ...(row.card_biz_id ? { cardBizId: row.card_biz_id } : {}),
-      ...(row.approval_card_biz_id ? { approvalCardBizId: row.approval_card_biz_id } : {})
+      ...(row.approval_card_biz_id ? { approvalCardBizId: row.approval_card_biz_id } : {}),
+      ...(row.clarification_card_biz_id ? { clarificationCardBizId: row.clarification_card_biz_id } : {})
     }));
   }
 

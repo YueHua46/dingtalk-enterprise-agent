@@ -106,7 +106,24 @@ const sender = {
   },
   async updateApprovalCard(bizId: string, content: string, status: string, challengeId?: string): Promise<void> {
     await nativeCards.updateApprovalCard(bizId, content, status, challengeId);
-  }
+  },
+  ...(config.DINGTALK_CLARIFICATION_CARD_TEMPLATE_ID ? {
+    async beginClarificationCard(task: TaskRecord, clarification: { question: string; reason: string; options?: Array<{ value: number; text: string; checked: boolean }> }): Promise<string | undefined> {
+      return nativeCards.createClarificationCard(task.request.surface, {
+        title: clarification.question,
+        choiceLabel: '请选择一个方向',
+        freeTextLabel: '补充说明（可选）',
+        freeTextPlaceholder: '可以补充你的重点、范围或限制条件',
+        continueText: '继续',
+        cancelText: '取消',
+        lastMessage: clarification.reason,
+        singleCheckboxItems: clarification.options ?? []
+      });
+    },
+    async updateClarificationCard(bizId: string, status: 'pending' | 'done' | 'cancelled', message?: string): Promise<void> {
+      await nativeCards.updateClarificationCard(bizId, status, message);
+    }
+  } : {})
 };
 const taskQueue = config.NODE_ENV === 'production' ? new RedisTaskQueue(config) : undefined;
 const ziniaoBroker = config.ZINIAO_REMOTE_HOST ? new ZiniaoRemoteBroker(config) : new ZiniaoBroker(config);
@@ -121,6 +138,9 @@ const streamAdapter = new DingTalkStreamAdapter(config, async (request: AgentReq
 });
 streamAdapter.setCardActionHandler(async (event) => {
   await orchestrator.handleApprovalCardClick(event);
+});
+streamAdapter.setClarificationCardActionHandler(async (event) => {
+  await orchestrator.handleClarificationCardClick(event);
 });
 stream = streamAdapter;
 

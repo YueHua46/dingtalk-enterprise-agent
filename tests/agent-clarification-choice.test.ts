@@ -25,10 +25,10 @@ describe('dynamic agent clarification card export', () => {
     expect(card.type).toBe('im');
     expect(card.mode).toBe('card');
     expect(editor.schema.componentsMap.map((item) => item.componentName)).toEqual([
-      'BaseTextBlock', 'Input', 'CheckboxList', 'SingleButton', 'Card',
+      'BaseText', 'CheckboxList', 'Input', 'SingleButton', 'Card',
     ]);
     expect(editor.schema.componentsTree[0]!.children.map((item) => item.componentName)).toEqual([
-      'BaseTextBlock', 'BaseTextBlock', 'CheckboxList', 'BaseTextBlock', 'Input', 'SingleButton', 'SingleButton',
+      'BaseText', 'BaseText', 'CheckboxList', 'BaseText', 'Input', 'SingleButton', 'SingleButton',
     ]);
   });
 

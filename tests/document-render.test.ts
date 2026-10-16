@@ -86,6 +86,23 @@ describe('composable PDF document contract',()=>{
     expect(()=>applyDocumentRevision(payload,{draft_id:'x',changes:[{path:'/document/blocks',value:[]}]})).toThrow();
     expect(({} as any).polluted).toBeUndefined();
   });
+  it('blocks translated action labels and metrics masquerading as object identity',()=>{
+    const sources=[source(JSON.stringify({data:{rows:[{keyword_id:'4836815694116',keyword_text:'überwachungskamera set',match_type:'broad',bid:'1.60',cpc:'1.34',clicks:63}]}}))];
+    const payload=draft();
+    payload.document.blocks=[{id:'action',type:'actions',items:[{object:'监控套装广泛投放词',proposal:'建议竞价 €1.80'}]}];
+    expect(()=>assertDocumentGrounding(payload,sources)).toThrow('DOCUMENT_OBJECT_REQUIRES_SOURCE_IDENTITY');
+    payload.fact_bindings=[{id:'clicks',evidenceId:'ads',rows_path:'data.rows',where:{keyword_id:'4836815694116'},field:'clicks',suffix:''}];
+    (payload.document.blocks[0] as any).items[0].object='{{fact:clicks}}';
+    expect(()=>assertDocumentGrounding(payload,sources)).toThrow('DOCUMENT_OBJECT_REQUIRES_SOURCE_IDENTITY');
+    payload.fact_bindings.push({id:'kw',evidenceId:'ads',rows_path:'data.rows',where:{keyword_id:'4836815694116'},field:'keyword_text',suffix:''});
+    (payload.document.blocks[0] as any).items[0].object='{{fact:kw}}';
+    expect(()=>assertDocumentGrounding(payload,sources)).not.toThrow();
+    (payload.document.blocks[0] as any).items[0].proposal='当前 CPC €1.34，建议竞价 €1.80';
+    expect(()=>assertDocumentGrounding(payload,sources)).toThrow('DOCUMENT_CURRENT_VALUE_REQUIRES_BINDING');
+    payload.fact_bindings.push({id:'cpc',evidenceId:'ads',rows_path:'data.rows',where:{keyword_id:'4836815694116'},field:'cpc',suffix:''});
+    (payload.document.blocks[0] as any).items[0].proposal='当前 CPC €{{fact:cpc}}，建议竞价 €1.80';
+    expect(()=>assertDocumentGrounding(payload,sources)).not.toThrow();
+  });
   it('identifies late unbound numbers without weakening evidence binding',()=>{
     const payload=draft();
     payload.document.blocks=[{id:'finding',type:'text',paragraphs:['说明'.repeat(120)+'花费 12.50，变化 3%，共 ４ 次']}];

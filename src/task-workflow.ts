@@ -60,6 +60,7 @@ export interface ClarificationRequest {
   createdAt: string;
   expiresAt: string;
   answer?: string;
+  options?: Array<{ value: number; text: string; checked: boolean }>;
 }
 
 export interface TaskCompletion {
@@ -154,13 +155,16 @@ export const workflowDynamicTools = [{
     description: [
       'operation=verify：强制步骤验收。每个关键步骤执行后，先观察实际结果，再提交 checkpoint={stepId, criterion, evidenceIds, observationMethod, status, reason, nextAction}。observationMethod 由 Agent 根据目标选择 url/title/content/query/element/screenshot/api_state/file_readback，可组合使用。独立核验器用宿主保存的实际结果核对，不接受自述成功替代证据。失败后只能有限恢复，不自动重放写入。',
       'operation=plan：多步骤任务必须登记工作计划 contract={goal, delivery?:{format:chat|pdf,detail:brief|standard|full,audience?:operator|manager|self}, deliverables[], steps:[{stepId,purpose,action,acceptanceCriteria,preferredEvidence[],fallbackEvidence[],recoveryStrategy,critical}], requiredFacts:[{id, description, acceptableSources:[能力ID], enumeration?: all|bounded|point|context, grain?: [维度]}], assumptions[]}；delivery 默认 chat/brief；每个步骤的验收条件由 Agent 根据用户目标生成，宿主不按站点或关键词推断。',
-      'operation=clarify：仅当缺少只有发起人能决定、且会改变查询对象、跨越权限或影响真实写入目标的条件时使用，提供 question（给发起人的一个最小问题）与 reason。',
+      'operation=clarify：先读相关 Skill 并自行取证。仅当用户独有的关键选择会实质改变对象、业务目标、验收结果或操作目标，且没有安全合理默认值时使用。提供 question（一个最小问题）、reason（具体说明为什么无法自行决定）；options 提供 2–4 个互斥选项。时间范围、报告重点、篇幅排版通常默认处理；已要求 PDF 不再问格式。通常只问一轮，最多两轮，调用后结束本回合等待回答。澄清不授权写操作。',
       'operation=complete：提交最终答复 completion={status: answered|partial|blocked, answer: 给用户的完整回答, factEvidence: {事实ID: 单个证据ID或证据ID数组}（可为空对象，宿主会自动关联已有成功查询，不需要为填写引用重复查资料）, missingFacts: [未满足的事实ID]}。宿主会核验答复是否被证据支持；未通过时一次性返回所有问题，逐条修正后重新提交。'
     ].join('\n'),
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
         operation: { type: 'string', enum: ['plan', 'clarify', 'verify', 'complete'] },
+        options: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'object', additionalProperties: false, properties: {
+          value: { type: 'integer', minimum: 0, maximum: 999 }, text: { type: 'string', minLength: 1, maxLength: 200 }, checked: { type: 'boolean' }
+        }, required: ['value', 'text'] } },
         checkpoint: { type: 'object', additionalProperties: false, properties: {
           stepId: { type: 'string', minLength: 1, maxLength: 100 },
           criterion: { type: 'string', minLength: 1, maxLength: 1000 },
@@ -393,7 +397,7 @@ export class TaskWorkflow {
     for (const id of ids.slice(0, Math.max(0, ids.length - MAX_STORED_EXCERPTS))) delete excerpts[id];
   }
 
-  public clarify(question: unknown, reason: unknown, ttlMs = 24 * 60 * 60 * 1000): ClarificationRequest {
+  public clarify(question: unknown, reason: unknown, ttlMs = 24 * 60 * 60 * 1000, options?: unknown): ClarificationRequest {
     if (this.state.clarification && !this.state.clarification.answer) throw new Error('WORKFLOW_CLARIFICATION_PENDING');
     if ((this.state.clarificationCount ?? 0) >= MAX_CLARIFICATIONS) {
       throw new Error('WORKFLOW_CLARIFICATION_BUDGET_EXCEEDED: 已向发起人澄清过，请依据已有信息采用合理默认值完成任务，并在答复中说明所作假设。');
@@ -401,8 +405,16 @@ export class TaskWorkflow {
     if (typeof question !== 'string' || !question.trim() || question.length > 1000 || typeof reason !== 'string' || !reason.trim() || reason.length > 1000) {
       throw new Error('WORKFLOW_CLARIFICATION_INVALID: 需要同时提供 question 与 reason');
     }
+    let normalizedOptions: ClarificationRequest['options'];
+    if (options !== undefined) {
+      if (!Array.isArray(options) || options.length < 2 || options.length > 4 || options.some((item) => !item || typeof item !== 'object' || typeof (item as any).text !== 'string' || !(item as any).text.trim())) {
+        throw new Error('WORKFLOW_CLARIFICATION_INVALID: options 必须是 2 至 4 个带 text 的选项');
+      }
+      normalizedOptions = options.map((item, index) => ({ value: Number.isInteger((item as any).value) ? (item as any).value : index, text: String((item as any).text).trim().slice(0, 200), checked: Boolean((item as any).checked) }));
+      if (new Set(normalizedOptions.map((item) => item.value)).size !== normalizedOptions.length) throw new Error('WORKFLOW_CLARIFICATION_INVALID: options.value 不得重复');
+    }
     const now = Date.now();
-    const clarification = { question: question.trim(), reason: reason.trim(), createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMs).toISOString() };
+    const clarification = { question: question.trim(), reason: reason.trim(), createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMs).toISOString(), ...(normalizedOptions ? { options: normalizedOptions } : {}) };
     this.state.clarification = clarification;
     this.state.clarificationCount = (this.state.clarificationCount ?? 0) + 1;
     this.state.revision += 1;

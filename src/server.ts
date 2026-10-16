@@ -15,7 +15,7 @@ import { verifyModelTaskToken } from './file-worker-auth.js';
 import { NativeWebTool } from './native-web-tool.js';
 import { StandaloneWebSearch } from './standalone-web-search.js';
 import { requestModelWithRetry } from './model-request-retry.js';
-import { modelRequestDiagnostics } from './model-request-diagnostics.js';
+import { modelRequestDiagnostics, modelTransportDiagnostics } from './model-request-diagnostics.js';
 import { applyGeminiOutputBudget } from './model-output-budget.js';
 import { registerTaskRecoveryRoute } from './task-recovery-route.js';
 
@@ -210,7 +210,9 @@ export async function createServer(
           requestChars: modelBody.length}, 'model stream ended without terminal');
         reply.raw.end();
       } catch (error) {
-        request.log.error({ error: error instanceof Error ? error.name : 'UnknownError' }, 'model stream interrupted');
+        request.log.error({ ...modelTransportDiagnostics(error), taskId:workerTaskId,
+          durationMs:Date.now()-upstreamStartedAt,headersMs,receivedBytes,requestChars:modelBody.length,
+          upstreamStatus:response.status,cancelled:cancellation.signal.aborted }, 'model stream interrupted');
         reply.raw.destroy();
       }
     });

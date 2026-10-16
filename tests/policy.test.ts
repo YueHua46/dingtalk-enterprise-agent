@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { classifyAction, isCancellation, isConfirmation, requiresConfirmation } from '../src/policy.js';
+import { classifyAction, isCancellation, isConfirmation, isReferencedTaskCancellation, requiresConfirmation } from '../src/policy.js';
 
 describe('policy', () => {
+  it('accepts exact quoted cancel phrases without treating ordinary requests as controls',()=>{
+    for(const text of ['取消','取消任务','<@robot> 取消任务','停止任务！','取消这个任务'])expect(isReferencedTaskCancellation(text)).toBe(true);
+    for(const text of ['如何取消任务','不要取消任务','取消任务后再生成报告','取消当前任务','取消订单'])expect(isReferencedTaskCancellation(text)).toBe(false);
+  });
   it('classifies read operations without write words as read', () => {
     expect(classifyAction({ name: '搜索文档', risk: 'read' })).toBe('read');
     expect(requiresConfirmation('read')).toBe(false);
