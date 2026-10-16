@@ -365,7 +365,7 @@ function assertReviewUnitCoverage(units:ReviewUnit[]|undefined,checks:NonNullabl
 }
 
 function isReportCapability(capability: string): boolean {
-  return ['artifact.render_report','artifact.revise_report','artifact.render_document','artifact.revise_document'].includes(capability);
+  return ['artifact.render_document','artifact.revise_document'].includes(capability);
 }
 
 /** Deduplicate complete row context without reducing the facts being checked.

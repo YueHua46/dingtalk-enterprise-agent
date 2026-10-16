@@ -22,12 +22,12 @@ const source=(raw:string):EvidenceFileEntry=>({file:'data.json',evidenceId:'ads'
 const numericSources=[source(JSON.stringify({data:{rows:[{spend:12}]}}))];
 
 describe('composable PDF document contract',()=>{
-  it('advertises document creation while retaining only existing legacy draft revision',()=>{
+  it('advertises document creation without exposing the retired advertising template',()=>{
     const artifact=enterpriseTools.find(namespace=>namespace.name==='artifact')!;
     const names=artifact.tools.map(tool=>tool.name);
     expect(names).toContain('render_document');
     expect(names).toContain('revise_document');
-    expect(names).toContain('revise_report');
+    expect(names).not.toContain('revise_report');
     expect(names).not.toContain('render_report');
   });
   it('allows a short document with arbitrary block ordering and no country, cover or fixed chapters',()=>{

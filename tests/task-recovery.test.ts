@@ -72,7 +72,7 @@ describe('explicit recovery safety and atomic preparation',()=>{
   it('limits each resumed model tool call to reads, report generation, and normal submission review',()=>{
     for(const [namespace,tool,capability,allowed] of [
       ['crossborderops','query','crossborderops.ads.metrics',true],['reference','read_guide','reference.read_guide',true],
-      ['analysis','python','analysis.python',true],['artifact','render_report','artifact.render_report',true],
+      ['analysis','python','analysis.python',true],['artifact','render_document','artifact.render_document',true],
       ['artifact','submit','artifact.submit',true],['amazon','update_bid','amazon.update_bid',false],
       ['dingtalk','send','dingtalk.send',false],['agent','memory','agent.memory',false],['unknown','write',undefined,false]
     ] as const) expect(recoveryToolAllowed(namespace,tool,capability)).toBe(allowed);

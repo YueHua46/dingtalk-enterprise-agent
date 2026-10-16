@@ -21,6 +21,8 @@ export function executionLane(namespace: string, tool: string): ExecutionLane {
     || (namespace === 'reference' && tool === 'list_guides') || (namespace === 'dingtalk' && tool === 'schema')) return 'discovery';
   if (namespace === 'reference') return 'preparation';
   if (namespace === 'analysis') return 'computation';
+  // Retired report calls remain classifiable only for historical task budget
+  // replay; they are not exposed as capabilities or recovery tools.
   if (namespace === 'artifact' && ['render_report','revise_report','render_document','revise_document'].includes(tool)) return 'rendering';
   if (namespace === 'artifact' && tool === 'submit') return 'review';
   if (namespace === 'agent' && tool === 'workflow') return 'control';
@@ -53,6 +55,8 @@ export function migrateArtifactBudget(state: ExecutionBudgetState, history?: Art
   let renderingCalls = 0, submissionCalls = 0;
   for (const event of history.calls) {
     const p = event.payload;
+    // Historical tasks may still contain retired report calls. Count them only
+    // while migrating the persisted budget; they are not executable capabilities.
     if (p?.namespace !== 'artifact' || !['render_report', 'revise_report', 'render_document', 'revise_document', 'submit'].includes(p.tool ?? '')) continue;
     if (!p.argumentHash || !['tool.call_started','tool.call_finished'].includes(event.eventType)) return block();
     const key = `${p.tool}:${p.argumentHash}`;

@@ -1,14 +1,14 @@
 # Amazon 广告 PDF 报告模板
 
-> 本文件以下的字段、步骤和示例只适用于历史 `artifact.render_report` 草稿。新任务使用通用 PDF Skill 与 `artifact.render_document`：自主选择和排列本次问题需要的内容块，由 HTML/CSS 统一视觉并导出 PDF。不要因用户要求 PDF 而选择本兼容模板。
+> 本文件是已退役的历史资料，仅供审计旧任务使用。新任务不得读取或调用其中的旧模板能力；PDF 统一使用 `artifact.render_document` 与 `artifact.revise_document`，由 HTML/CSS 按本次问题自由编排。
 
 只有用户明确要求 PDF、导出或下载时才生成 PDF 普通文件附件，发送到原群聊或私聊。用户只说“分析”或“报告”时默认在聊天中回答。不调用在线文档、钉盘写入或 A2UI 替代文件交付；PDF 只保留与本次问题相关的章节。
 
 ## 生成与修正
 
 1. 用本任务完整证据及 `analysis.table` / `analysis.python` 完成必要计算。已有指标直接引用，缺失不当零；没有成本不能宣称盈利，没有配置不能将消耗当预算。
-2. 调用 `artifact.render_report`，传 `template="amazon-advertising"`、`report`、事实绑定与证据附表。宿主先解析、校验结构化内容再生成文件，无需编写 PDF 代码。
-3. 有修正意见时，用返回的 `draft_id` 调用 `artifact.revise_report`。只传 `changes:[{path,value}]`，例如 `/report/executive_summary` 或 `/report/action_plan/0/stop_loss`；允许替换、新增合法字段及数组项目（末尾用 /-），删除使用 {path,op:"remove"}；宿主按报告结构校验，不改模板或附表来源。需要新事实时通过 `fact_bindings` 按 id 替换或补充；勿全文重写。
+2. 新任务不得使用本文件中的历史结构；请改用通用文档块按问题自由组合。
+3. 历史文件需要修正时，重新生成通用文档，不恢复旧广告模板。
 4. 调用 `artifact.submit`，`path` 原样取自宿主最新返回值。`final_answer` 仅写文件交付说明，例如“广告分析报告已发送，请查看附件。”，事实结论仅在 PDF 中。只有真实 `delivered` 回执才表示发送成功，成功后用 `reviewed_final_answer` 原文结束。不要提交中间 JSON 或临时图片。
 5. 后续追问默认聊天回答，不重复发送 PDF；明确要求重新导出或重新发送时才再次投递。
 

@@ -56,7 +56,7 @@ describe('independent artifact phase budgets',()=>{
   });
   it('keeps all three phases finite and gives truthful exhausted-stage guidance',()=>{
     const state:ExecutionBudgetState={version:2,used:{rendering:12,review:12,delivery:12},exhausted:[]};
-    expect(executionLane('artifact','render_report')).toBe('rendering');
+    expect(executionLane('artifact','render_document')).toBe('rendering');
     expect(executionLane('artifact','submit')).toBe('review');
     for(const lane of ['rendering','review','delivery'] as const)expect(takeExecutionBudget(state,lane).allowed).toBe(false);
     expect(budgetFeedback('review',false)).toContain('禁止继续更换文件');

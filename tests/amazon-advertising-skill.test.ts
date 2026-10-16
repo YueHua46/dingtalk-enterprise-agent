@@ -58,11 +58,12 @@ describe('amazon-advertising-ai-optimizer skill', () => {
 
   it('uses dynamic document composition for new PDFs and isolates the historical template', async () => {
     const result = await guide.execute({ name: 'amazon-advertising-ai-optimizer', reference: 'report-template' });
-    expect(result.text).toContain('artifact.render_report');
+    expect(result.text).toContain('已退役');
     expect(result.text).toContain('artifact.submit');
     expect(result.text).toContain('不重复发送 PDF');
-    expect(result.text).toContain('只适用于历史');
-    expect(result.text).toContain('新任务使用通用 PDF Skill');
+    expect(result.text).toContain('render_document');
+    expect(result.text).toContain('已退役');
+    expect(result.text).toContain('PDF 统一使用');
     const skill = readFileSync(resolve('skills/amazon-advertising-ai-optimizer/SKILL.md'), 'utf8');
     expect(skill).toContain('只有用户明确要求 PDF');
     expect(skill).toContain('artifact.render_document');

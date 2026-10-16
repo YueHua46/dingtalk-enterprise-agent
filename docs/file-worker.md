@@ -34,7 +34,7 @@ Worker 启用 Codex 原生 `web.run`：`web_search=live`、`features.standalone_
 
 ## 按需组合的 HTML/PDF
 
-新分析任务默认简洁聊天；明确要求 PDF 后，在计划登记 `delivery: {format: 'pdf', detail: 'brief'}`（也可 standard/full）。`artifact.render_document` 接收按问题选择和排序的 summary、text、metrics、actions、callout、table、chart 块，由可信 HTML/CSS 和 Chromium 导出。`ops-clean` 只规定字体、颜色、间距与分页，不规定广告章节、国家分支、封面或最低页数。旧 `render_report` 仅兼容历史广告草稿。
+新分析任务默认简洁聊天；明确要求 PDF 后，在计划登记 `delivery: {format: 'pdf', detail: 'brief'}`（也可 standard/full）。`artifact.render_document` 接收按问题选择和排序的 summary、text、metrics、actions、callout、table、chart 块，由可信 HTML/CSS 和 Chromium 导出。`ops-clean` 只规定字体、颜色、间距与分页，不规定广告章节、国家分支、封面或最低页数。广告 PDF 只有 `render_document` / `revise_document` 这一条能力路径；旧广告模板不再出现在能力目录、模型工具列表或恢复路径中。
 
 宿主从本任务保存的证据解析 `fact_bindings`；表格与图表按来源哈希、行选择器和字段填值。图表只支持来源绑定的 line/bar；需聚合或排序时先计算。缺失保留 null，不替换为零。正文数字观测不能用手抄或建议字段绕过绑定。渲染后保存 HTML 源文件，并从实际 PDF 读取正文、渲染页面 PNG；Agent 检查页面，审核完整内容和证据后才通过 `artifact.submit` 投递。局部修改使用 `revise_document` 与最新 draft_id，旧版或字节被改动的 PDF 无法交付。源文件与预览不自动发送。
 

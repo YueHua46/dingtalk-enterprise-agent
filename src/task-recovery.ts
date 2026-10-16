@@ -23,7 +23,7 @@ function deny(code: string): never { throw new TaskRecoveryError(code); }
  * Report submission is allowed through its normal review/delivery gates. */
 export function recoveryToolAllowed(namespace: string, tool: string, capabilityId?: string): boolean {
   if (namespace === 'agent' && ['workflow', 'capabilities'].includes(tool)) return true;
-  if (namespace === 'artifact' && ['render_report', 'revise_report', 'render_document', 'revise_document', 'submit'].includes(tool)) return true;
+  if (namespace === 'artifact' && ['render_document', 'revise_document', 'submit'].includes(tool)) return true;
   return Boolean(capabilityId && capabilityById(capabilityId)?.risk === 'read');
 }
 

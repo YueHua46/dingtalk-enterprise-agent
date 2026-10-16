@@ -69,7 +69,6 @@ const fixed: CapabilityDescriptor[] = [
   { id: 'analysis.table', purpose: '对保存证据表做精确分组、求和、比率和排序', risk: 'read', identity: 'none', scope: '当前任务证据', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
   { id: 'artifact.render_document', purpose: '将按需编排的证据内容渲染为 HTML 和 PDF，并生成页面预览', risk: 'read', identity: 'none', scope: '当前任务', source: 'artifact', freshness: 'static', supports: ['文档文件与页面预览'], skills: ['pdf'] },
   { id: 'artifact.revise_document', purpose: '局部修正文档草稿并重新编译核验', risk: 'read', identity: 'none', scope: '当前任务', source: 'artifact', freshness: 'static', supports: ['修订后的文档文件'], skills: ['pdf'] },
-  { id: 'artifact.render_report', purpose: '兼容历史结构化广告报告', risk: 'read', identity: 'none', scope: '当前任务', source: 'artifact', freshness: 'static', supports: ['报告文件'], skills: [] },
   { id: 'analysis.python', purpose: '在任务沙箱中运行 Python，对已取得的证据文件做精确的派生计算或运行 Skill 分析脚本；代码与输出即计算证据', risk: 'read', identity: 'none', scope: '当前任务沙箱，无网络', source: 'analysis', freshness: 'static', supports: ['派生计算结果'], skills: [] },
   { id: 'internet.search', purpose: '检索公开网页', risk: 'read', identity: 'none', scope: '公开网页', source: 'internet', freshness: 'live', supports: ['公开事实'], skills: [] },
   ...[...AMAZON_OPERATIONS].map((operation) => ({

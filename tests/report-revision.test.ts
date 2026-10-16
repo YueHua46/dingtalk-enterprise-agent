@@ -106,7 +106,7 @@ describe('report local revisions', () => {
 
   it('registers a JSON-schema tool without empty enum members', () => {
     const artifact = enterpriseTools.find(namespace => namespace.name === 'artifact');
-    expect(artifact?.tools.some(tool => tool.name === 'revise_report')).toBe(true);
+    expect(artifact?.tools.some(tool => tool.name === 'revise_report')).toBe(false);
     expect(reportRevisionTool.inputSchema).toHaveProperty('properties.changes');
     expect(JSON.stringify(reportRevisionTool.inputSchema)).not.toContain('"enum":[""]');
   });
