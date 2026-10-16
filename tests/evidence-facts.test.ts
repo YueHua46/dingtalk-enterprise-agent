@@ -6,7 +6,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {factBindingSchema,prepareFactBindings,factResolutionConfig,factResolutionCode,decodeResolvedFacts,interpolateFacts} from '../src/evidence-facts.js';
 import {describeEvidence} from '../src/evidence-manifest.js';
-import {reportRenderTool} from '../src/report-render.js';
+import {documentRenderTool} from '../src/document-render.js';
 
 describe('host-resolved report facts',()=>{
   it('reports all unavailable bindings and real table candidates without choosing a source',()=>{
@@ -68,7 +68,7 @@ describe('host-resolved report facts',()=>{
     } finally {await rm(dir,{recursive:true,force:true});}
   });
   it('exports a nullable suffix without empty enum entries and preserves existing no-suffix inputs',()=>{
-    const properties=(reportRenderTool.inputSchema as any).properties.fact_bindings.items.properties;
+    const properties=(documentRenderTool.inputSchema as any).properties.fact_bindings.items.properties;
     expect(properties.suffix).toMatchObject({anyOf:[{type:'string',pattern:'^%?$'},{type:'null'}]});
     const assertEnums=(node:unknown):void=>{
       if(!node || typeof node!=='object') return;
@@ -77,7 +77,7 @@ describe('host-resolved report facts',()=>{
       if(Array.isArray(record.enum)) expect(record.enum).not.toContain('');
       Object.values(record).forEach(assertEnums);
     };
-    assertEnums(reportRenderTool.inputSchema);
+    assertEnums(documentRenderTool.inputSchema);
     for(const suffix of [undefined,null,'','%']) {
       const parsed=factBindingSchema.parse({id:'fact',evidenceId:'metrics',field:'ctr',
         ...(suffix===undefined?{}:{suffix})});

@@ -2,10 +2,6 @@ import type { Config } from './config.js';
 import { executionLane, takeExecutionBudget, budgetFeedback, migrateArtifactBudget } from './execution-budget.js';
 import { describeEvidence } from './evidence-manifest.js';
 import { tableAnalysisSchema, tableAnalysisCode } from './analysis-table.js';
-import { reportRenderSchema } from './report-render.js';
-import { applyReportRevision, reportRevisionSchema } from './report-revision.js';
-import { assertReportGrounding } from './report-grounding.js';
-import { materializeReportActions } from './report-actions.js';
 import { interpolateFacts } from './evidence-facts.js';
 import type { CodexApprovalRequest, CodexClientLike } from './codex-client.js';
 import { DwsBroker, DWS_AUTH_INIT_FAILED, isConfirmationGateError } from './dws-broker.js';
@@ -147,7 +143,7 @@ function evidenceFileName(workflow: TaskWorkflow, evidenceId: string, capability
 
 /** Records the file in the task's evidence index, which is also written to the sandbox. */
 function isRenderedArtifact(capabilityId: string): boolean {
-  return ['artifact.render_report','artifact.revise_report','artifact.render_document','artifact.revise_document'].includes(capabilityId);
+  return ['artifact.render_document','artifact.revise_document'].includes(capabilityId);
 }
 
 function evidenceIndex(workflow: TaskWorkflow, request: CodexApprovalRequest, file: string, evidenceId: string, capabilityId: string, raw: string) {
@@ -1607,8 +1603,6 @@ export class TaskOrchestrator {
         workflow.state.artifactFacts ??= {};
         workflow.state.artifactFacts[inspected.sha256] = {facts,report:compiled.document,reviewReport:compiled.document,tables};
         workflow.state.documentDraft = {id:draftId,payload:unresolved,compiled:true,artifactSha256:inspected.sha256};
-        // Explicitly switching to the new renderer supersedes a failed legacy draft.
-        delete workflow.state.reportDraft;
         await this.repo.saveWorkflow(task.id,workflow.state);
         await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,
           eventType:'artifact.document_compiled',payload:{sha256:inspected.sha256,draftId,blocks:compiled.document.blocks.map(b=>({id:b.id,type:b.type})),pages:output.pageCount}});
@@ -1617,114 +1611,6 @@ export class TaskOrchestrator {
           next:'检查实际 PDF 页面 previews，确认排版后只提交 path 对应 PDF 到 artifact.submit；HTML 是保留源文件，预览不自动发送。需要修改时用 revise_document + draft_id + changes。'})}],success:true};
       } catch(error) {
         return {contentItems:[{type:'inputText',text:(error instanceof Error?error.message:String(error))+(draftId?`\n草稿已保存，draft_id=${draftId}。用 artifact.revise_document 局部修正；文件尚未发送。`:'')}],success:false};
-      }
-    }
-    if (request.params.namespace === 'artifact' && request.params.tool === 'revise_report') {
-      try {
-        const args = reportRevisionSchema.parse(request.params.arguments);
-        const draft = workflow.state.reportDraft;
-        if (!draft || draft.id !== args.draft_id) throw new Error('REPORT_DRAFT_STALE: 使用最近 render_report 返回的 draft_id');
-        const revised = applyReportRevision(draft.payload, args);
-        if (sha256(revised) === draft.id && draft.compiled)
-          throw new Error('REPORT_REVISION_NO_CHANGE: 已成功编译的内容与事实引用未变化');
-        return this.handleCodexRequest(task, threadId, {...request, params: {...request.params,
-          tool: 'render_report', arguments: revised}}, workflow, evidenceExcerpts, onKnowledgeProgress, taskDeadlineAt, queryIntent);
-      } catch (error) {
-        return {contentItems: [{type: 'inputText', text: error instanceof Error ? error.message : String(error)}], success: false};
-      }
-    }
-    if (request.params.namespace === 'artifact' && request.params.tool === 'render_report') {
-      let draftId: string | undefined;
-      try {
-        delete workflow.state.reviewedDeliveryAnswer;
-        if (workflow.state.contract?.delivery?.format === 'chat') {
-          throw new Error('PDF_DELIVERY_NOT_REQUESTED: 当前任务交付方式是聊天；只有用户明确要求 PDF 后，先将 delivery.format 设为 pdf 才能生成文件。');
-        }
-        if (!this.codex.renderReport) throw new Error('FILE_WORKER_NOT_ENABLED');
-        const payload = reportRenderSchema.parse(request.params.arguments);
-        const unresolvedDraft = structuredClone(payload);
-        draftId = sha256(unresolvedDraft);
-        // Keep even a rejected draft so validation errors can be fixed locally.
-        workflow.state.reportDraft = {id:draftId,payload:unresolvedDraft};
-        await this.repo.saveWorkflow(task.id, workflow.state);
-        assertReportGrounding(payload, workflow.state.evidenceFiles ?? []);
-        const facts = await resolveDocumentFacts(this.codex,task.id,payload.fact_bindings ?? [],workflow.state.evidenceFiles ?? []);
-        payload.report = interpolateFacts(payload.report, facts, true);
-        const reviewReport = structuredClone(payload.report);
-        payload.report = materializeReportActions(payload.report);
-        let verifiedTables: unknown[] = [];
-        delete payload.fact_bindings;
-        if (payload.evidence_tables?.length) {
-          if (!this.codex.runPython || !this.codex.usesWorker?.(task.id)) throw new Error('ANALYSIS_RUNTIME_UNAVAILABLE');
-          const bindings = payload.evidence_tables.map(binding => {
-            const source = workflow.state.evidenceFiles?.find(f => f.evidenceId === binding.evidenceId);
-            if (!source?.sha256 || !['observation','calculation'].includes(source.kind ?? '') || !source.tables?.some(t => t.path === binding.rows_path)) {
-              const available = source?.tables?.map(t => `${t.path} [${Object.keys(t.fields).join(', ')}]`).join('; ') ?? '证据不存在';
-              throw new Error(`REPORT_EVIDENCE_TABLE_INVALID: 可用表：${available}`);
-            }
-            const table = source.tables.find(t => t.path === binding.rows_path)!;
-            const missing = binding.columns.map(column => column.field).filter(field => !Object.prototype.hasOwnProperty.call(table.fields, field));
-            if (missing.length) throw new Error(`REPORT_EVIDENCE_FIELDS_MISSING: ${missing.join(', ')}；可用字段：${Object.keys(table.fields).join(', ') || '无'}`);
-            return {...binding, file: source.file, sha256: source.sha256};
-          });
-          const encoded = Buffer.from(JSON.stringify(bindings)).toString('base64');
-          const result = await this.codex.runPython(task.id, `import json,base64,pathlib,hashlib
-bindings=json.loads(base64.b64decode('${encoded}'))
-sections=[]
-for b in bindings:
- raw=(pathlib.Path('evidence')/b['file']).read_bytes()
- if b.get('sha256') and hashlib.sha256(raw).hexdigest()!=b['sha256']: raise ValueError('EVIDENCE_HASH_MISMATCH')
- doc=json.loads(raw); rows=doc
- for key in b['rows_path'].split('.'):
-  if key: rows=rows[key]
- selected=rows[:b['limit']]
- values=[]
- for row in selected:
-  if any(c['field'] not in row for c in b['columns']): raise ValueError('REPORT_FIELD_MISSING')
-  cells=[row[c['field']] for c in b['columns']]
-  if any(isinstance(v,(dict,list)) for v in cells): raise ValueError('REPORT_CELL_NOT_SCALAR')
-  values.append(cells)
- coverage=doc.get('data',{}).get('coverage',{}) if isinstance(doc,dict) and isinstance(doc.get('data'),dict) else {}
- sections.append({'title':b['title'],'paragraphs':['本表列出 '+str(len(selected))+' 条；引用结果包含 '+str(len(rows))+' 条。统计范围与数据缺口见报告数据质量说明。'],'columns':[c['label'] for c in b['columns']],'rows':values})
-print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
-          if (result.exitCode !== 0 || result.timedOut) throw new Error(`REPORT_EVIDENCE_READ_FAILED: ${result.stderr}`);
-          const sections = JSON.parse(result.stdout);
-          verifiedTables = bindings.map((binding, index) => {
-            const source = workflow.state.evidenceFiles!.find(f => f.evidenceId === binding.evidenceId)!;
-            return {title:binding.title, evidenceId:binding.evidenceId, sourceSha256:binding.sha256,
-              rowsPath:binding.rows_path, columns:binding.columns, selectedRows:sections[index].rows.length,
-              sourceRows:source.tables!.find(t => t.path === binding.rows_path)!.rows,
-              // Give the reviewer the exact bounded rows that were inserted into
-              // the PDF.  A hash proves identity, but without these cells the
-              // reviewer cannot check names, IDs, ordering, or row metrics and
-              // will repeatedly ask for evidence already read by the host.
-              selectedRowValues:sections[index].rows,
-              selection:{offset:0,limit:binding.limit}, query:source.query, context:source.context,
-              valuesSha256:sha256(sections[index].rows), verification:'host_read_exact_saved_rows_without_transcription'};
-          });
-          payload.report.sections = [...(payload.report.sections ?? []), ...sections];
-          delete payload.evidence_tables;
-        }
-        const output = await this.codex.renderReport(task.id, payload);
-        {
-          const inspected = await this.codex.inspectOutput?.(task.id, output.path);
-          if (!inspected) throw new Error('FACT_REPORT_HASH_UNAVAILABLE');
-          workflow.state.artifactFacts ??= {};
-          workflow.state.artifactFacts[inspected.sha256] = {facts, report: payload.report, reviewReport, tables:verifiedTables};
-          workflow.state.reportDraft = {id:draftId,payload:unresolvedDraft,compiled:true};
-          delete workflow.state.documentDraft;
-          await this.repo.saveWorkflow(task.id, workflow.state);
-          await this.repo.audit({requestId:task.request.requestId,taskId:task.id,user:task.request.user,
-            eventType:'artifact.facts_bound',payload:{sha256:inspected.sha256,facts:facts.map(f => ({id:f.id,evidenceId:f.evidenceId,sourceSha256:f.sourceSha256,field:f.field,rowIndex:f.rowIndex}))}});
-        }
-        return {contentItems: [{type: 'inputText', text: JSON.stringify({...output, delivered: false,
-          draft_id:draftId,
-          fact_manifest:facts.map(({id,evidenceId,field,display}) => ({id,evidenceId,field,display})),
-          next: '调用 artifact.submit 提交生成的 PDF；final_answer 仅写文件交付说明，详细数字与建议留在文件中。需修正时调用 artifact.revise_report，带 draft_id 和变化字段的 JSON pointer，不重写整份报告。'})}], success: true};
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        return {contentItems: [{type: 'inputText', text: reason + (draftId
-          ? `\n草稿已保存，draft_id=${draftId}。用 artifact.revise_report 只修正上述字段和事实引用，不要重写全文；文件尚未生成或发送。` : '')}], success: false};
       }
     }
     if (request.params.namespace === 'artifact' && request.params.tool === 'submit') {
@@ -1745,12 +1631,11 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
         const isAdvertisingPdf = path.toLowerCase().endsWith('.pdf')
           && workflow.state.evidence.some(item => item.status === 'success' && item.capabilityId === 'crossborderops.ads.metrics');
         const isPdf = path.toLowerCase().endsWith('.pdf');
-        if ((workflow.state.documentDraft || workflow.state.reportDraft || isAdvertisingPdf || (isPdf && workflow.state.contract?.delivery?.format === 'pdf')) && !factManifest) {
+        if ((workflow.state.documentDraft || isAdvertisingPdf || (isPdf && workflow.state.contract?.delivery?.format === 'pdf')) && !factManifest) {
           const draftHint = workflow.state.documentDraft
-            ? `用 artifact.revise_document 修正 draft_id=${workflow.state.documentDraft.id}，然后提交最新路径。` : workflow.state.reportDraft
-            ? `用 artifact.revise_report 修正草稿，draft_id=${workflow.state.reportDraft.id}，然后提交宿主返回的最新路径。`
+            ? `用 artifact.revise_document 修正 draft_id=${workflow.state.documentDraft.id}，然后提交最新路径。`
             : '先调用 artifact.render_document 绑定证据生成 PDF，再提交返回的最新路径。';
-          throw new Error(`REPORT_COMPILED_ARTIFACT_REQUIRED: 必须使用宿主编译成功且文件哈希一致的 PDF，不能绕过事实校验。${draftHint}`);
+          throw new Error(`DOCUMENT_COMPILED_ARTIFACT_REQUIRED: 必须使用宿主编译成功且文件哈希一致的 PDF，不能绕过事实校验。${draftHint}`);
         }
         const finalAnswer = typeof finalAnswerInput === 'string'
           ? interpolateFacts(finalAnswerInput.trim(), factManifest?.facts ?? []) : undefined;
@@ -1788,7 +1673,7 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
             eventType: 'artifact.review', payload: {name: inspected.name, sha256: inspected.sha256,
               status: review.status, durationMs: Date.now()-startedAt, diagnostics: 'diagnostics' in review ? review.diagnostics : undefined, reused: Boolean(cached), issues: review.issues}});
           if (review.status !== 'pass') throw new Error(review.status === 'revise'
-            ? `ARTIFACT_REVIEW_REVISE: 文件尚未发送。${workflow.state.documentDraft ? `用 artifact.revise_document 局部修正，draft_id=${workflow.state.documentDraft.id}，路径以 /document/ 开头。` : workflow.state.reportDraft ? `用 artifact.revise_report 局部修正，draft_id=${workflow.state.reportDraft.id}；字段路径与 render_report 的 report 结构一致。不要重新抄写未出错的事实或全文重写。` : '修正实际文件后再提交。'}\n${formatIssues(review.issues)}`
+            ? `ARTIFACT_REVIEW_REVISE: 文件尚未发送。${workflow.state.documentDraft ? `用 artifact.revise_document 局部修正，draft_id=${workflow.state.documentDraft.id}，路径以 /document/ 开头。` : '修正实际文件后再提交。'}\n${formatIssues(review.issues)}`
             : `ARTIFACT_REVIEW_UNAVAILABLE: 文件尚未发送，核验未完成：${review.reason}`);
           if (taskDeadlineAt !== undefined && Date.now() >= taskDeadlineAt) throw new Error('ARTIFACT_TASK_DEADLINE_EXCEEDED: 时间预算已结束，文件未发送');
           const current = await this.codex.inspectOutput!(task.id, path);
@@ -2508,13 +2393,6 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       await audit('workflow.complete_rejected',{stage:'artifact_compile',reason:'DOCUMENT_DRAFT_NOT_COMPILED',draftId:workflow.state.documentDraft.id});
       return {accepted:false,feedback:`DOCUMENT_DRAFT_NOT_COMPILED：用 artifact.revise_document 修正 draft_id=${workflow.state.documentDraft.id}；编译后检查预览，再 artifact.submit。无法完成时提交 partial/blocked 并说明错误。`};
     }
-    if (this.enforcing() && completion.status === 'answered' && workflow.state.reportDraft
-      && !workflow.state.reportDraft.compiled) {
-      delete workflow.state.completion;
-      await audit('workflow.complete_rejected', {stage:'artifact_compile', reason:'REPORT_DRAFT_NOT_COMPILED',
-        draftId:workflow.state.reportDraft.id});
-      return {accepted:false, feedback:`REPORT_DRAFT_NOT_COMPILED：草稿尚未成功编译。用 artifact.revise_report 修正 draft_id=${workflow.state.reportDraft.id}；编译成功后调用 artifact.submit 核验并发送。无法完成时提交 partial/blocked 并说明实际错误。`};
-    }
     if (this.enforcing() && completion.status === 'answered' && workflow.state.documentDraft?.compiled
       && !workflow.state.evidence.some(item => item.capabilityId === 'artifact.submit' && item.status === 'success'
         && item.scope === `task:${task.id}/output:${workflow.state.documentDraft!.artifactSha256}`)) {
@@ -2522,12 +2400,12 @@ print(json.dumps(sections,ensure_ascii=False,allow_nan=False))`);
       await audit('workflow.complete_rejected',{stage:'artifact_delivery',reason:'DOCUMENT_NOT_DELIVERED'});
       return {accepted:false,feedback:'DOCUMENT_NOT_DELIVERED：最新 PDF 尚未成功发送。检查预览并调用 artifact.submit；发送失败时如实提交 partial/blocked。'};
     }
-    // A report task must produce a host-compiled artifact before semantic review.
+    // A PDF task must produce a host-compiled artifact before semantic review.
     if (this.enforcing() && completion.status === 'answered' && requiresCompiledAdvertisingReport(task, workflow)
-      && !workflow.state.reportDraft?.compiled && !workflow.state.documentDraft?.compiled) {
+      && !workflow.state.documentDraft?.compiled) {
       delete workflow.state.completion;
-      await audit('workflow.complete_rejected', {stage:'artifact_presence', reason:'REPORT_REQUIRED_BEFORE_REVIEW'});
-      return {accepted:false, feedback:'REPORT_REQUIRED_BEFORE_REVIEW：先用 artifact.render_document 生成用户要求的 PDF，检查预览，再 artifact.submit 核验并发送。旧任务可继续 render_report。失败时按具体错误修正，无法完成时提交 partial/blocked。'};
+      await audit('workflow.complete_rejected', {stage:'artifact_presence', reason:'DOCUMENT_REQUIRED_BEFORE_REVIEW'});
+      return {accepted:false, feedback:'DOCUMENT_REQUIRED_BEFORE_REVIEW：先用 artifact.render_document 生成用户要求的 PDF，检查预览，再 artifact.submit 核验并发送。失败时按具体错误修正，无法完成时提交 partial/blocked。'};
     }
     // A planned task cannot be declared answered while any observed step is
     // still only executed/observed.  The checkpoint tool is deliberately
@@ -3530,8 +3408,6 @@ function capabilityIdForTool(request: CodexApprovalRequest): string | undefined 
   if (namespace === 'reference' && tool === 'list_guides') return 'reference.list_guides';
   if (namespace === 'agent' && tool === 'memory') return 'agent.memory';
   if (namespace === 'analysis' && ['python', 'table'].includes(tool)) return `analysis.${tool}`;
-  if (namespace === 'artifact' && tool === 'render_report') return 'artifact.render_report';
-  if (namespace === 'artifact' && tool === 'revise_report') return 'artifact.revise_report';
   if (namespace === 'artifact' && ['render_document','revise_document'].includes(tool)) return `artifact.${tool}`;
   if (namespace === 'artifact' && tool === 'submit') return 'artifact.submit';
   return undefined;

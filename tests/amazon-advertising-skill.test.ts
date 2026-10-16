@@ -1,27 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { GuideTool } from '../src/guide-tool.js';
 
 describe('amazon-advertising-ai-optimizer skill', () => {
   const guide = new GuideTool({ SKILLS_DIR: resolve('skills') }, resolve('nonexistent-codex-home'));
-  const pythonHasReportlab = (() => {
-    try {
-      execFileSync('python', ['-c', 'import reportlab'], { stdio: 'ignore' });
-      return true;
-    } catch {
-      return false;
-    }
-  })();
-
   it('is discoverable and treats site material as optional experience references', async () => {
     const root = await guide.execute({ name: 'amazon-advertising-ai-optimizer' });
     expect(root.text).toContain('CrossBorderOps');
     expect(root.text).toContain('可选参考');
     expect(root.text).toContain('不是固定 Workflow');
-    for (const reference of ['japan-rules', 'germany-rules', 'usa-profit-model', 'output-template', 'report-template']) {
+    for (const reference of ['japan-rules', 'germany-rules', 'usa-profit-model', 'output-template']) {
       const result = await guide.execute({ name: 'amazon-advertising-ai-optimizer', reference });
       expect(result.text.length).toBeGreaterThan(100);
     }
@@ -56,14 +46,7 @@ describe('amazon-advertising-ai-optimizer skill', () => {
     expect(skill).toContain('只有当前问题需要时才读取');
   });
 
-  it('uses dynamic document composition for new PDFs and isolates the historical template', async () => {
-    const result = await guide.execute({ name: 'amazon-advertising-ai-optimizer', reference: 'report-template' });
-    expect(result.text).toContain('已退役');
-    expect(result.text).toContain('artifact.submit');
-    expect(result.text).toContain('不重复发送 PDF');
-    expect(result.text).toContain('render_document');
-    expect(result.text).toContain('已退役');
-    expect(result.text).toContain('PDF 统一使用');
+  it('uses dynamic document composition for new PDFs', async () => {
     const skill = readFileSync(resolve('skills/amazon-advertising-ai-optimizer/SKILL.md'), 'utf8');
     expect(skill).toContain('只有用户明确要求 PDF');
     expect(skill).toContain('artifact.render_document');
@@ -81,18 +64,4 @@ describe('amazon-advertising-ai-optimizer skill', () => {
     expect(skill).not.toContain('每个站点本回合至少');
   });
 
-  it.skipIf(!pythonHasReportlab)('renders the sample report as a non-empty PDF artifact', () => {
-    const dir = mkdtempSync(resolve(tmpdir(), 'amazon-ad-report-'));
-    const output = resolve(dir, 'report.pdf');
-    try {
-      execFileSync('python', [
-        resolve('skills/amazon-advertising-ai-optimizer/scripts/render_ad_report.py'),
-        '--input', resolve('skills/amazon-advertising-ai-optimizer/examples/sample-report.json'),
-        '--output', output,
-      ], { encoding: 'utf8' });
-      expect(statSync(output).size).toBeGreaterThan(1000);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });

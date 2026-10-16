@@ -3,7 +3,7 @@ import {InMemoryRepository} from '../src/persistence.js';
 import {executionLane, takeExecutionBudget, migrateArtifactBudget, budgetFeedback, type ExecutionBudgetState, type ArtifactBudgetHistory} from '../src/execution-budget.js';
 
 const history = (renders:number, submits:number): ArtifactBudgetHistory => ({deliveryAttempts:0,calls:
-  [...Array(renders).fill('render_report'),...Array(submits).fill('submit')].flatMap((tool,i) =>
+  [...Array(renders).fill('render_document'),...Array(submits).fill('submit')].flatMap((tool,i) =>
     ['tool.call_started','tool.call_finished'].map(eventType => ({eventType,payload:{namespace:'artifact',tool,argumentHash:String(i)}}))) });
 
 describe('independent artifact phase budgets',()=>{
@@ -21,7 +21,7 @@ describe('independent artifact phase budgets',()=>{
     expect(h.calls).toHaveLength(2);
     expect(h.deliveryAttempts).toBe(1);
   });
-  it('retains every legacy charge while separating reviewed revisions from actual dispatch',()=>{
+  it('retains every rendering charge while separating reviewed revisions from actual dispatch',()=>{
     const state:ExecutionBudgetState={used:{collection:10,delivery:12},exhausted:['delivery']};
     expect(migrateArtifactBudget(state,history(7,5))).toBe(true);
     expect(state.used).toEqual({collection:10,rendering:7,review:5,delivery:0});

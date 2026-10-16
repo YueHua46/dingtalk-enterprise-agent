@@ -9,7 +9,6 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { issueModelTaskToken } from './file-worker-auth.js';
 import { listingExportSchema, readListingExportBody } from './listing-export.js';
 import { knowledgeWorkerError } from './knowledge-worker-errors.js';
-import { reportRenderSchema } from './report-render.js';
 import { compiledDocumentSchema, type DocumentOutput } from './document-render.js';
 import { fileURLToPath } from 'node:url';
 import { readUtf8Body as readBody } from './http-body.js';
@@ -191,24 +190,6 @@ const server = createServer(async (request, response) => {
         documentRenders--;
         if(source) await rm(source,{force:true});
       }
-    }
-    if (request.method === 'POST' && segments[2] === 'report-render' && segments.length === 3) {
-      const task = await loadTask(taskId);
-      const payload = reportRenderSchema.parse(JSON.parse(await readBody(request, 512 * 1024)));
-      const id = randomUUID();
-      const source = join(task.tmp, `report-${id}.json`);
-      const name = `advertising-report-${id}.pdf`;
-      await writeFile(source, JSON.stringify(payload.report), {mode: 0o600, flag: 'wx'});
-      if (process.getuid?.() === 0) await chown(source, task.uid, task.uid);
-      try {
-        await execFileAsync('/opt/venv/bin/python', [
-          '/opt/agent-skills/amazon-advertising-ai-optimizer/scripts/render_ad_report.py',
-          '--input', source, '--output', join(task.output, name)
-        ], {uid: task.uid, gid: task.uid, cwd: task.tmp, timeout: 90_000, maxBuffer: 256 * 1024,
-          env: {PATH: process.env.PATH, HOME: task.home, TMPDIR: task.tmp, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1'}});
-        await checkedOutput(task, name);
-        return json(response, 200, {path: name});
-      } finally {await rm(source, {force: true});}
     }
     if (request.method === 'POST' && segments[2] === 'listing-export' && segments.length === 3) {
       const task = await loadTask(taskId);

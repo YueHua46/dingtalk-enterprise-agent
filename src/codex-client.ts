@@ -126,7 +126,6 @@ export interface CodexClientLike {
   /** Runs Python in the task sandbox and returns its outcome. */
   runPython?(taskId: string, code: string): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }>;
   renderListing?(taskId: string, payload: import('./listing-export.js').ListingExport, signal?: AbortSignal): Promise<{ docx: string; xlsx: string }>;
-  renderReport?(taskId: string, payload: import('./report-render.js').ReportRender): Promise<{ path: string }>;
   renderDocument?(taskId: string, payload: import('./document-render.js').CompiledDocument): Promise<import('./document-render.js').DocumentOutput>;
 }
 

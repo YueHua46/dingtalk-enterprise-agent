@@ -1,7 +1,6 @@
 import type { ExecutionBudgetState } from './execution-budget.js';
 import type { EvidenceFileEntry } from './evidence-manifest.js';
 import type { ResolvedFact } from './evidence-facts.js';
-import type { ReportRender } from './report-render.js';
 import type { DocumentRender } from './document-render.js';
 import { randomUUID } from 'node:crypto';
 import { capabilityById, capabilityCatalog } from './capability-catalog.js';
@@ -125,8 +124,6 @@ export interface WorkflowState {
     issues: Array<{severity: 'blocking'|'advisory';category: string;location: string;problem: string;fix: string}>}>;
   /** Host-resolved facts bound to the bytes actually rendered, not a model-written citation list. */
   artifactFacts?: Record<string, {facts: ResolvedFact[]; report: Record<string, unknown>; reviewReport?: Record<string, unknown>; tables?: unknown[]}>;
-  /** Unresolved structured draft, retained for precise local correction. */
-  reportDraft?: {id: string; payload: ReportRender; compiled?: boolean};
   documentDraft?: {id: string; payload: DocumentRender; compiled?: boolean; artifactSha256?: string};
   revision: number;
   planCount?: number;

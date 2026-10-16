@@ -112,9 +112,6 @@ export class RemoteCodexClient implements CodexClientLike {
     if (!response.ok) throw new Error('LISTING_EXPORT_RENDER_FAILED');
     return await response.json() as { docx: string; xlsx: string };
   }
-  public async renderReport(taskId: string, payload: import('./report-render.js').ReportRender): Promise<{path: string}> {
-    return this.api(`/tasks/${taskId}/report-render`, {method: 'POST', body: JSON.stringify(payload)}, 100_000) as Promise<{path: string}>;
-  }
   public async renderDocument(taskId: string, payload: import('./document-render.js').CompiledDocument): Promise<import('./document-render.js').DocumentOutput> {
     return this.api(`/tasks/${taskId}/document-render`, {method:'POST', body:JSON.stringify(payload)}, 100_000) as Promise<import('./document-render.js').DocumentOutput>;
   }
@@ -189,7 +186,7 @@ export class RemoteCodexClient implements CodexClientLike {
 }
 
 function workerInstructions(): string {
-  return enterpriseInstructions + '\n\n## 任务沙箱\n你在隔离的任务工作目录中运行，可使用 shell、Python、Node、LibreOffice 和 Poppler。公开互联网优先使用 Codex 原生 web.run 搜索、打开和查找网页；引用网页事实时注明实际访问的来源。文件处理技能安装在 /opt/file-skills（documents、pdf、spreadsheets、presentations），直接通过 shell 读取其 SKILL.md。企业业务 Skill 用 reference.read_guide 读取；它们的只读副本在 /opt/agent-skills/<Skill 名>，其中的分析脚本可以运行。广告分析任务严禁用 shell、exec_command、Node 或调试脚本检查宿主源码、dist、配置或报告编译实现；遇到事实绑定或渲染错误，只依据宿主工具返回的结构化错误，用 artifact.revise_document 的局部 changes 修正（历史报告用 revise_report），数据计算只用 analysis.python。不要把“检查代码”当作广告分析步骤，也不要重复已经成功的查询。要让计算结果成为答复依据，用 analysis.python 执行（可在其中用 subprocess 调用 Skill 脚本）；shell 输出不会被当作企业业务查询证据。业务查询的完整结果保存在当前工作目录的 evidence/ 下。只读取本任务附件和任务工作区，不读取其他任务、宿主凭证或系统配置。企业业务操作仍须走动态工具。普通聊天附件只生成副本。群里先发文件再 @ 机器人时，可从当前会话消息的 resourceRefs 取得 messageId、fileId、name 并调用 artifact.import_chat。钉盘普通文件可通过 artifact.import_drive 导入；只有用户明确要求覆盖原钉盘文件时才调用 artifact.overwrite_drive，此操作由宿主确认。依据文件内容答复时，把每个关键原文片段及其输入文件名交给 artifact.record_read，取得源文件哈希关联的证据 ID 后再完成任务闭环；审查器不把 shell 输出自动当作证据。普通生成成果必须写入当前任务的 output 目录并逐个调用 artifact.submit；但如果宿主工具已经返回 delivered=true 与 delivery 回执（例如紫鸟截图），该文件已经投递到原会话，禁止复制、转换或再次 artifact.submit。只有用户明确要求的其他独立文件才提交。宿主负责发送已登记的文件。不要用 dingtalk.dws 的消息发送能力投递任务工作区文件。最终给用户的回复优先遵循用户要求的正文内容与长度；默认简短说明已发回的文件名和最多三项主要改动。附件由钉钉原生文件消息展示。不要在用户可见回复中写消息 ID、fileId、哈希、任务内路径、artifact.submit、宿主或其他内部流程。';
+  return enterpriseInstructions + '\n\n## 任务沙箱\n你在隔离的任务工作目录中运行，可使用 shell、Python、Node、LibreOffice 和 Poppler。公开互联网优先使用 Codex 原生 web.run 搜索、打开和查找网页；引用网页事实时注明实际访问的来源。文件处理技能安装在 /opt/file-skills（documents、pdf、spreadsheets、presentations），直接通过 shell 读取其 SKILL.md。企业业务 Skill 用 reference.read_guide 读取；它们的只读副本在 /opt/agent-skills/<Skill 名>，其中的分析脚本可以运行。广告分析任务严禁用 shell、exec_command、Node 或调试脚本检查宿主源码、dist、配置或报告编译实现；遇到事实绑定或渲染错误，只依据宿主工具返回的结构化错误，用 artifact.revise_document 的局部 changes 修正，数据计算只用 analysis.python。不要把“检查代码”当作广告分析步骤，也不要重复已经成功的查询。要让计算结果成为答复依据，用 analysis.python 执行（可在其中用 subprocess 调用 Skill 脚本）；shell 输出不会被当作企业业务查询证据。业务查询的完整结果保存在当前工作目录的 evidence/ 下。只读取本任务附件和任务工作区，不读取其他任务、宿主凭证或系统配置。企业业务操作仍须走动态工具。普通聊天附件只生成副本。群里先发文件再 @ 机器人时，可从当前会话消息的 resourceRefs 取得 messageId、fileId、name 并调用 artifact.import_chat。钉盘普通文件可通过 artifact.import_drive 导入；只有用户明确要求覆盖原钉盘文件时才调用 artifact.overwrite_drive，此操作由宿主确认。依据文件内容答复时，把每个关键原文片段及其输入文件名交给 artifact.record_read，取得源文件哈希关联的证据 ID 后再完成任务闭环；审查器不把 shell 输出自动当作证据。普通生成成果必须写入当前任务的 output 目录并逐个调用 artifact.submit；但如果宿主工具已经返回 delivered=true 与 delivery 回执（例如紫鸟截图），该文件已经投递到原会话，禁止复制、转换或再次 artifact.submit。只有用户明确要求的其他独立文件才提交。宿主负责发送已登记的文件。不要用 dingtalk.dws 的消息发送能力投递任务工作区文件。最终给用户的回复优先遵循用户要求的正文内容与长度；默认简短说明已发回的文件名和最多三项主要改动。附件由钉钉原生文件消息展示。不要在用户可见回复中写消息 ID、fileId、哈希、任务内路径、artifact.submit、宿主或其他内部流程。';
 }
 
 class Rpc {

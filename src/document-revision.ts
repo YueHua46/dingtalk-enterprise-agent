@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { factBindingSchema } from './evidence-facts.js';
 import { documentRenderSchema, type DocumentRender } from './document-render.js';
-import { applyContentChanges, isJsonValue } from './report-revision.js';
+import { applyContentChanges, isJsonValue } from './json-revision.js';
 
 const path = z.string().min(11).max(1000).startsWith('/document/');
 export const documentRevisionSchema = z.strictObject({
